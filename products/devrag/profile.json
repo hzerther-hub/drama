@@ -1,0 +1,15 @@
+{
+  "title": "宁波易到救援开发平台",
+  "features": {
+    "gpulocal": false,
+    "dispatch": true,
+    "editor": true,
+    "voice": true,
+    "mcp": true,
+    "attachments": true,
+    "sessions": true,
+    "rag": true,
+    "zh_only": true
+  },
+  "exe_name": "LocalAIDevRag"
+}

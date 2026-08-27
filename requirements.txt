@@ -1,0 +1,9 @@
+# Qwen Coder 依赖（Linux / Windows / macOS 通用）
+# 语音功能（可选，无麦克风环境可去掉）：
+numpy
+sounddevice
+faster-whisper
+# gpulocal 本地模型面板：系统状态（CPU/内存/磁盘/温度），缺失时面板降级为备用探测
+psutil
+# 聊天区拖放文件/图片（spec 打包需要其 tkdnd 数据文件）
+tkinterdnd2

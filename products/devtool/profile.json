@@ -1,0 +1,14 @@
+{
+  "title": "Local AI Studio · Dev",
+  "features": {
+    "gpulocal": false,
+    "dispatch": true,
+    "editor": true,
+    "voice": true,
+    "mcp": true,
+    "attachments": true,
+    "sessions": true,
+    "rag": true
+  },
+  "exe_name": "LocalAIStudio-Dev"
+}

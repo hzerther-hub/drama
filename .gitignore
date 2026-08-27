@@ -1,0 +1,31 @@
+# 构建产物
+build/
+dist/
+__pycache__/
+*.pyc
+
+# 本地工具配置
+.claude/
+.zcode/
+
+# 打包 spec（按需保留，默认忽略）
+# QwenCoder.spec
+packaging/*.spec
+test_perm.py
+
+# agent 工作目录
+.omc/
+.omo/
+
+# 本地虚拟环境与临时日志
+.venv/
+app_out.txt
+app_err.txt
+# docs 目录默认不提交，仅放行 README 用的截图
+docs/*
+!docs/screenshots/
+!docs/screenshots/*.png
+# 会话内临时截图
+.tmp-*.png
+# 量化数据缓存（akshare 拉取结果，可随时重拉）
+products/quant/data/cache/

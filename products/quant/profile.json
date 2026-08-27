@@ -1,0 +1,16 @@
+{
+  "title": "量化开发",
+  "features": {
+    "gpulocal": true,
+    "dispatch": true,
+    "editor": true,
+    "voice": true,
+    "mcp": true,
+    "attachments": true,
+    "sessions": true,
+    "quant": true,
+    "rag": true,
+    "zh_only": true
+  },
+  "exe_name": "LocalAIQuant"
+}

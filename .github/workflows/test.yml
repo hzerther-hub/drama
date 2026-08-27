@@ -1,0 +1,62 @@
+name: tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  pytest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test deps
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Syntax check all modules
+        run: python -m py_compile *.py gpulocal/*.py examples/*.py products/*.py products/quant/*.py products/quant/data/*.py products/quant/kb/*.py packaging/*.py
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+  package:
+    # E2 打包管线：测试全绿后，三平台各打一个默认产品（devtool_local）安装包
+    needs: pytest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build deps
+        run: python -m pip install pyinstaller -r requirements.txt
+
+      - name: Install Tk (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - name: Build package
+        run: python packaging/build.py devtool_local
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LocalAIStudio-${{ runner.os }}
+          path: dist/*/
+          retention-days: 14

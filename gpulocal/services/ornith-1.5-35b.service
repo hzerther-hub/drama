@@ -1,0 +1,21 @@
+[Unit]
+Description=Ornith-1.5-35B-A3B (Q6_K) — llama.cpp 编程助手 server（双卡）
+Documentation=https://github.com/ggerganov/llama.cpp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 35B MoE（3B 激活），Q6_K 尽量大，双卡 NVLink 按层拆分放满两张卡
+ExecStart=%h/llama.cpp-dflash2/build/bin/llama-server \
+    -m %h/models/Ornith-1.5-35B-A3B-GGUF/Ornith-1.5-35B-Q6_K.gguf \
+    --mmproj %h/models/Ornith-1.5-35B-A3B-GGUF/mmproj-Ornith-1.5-35B-BF16.gguf \
+    --host 127.0.0.1 --port 8099 \
+    --split-mode layer --n-gpu-layers 99 \
+    --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=600
+
+[Install]
+WantedBy=default.target

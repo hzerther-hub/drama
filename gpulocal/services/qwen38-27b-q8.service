@@ -1,0 +1,26 @@
+[Unit]
+Description=Qwen3.8-27B (DFlash2 加速) — llama.cpp server (Q8_0 + DFlash2 投机解码)
+Documentation=https://github.com/ggerganov/llama.cpp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 主模型 Q8_0(8位量化) + 视觉投影 + DFlash2 drafter(投机解码)，运行于 llama.cpp
+ExecStart=%h/llama.cpp-dflash2/build/bin/llama-server \
+    -m %h/models/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q8_0.gguf \
+    --mmproj %h/models/Qwen3.8-27B-GGUF/mmproj-BF16.gguf \
+    --host 127.0.0.1 --port 8097 \
+    --split-mode layer --n-gpu-layers 99 \
+    --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 -c 131072 \
+    --spec-type draft-dflash \
+    --spec-draft-model %h/models/Qwen3.8-27B-GGUF/Qwen3.8-27B-DFlash2-Q4_K_M.gguf \
+    --spec-draft-ngl 99 --spec-draft-n-max 5 \
+    --chat-template %h/llama.cpp-dflash2/models/templates/Qwen3.5-4B-lenient.jinja \
+    --alias qwen38-27b-q8
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=600
+
+[Install]
+WantedBy=default.target

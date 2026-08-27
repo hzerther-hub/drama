@@ -1,0 +1,21 @@
+[Unit]
+Description=Qwen3-VL-32B (Q6_K) — llama.cpp 视觉多模态 server
+Documentation=https://github.com/ggerganov/llama.cpp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 视觉模型 Q6_K + 视觉投影(mmproj，图片输入必需)，运行于 llama.cpp，双卡 NVLink 按层拆分
+ExecStart=%h/llama.cpp-dflash2/build/bin/llama-server \
+    -m %h/models/Qwen3-VL-32B-GGUF/Qwen3-VL-32B-Instruct-Q6_K.gguf \
+    --mmproj %h/models/Qwen3-VL-32B-GGUF/mmproj-F16.gguf \
+    --host 127.0.0.1 --port 8098 \
+    --split-mode layer --n-gpu-layers 99 \
+    --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 -c 65536
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=600
+
+[Install]
+WantedBy=default.target

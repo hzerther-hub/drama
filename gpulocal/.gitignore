@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+logs/
+screenshot.jpg
+models/
+*.gguf
+*.incomplete
+venvs/
+.dsh/
