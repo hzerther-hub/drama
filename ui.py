@@ -1031,9 +1031,9 @@ class App:
             self._cycle_route_override)
         self.bottom_route_btn.pack(side="right", padx=(4, 0))
         _flat_button(ctrlbar, text="\U0001F4F8", command=self._trigger_screenshot,
-                     width=2, font=(FONT_MONO, theme.FS_ICON)).pack(side="right", padx=(4, 0))
+                     width=2, font=(FONT_EMOJI, theme.FS_ICON)).pack(side="right", padx=(4, 0))
         _flat_button(ctrlbar, text="🔄", command=self._refresh_all,
-                     font=(FONT_MONO, theme.FS_ICON)).pack(side="right", padx=(4, 0))
+                     font=(FONT_EMOJI, theme.FS_ICON)).pack(side="right", padx=(4, 0))
 
         self.input = tk.Text(bottom, height=3, width=8,
                              font=(FONT_MONO, self._font_chat + 1), wrap="word",
@@ -1269,7 +1269,7 @@ class App:
         # 路由模式按钮：自动/本地/云端 循环（local 保存自动路由，仅覆盖当前轮）
         self._route_btn = _flat_button(
             head, text="🔀", command=self._cycle_route_override,
-            font=(FONT_UI, theme.FS_ICON))
+            font=(FONT_EMOJI, theme.FS_ICON))
         self._route_btn.pack(side="right", padx=(6, 0))
         self._bind_hint(self._route_btn, "route.auto")
         self._sidebar_more = _flat_button(

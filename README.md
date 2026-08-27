@@ -107,14 +107,14 @@ Sibling profiles (`devtool`, `devtool_local`, `quant`, `devrag`) are still runna
 
 ## Getting started
 
-**Requires Python 3.12+.**
+**Python 3.12+ required; 3.14+ recommended.** Python 3.14 bundles Tcl/Tk 9.0, whose color-emoji engine draws the toolbar icons in color — on 3.12/3.13 (Tk 8.6) they render as monochrome glyphs on Windows.
 
 ```bash
 pip install -r requirements.txt   # numpy/sounddevice/faster-whisper (voice), psutil, tkinterdnd2
 python3 main.py                   # Windows: python main.py
 ```
 
-Voice deps are optional — skip them (and the voice button degrades) if you don't dictate. On Windows without a 3.12 interpreter, bootstrap via Miniconda:
+Voice deps are optional — skip them (and the voice button degrades) if you don't dictate. On Windows, install Python 3.14+ from [python.org](https://www.python.org/downloads/), or bootstrap 3.12 via Miniconda:
 
 ```bat
 D:\miniconda3\Scripts\conda.exe create -n py312 python=3.12 -y
