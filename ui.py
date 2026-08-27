@@ -411,6 +411,69 @@ def _flat_button(parent, text, command, width=12, font=(FONT_UI, 10)):
     return btn
 
 
+# ---------------- emoji 图标按钮：Windows 走 PNG 图片 ----------------
+# Tk 9.0 的 Windows 字体引擎渲染不了彩色字形（要 9.1+），字体方案在 Win 上
+# 只能出黑色图标；这里改用 Noto Emoji 的 PNG（Apache-2.0，assets/icons/），
+# 非平台 fallback：其它系统 emoji 字体本来就是彩色，继续走字体。
+_ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "assets", "icons")
+_ICON_PHOTOS: dict = {}          # 文件名 key → PhotoImage（持引用防 GC）
+
+
+def _icon_image(emoji):
+    """emoji → 彩色 PNG PhotoImage；非 Windows / 无 root / 缺素材返回 None。"""
+    if sys.platform != "win32":
+        return None
+    key = "_".join(f"{ord(c):x}" for c in emoji.replace("\ufe0f", ""))
+    path = os.path.join(_ICON_DIR, key + ".png")
+    if not os.path.isfile(path):
+        return None
+    img = _ICON_PHOTOS.get(key)
+    if img is None:
+        try:
+            img = tk.PhotoImage(file=path)
+            while img.width() > 18:          # 128px 源图缩到 ~16px 贴按钮
+                img = img.subsample(2)
+            _ICON_PHOTOS[key] = img
+        except Exception:                    # noqa: BLE001  PNG 损坏则回退字体
+            return None
+    return img
+
+
+def _image_button(parent, img, command):
+    """PNG 图标按钮：与 _flat_button 同款扁平/悬停风格。"""
+    btn = tk.Button(parent, image=img, command=command, relief="flat",
+                    cursor="hand2", bg=theme.BG, bd=0, highlightthickness=0,
+                    activebackground=theme.ACCENT_FAINT)
+
+    def _hover(on):
+        if str(btn.cget("state")) == "normal":
+            btn.config(bg=theme.ACCENT_FAINT if on else theme.BG)
+    btn.bind("<Enter>", lambda _e: _hover(True))
+    btn.bind("<Leave>", lambda _e: _hover(False))
+    btn._icon_ref = img              # PhotoImage 挂在控件上防 GC
+    return btn
+
+
+def _flat_emoji_button(parent, emoji, command, width=2, font_size=None):
+    """纯 emoji 按钮：Windows 优先 PNG 图片，其它平台/缺素材回退字体字形。"""
+    img = _icon_image(emoji)
+    if img is not None:
+        return _image_button(parent, img, command)
+    return _flat_button(parent, text=emoji, command=command, width=width,
+                        font=(FONT_EMOJI, font_size or theme.FS_ICON))
+
+
+def _set_btn_icon(btn, emoji):
+    """运行时切换 emoji 按钮的图标（图片/字体两态都要能切）。"""
+    img = _icon_image(emoji)
+    if img is not None:
+        btn.config(image=img, text="")
+        btn._icon_ref = img
+    else:
+        btn.config(text=emoji)
+
+
 def _enable_text_copy(text, block_tags=()):
     """让 disabled 的 Text/ScrolledText 可选中、可复制（含鼠标拖选）。
 
@@ -826,12 +889,16 @@ class App:
         threading.Thread(target=self._lsp_warm_loop, daemon=True).start()
 
     # ================= 构建界面 =================
-    def _icon_button(self, parent, icon, hint, command, font_size=None):
-        font_size = font_size or theme.FS_ICON
-        """纯图标工具按钮：完整含义悬停经状态栏显示（hint 可传 lambda 实时取）。"""
-        # 图标是 emoji：用彩色 emoji 字体（FONT_EMOJI），否则回退正文把手渲染成黑字形
-        btn = _flat_button(parent, text=icon, command=command, width=2,
-                           font=(FONT_EMOJI, font_size))
+    def _icon_button(self, parent, icon, hint, command, font_size=None, image=True):
+        """纯图标工具按钮：完整含义悬停经状态栏显示（hint 可传 lambda 实时取）。
+        Windows 优先 PNG 图片（Tk 9.0 渲染不了彩色 emoji 字形），否则回退字体；
+        image=False 强制字体模式（按钮后续要显示文字的场景，如会话标题）。"""
+        if image:
+            btn = _flat_emoji_button(parent, icon, command,
+                                     font_size=font_size or theme.FS_ICON)
+        else:
+            btn = _flat_button(parent, text=icon, command=command, width=2,
+                               font=(FONT_EMOJI, font_size or theme.FS_ICON))
         btn.bind("<Enter>",
                  lambda _e: self._set_status(hint() if callable(hint) else hint))
         btn.bind("<Leave>", lambda _e: self._set_status(""))
@@ -858,7 +925,8 @@ class App:
         self._update_thinking_btn()
 
         self.sess_btn = self._icon_button(
-            ctrl, "💬", lambda: _t("top.sessions"), self._show_session_menu)
+            ctrl, "💬", lambda: _t("top.sessions"), self._show_session_menu,
+            image=False)
         self.sess_btn.pack(side="left", padx=(0, 10))
 
 
@@ -887,15 +955,13 @@ class App:
 
         # 量化产品：策略互转面板入口（其它产品不建此按钮）
         if _feature("quant", False):
-            _flat_button(ctrl, text="📈",
-                         command=self._open_quant_panel, width=2,
-                         font=(FONT_EMOJI, theme.FS_ICON)).pack(side="left", padx=(0, 10))
+            _flat_emoji_button(ctrl, "📈",
+                               command=self._open_quant_panel).pack(side="left", padx=(0, 10))
 
         # 公司知识库（企业代码 RAG）：知识库管理面板入口（rag 功能开关）
         if _feature("rag", False):
-            _flat_button(ctrl, text="📚",
-                         command=self._open_kb_panel, width=2,
-                         font=(FONT_EMOJI, theme.FS_ICON)).pack(side="left", padx=(0, 10))
+            _flat_emoji_button(ctrl, "📚",
+                               command=self._open_kb_panel).pack(side="left", padx=(0, 10))
 
         self.dir_label = tk.Label(ctrl, text="📁 " + _t("top.dir"), font=(FONT_MONO, 10))
         self.dir_label.pack(side="left")
@@ -913,8 +979,8 @@ class App:
         self.branch_label.pack(side="left", padx=(0, 8))
 
         # 帮助按钮（最右上角，图标点击打开帮助窗口）
-        _flat_button(ctrl, text="❓", command=self._show_help, width=3,
-                     font=(FONT_EMOJI, theme.FS_ICON)).pack(side="right", padx=(0, 12))
+        _flat_emoji_button(ctrl, "❓", command=self._show_help,
+                           width=3).pack(side="right", padx=(0, 12))
 
         # 中英语言切换按钮（点一下切换界面语言）——「仅中文」产品不显示
         self.lang_btn = None
@@ -1030,10 +1096,10 @@ class App:
             ctrlbar, "🔀", lambda: self._route_mode_text(),
             self._cycle_route_override)
         self.bottom_route_btn.pack(side="right", padx=(4, 0))
-        _flat_button(ctrlbar, text="\U0001F4F8", command=self._trigger_screenshot,
-                     width=2, font=(FONT_EMOJI, theme.FS_ICON)).pack(side="right", padx=(4, 0))
-        _flat_button(ctrlbar, text="🔄", command=self._refresh_all,
-                     font=(FONT_EMOJI, theme.FS_ICON)).pack(side="right", padx=(4, 0))
+        _flat_emoji_button(ctrlbar, "\U0001F4F8",
+                           command=self._trigger_screenshot).pack(side="right", padx=(4, 0))
+        _flat_emoji_button(ctrlbar, "🔄",
+                           command=self._refresh_all).pack(side="right", padx=(4, 0))
 
         self.input = tk.Text(bottom, height=3, width=8,
                              font=(FONT_MONO, self._font_chat + 1), wrap="word",
@@ -1267,9 +1333,8 @@ class App:
         head.pack(fill="x", pady=(0, 6))
         tk.Label(head, text="🗂 " + _t("sess.workspace"), font=(FONT_UI, 10, "bold")).pack(side="left")
         # 路由模式按钮：自动/本地/云端 循环（local 保存自动路由，仅覆盖当前轮）
-        self._route_btn = _flat_button(
-            head, text="🔀", command=self._cycle_route_override,
-            font=(FONT_EMOJI, theme.FS_ICON))
+        self._route_btn = _flat_emoji_button(
+            head, "🔀", command=self._cycle_route_override)
         self._route_btn.pack(side="right", padx=(6, 0))
         self._bind_hint(self._route_btn, "route.auto")
         self._sidebar_more = _flat_button(
@@ -2938,13 +3003,13 @@ class App:
         self.sess_btn.config(text="💬")
         if hasattr(self, 'mode_btn') and self.mode_btn:
             self.mode_btn.config(text=MODE_ICON.get(self.mode, "🛡"))
-        self.ctx_btn.config(text=_ctx_btn_icon())
+        _set_btn_icon(self.ctx_btn, _ctx_btn_icon())
         self.dir_label.config(text="📁 " + _t("top.dir"))
         self.status_label.config(text=_t("top.ready"))
         self.attach_btn.config(text=_t("top.attach"))
         if hasattr(self, "bottom_model_btn"):
             self.bottom_model_btn.config(text="🤖")
-            self.bottom_mode_btn.config(text=MODE_ICON.get(self.mode, "🛡"))
+            _set_btn_icon(self.bottom_mode_btn, MODE_ICON.get(self.mode, "🛡"))
         self.voice_btn.config(text=_t("btn.voice"))
         self.send_btn.config(text=_t("btn.send"))
         self.status_badge.config(text=_t("status.idle"))
@@ -3302,7 +3367,7 @@ class App:
             self.mode_btn.config(text=MODE_ICON.get(mode, "🛡"))
         self._set_status(_t("st.perm", m=_mode_label(mode)))
         if hasattr(self, "bottom_mode_btn"):
-            self.bottom_mode_btn.config(text=MODE_ICON.get(mode, "🛡"))
+            _set_btn_icon(self.bottom_mode_btn, MODE_ICON.get(mode, "🛡"))
 
     def _toggle_ctx(self):
         """切换 续上下文 ⇄ 独立提问，并持久化到 models.json。"""
