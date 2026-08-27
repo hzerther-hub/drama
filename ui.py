@@ -107,7 +107,7 @@ REASONING_CHOICES = ("", "none", "low", "medium", "high", "xhigh", "max")
 
 # 各等级图标（空值=默认/关）
 REASONING_ICON = {
-    "": "🌫",
+    "": "⚪",
     "none": "🚫",
     "low": "🐢",
     "medium": "🧠",
@@ -909,9 +909,17 @@ class App:
         ctrl = tk.Frame(self.root)
         ctrl.pack(fill="x", padx=16, pady=(10, 4))
 
-        self.model_btn = _flat_button(
-            ctrl, text=self._model_btn_label(),
-            command=self._show_model_menu, width=self._model_btn_width(), font=(FONT_MONO, theme.FS_TOOLBAR))
+        _mb_img = _icon_image("🤖")
+        if _mb_img is not None:
+            # Windows PNG：机器人图 + 模型名图文混排（Tk 9.0 渲染不了彩色 emoji 字形）
+            self.model_btn = _image_button(ctrl, _mb_img,
+                                           command=self._show_model_menu)
+            self.model_btn.config(text=self._model_btn_text(), compound="left",
+                                  font=(FONT_MONO, theme.FS_TOOLBAR), fg=theme.TEXT)
+        else:
+            self.model_btn = _flat_button(
+                ctrl, text=self._model_btn_label(),
+                command=self._show_model_menu, width=self._model_btn_width(), font=(FONT_MONO, theme.FS_TOOLBAR))
         # 模型名首字母与下方输入框文字精确左对齐：
         # 按钮内距=输入框内距(12)，文字左锚定（短模型名也顶格不居中）
         self.model_btn.config(padx=12, bd=0, highlightthickness=0, anchor="w")
@@ -2751,6 +2759,12 @@ class App:
             return "🤖 " + _t("top.select_model")
         return f"🤖 {self.current_model.display_name}"
 
+    def _model_btn_text(self):
+        """PNG 模式下按钮的纯文字部分（机器人前缀已由图片承担）。"""
+        if not self.current_model:
+            return _t("top.select_model")
+        return self.current_model.display_name
+
     def _model_btn_width(self) -> int:
         """模型名长度自适应（字符数，留出余量）。"""
         label = self._model_btn_label()
@@ -2759,7 +2773,10 @@ class App:
     def _select_model(self, key):
         self.current_model = self.model_map.get(key)
         if self.current_model:
-            self.model_btn.config(text=self._model_btn_label(), width=self._model_btn_width())
+            if str(self.model_btn.cget("image")):      # PNG 模式：前缀由图片承担
+                self.model_btn.config(text=self._model_btn_text())
+            else:
+                self.model_btn.config(text=self._model_btn_label(), width=self._model_btn_width())
             self._update_thinking_btn()
             self._set_status(_t("st.model", m=self.current_model.display_name))
             if hasattr(self, "bottom_model_btn"):
@@ -2772,16 +2789,15 @@ class App:
         return cur or _t("model.reasoning.default")
 
     def _update_thinking_btn(self):
-        """思考按钮：显示当前等级；未设等级时显示「模型默认」。同步底部思考按钮。"""
-        m = self.current_model
+        """思考按钮：图标随等级切换（🌫🚫🐢🧠⚡🔥🚀）；Windows 走 PNG。
+        未设等级时显示「模型默认」图标。同步顶部与底部两颗思考按钮。"""
+        cur = (getattr(self.current_model, "reasoning_effort", "") or "").strip()
         self._think_hint = self._think_btn_text()   # 图标化：等级悬停可见
-        if hasattr(self, "think_btn") and self.think_btn:
-            try:
-                self.think_btn.config(text="🧠")
-            except Exception:       # noqa: BLE001
-                pass
-        if hasattr(self, "bottom_think_btn") and self.bottom_think_btn:
-            self.bottom_think_btn.config(text="🧠")
+        icon = REASONING_ICON.get(cur, "🧠")
+        for name in ("think_btn", "bottom_think_btn"):
+            b = getattr(self, name, None)
+            if b:
+                _set_btn_icon(b, icon)
 
     def _reasoning_choices(self) -> tuple:
         """当前模型支持的推理等级（空 = 标准集）。"""
@@ -3187,8 +3203,14 @@ class App:
             if getattr(m, "reasoning", False):
                 caps += " 🧠"
             icon = "✨" if m.key.startswith("gpulocal") else "☁️"
-            menu.add_command(label=f"{icon} {m.display_name}{caps}{mark}",
-                             command=lambda k=m.key: self._select_model(k))
+            m_img = _icon_image(icon)          # Windows：下拉项前缀走 PNG（菜单条目支持 image）
+            if m_img is not None:
+                menu.add_command(image=m_img,
+                                 label=f"{m.display_name}{caps}{mark}",
+                                 command=lambda k=m.key: self._select_model(k))
+            else:
+                menu.add_command(label=f"{icon} {m.display_name}{caps}{mark}",
+                                 command=lambda k=m.key: self._select_model(k))
         # ---- 本地 GPU 模型（gpulocal 桥接，状态每次打开实时读取）----
         if _local_models_on():
             lms = localmodels.list_models()
