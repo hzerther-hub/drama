@@ -3205,7 +3205,7 @@ class App:
             icon = "✨" if m.key.startswith("gpulocal") else "☁️"
             m_img = _icon_image(icon)          # Windows：下拉项前缀走 PNG（菜单条目支持 image）
             if m_img is not None:
-                menu.add_command(image=m_img,
+                menu.add_command(image=m_img, compound="left",
                                  label=f"{m.display_name}{caps}{mark}",
                                  command=lambda k=m.key: self._select_model(k))
             else:
