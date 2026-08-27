@@ -158,6 +158,15 @@ _UI_CANDIDATES = [
 # 初始值（_setup_fonts() 会按平台重选）
 FONT_MONO = "JetBrains Mono"       # 等宽：代码、工具结果、输入框
 FONT_UI = "Noto Sans CJK SC"       # 正文：中英文混排，现代无衬线
+# 彩色 emoji：按平台选择系统已装的彩色 emoji 字体。
+# 顶栏带 emoji 的 Label/Button 显式用这个，否则会回退到 FONT_UI 把 emoji 渲成黑字形。
+_FONT_EMOJI_CANDIDATES = (
+    "Segoe UI Emoji",       # Windows（自带，彩色）
+    "Apple Color Emoji",    # macOS（自带，彩色）
+    "Noto Color Emoji",     # Linux（多数发行版不自带，需手动装）
+    "Twitter Color Emoji",  # Linux 备用
+)
+FONT_EMOJI = _FONT_EMOJI_CANDIDATES[0]   # 默认值，_setup_fonts() 在探测后再校正
 
 # ================= 源码高亮（多语言） =================
 # 按文件扩展名映射到语言
@@ -820,8 +829,9 @@ class App:
     def _icon_button(self, parent, icon, hint, command, font_size=None):
         font_size = font_size or theme.FS_ICON
         """纯图标工具按钮：完整含义悬停经状态栏显示（hint 可传 lambda 实时取）。"""
+        # 图标是 emoji：用彩色 emoji 字体（FONT_EMOJI），否则回退正文把手渲染成黑字形
         btn = _flat_button(parent, text=icon, command=command, width=2,
-                           font=(FONT_UI, font_size))
+                           font=(FONT_EMOJI, font_size))
         btn.bind("<Enter>",
                  lambda _e: self._set_status(hint() if callable(hint) else hint))
         btn.bind("<Leave>", lambda _e: self._set_status(""))
@@ -865,7 +875,7 @@ class App:
         if _feature("dispatch"):
             self.dispatch_btn = _flat_button(
                 ctrl, text="⚡",
-                command=self._toggle_dispatch, width=2, font=(FONT_MONO, theme.FS_ICON))
+                command=self._toggle_dispatch, width=2, font=(FONT_EMOJI, theme.FS_ICON))
             self.dispatch_btn.pack(side="left", padx=(0, 10))
             self.dispatch_btn.bind("<Button-3>",
                                    lambda e: self._manage_dispatch())
@@ -879,13 +889,13 @@ class App:
         if _feature("quant", False):
             _flat_button(ctrl, text="📈",
                          command=self._open_quant_panel, width=2,
-                         font=(FONT_UI, theme.FS_ICON)).pack(side="left", padx=(0, 10))
+                         font=(FONT_EMOJI, theme.FS_ICON)).pack(side="left", padx=(0, 10))
 
         # 公司知识库（企业代码 RAG）：知识库管理面板入口（rag 功能开关）
         if _feature("rag", False):
             _flat_button(ctrl, text="📚",
                          command=self._open_kb_panel, width=2,
-                         font=(FONT_UI, theme.FS_ICON)).pack(side="left", padx=(0, 10))
+                         font=(FONT_EMOJI, theme.FS_ICON)).pack(side="left", padx=(0, 10))
 
         self.dir_label = tk.Label(ctrl, text="📁 " + _t("top.dir"), font=(FONT_MONO, 10))
         self.dir_label.pack(side="left")
@@ -904,7 +914,7 @@ class App:
 
         # 帮助按钮（最右上角，图标点击打开帮助窗口）
         _flat_button(ctrl, text="❓", command=self._show_help, width=3,
-                     font=(FONT_MONO, theme.FS_ICON)).pack(side="right", padx=(0, 12))
+                     font=(FONT_EMOJI, theme.FS_ICON)).pack(side="right", padx=(0, 12))
 
         # 中英语言切换按钮（点一下切换界面语言）——「仅中文」产品不显示
         self.lang_btn = None
@@ -960,7 +970,7 @@ class App:
     {"total_tokens": 0, "prompt_tokens": 0, "completion_tokens": 0,
      "cached_tokens": 0, "requests": 0}))
         stat_label = tk.Label(stat, textvariable=self.stat_var,
-                              font=(FONT_MONO, 9), fg="#64748b", anchor="w")
+                              font=(FONT_MONO, theme.FS_STAT), fg="#64748b", anchor="w")
         stat_label.pack(side="left")
         # 点击统计栏 = 清零
         stat_label.bind("<Button-1>", lambda e: self._reset_usage())
@@ -969,13 +979,14 @@ class App:
 
         # 动态状态徽标：空闲/进行中（转轮）/完成（✓），与统计栏同行居右
         self.status_badge = tk.Label(stat, text=_t("status.idle"),
-                                     font=(FONT_MONO, 9), fg="#94a3b8",
+                                     font=(FONT_MONO, theme.FS_STAT), fg="#94a3b8",
                                      anchor="e")
         self.status_badge.pack(side="right")
         # 附件按钮：放在「空闲」徽标前面（同 pack side=right，后 pack 者在其左）
+        # 字号用 FS_STAT（与同行统计/徽标一致，不用 FS_TOOLBAR——大两号很扎眼）
         self.attach_btn = _flat_button(stat, text=_t("top.attach"),
                                        command=self._pick_attachments,
-                                       font=(FONT_MONO, theme.FS_TOOLBAR))
+                                       font=(FONT_MONO, theme.FS_STAT))
         self.attach_btn.pack(side="right", padx=(0, 8))
         self._badge_after = None
         self._badge_idx = 0
@@ -1529,6 +1540,7 @@ class App:
         self.file_tree.bind("<<TreeviewSelect>>", self._on_file_select)
         self.file_tree.bind("<Button-1>", self._on_file_click)
         self.file_tree.bind("<Button-3>", self._on_file_right)
+        self._bind_file_tree_drag()   # 文件树条目可拖拽加入对话
 
         # 记录启动宽度基准（点开编辑自动扩到半屏的比较用，见 _editor_auto_expand）
         self._editor_startup_w = 0
@@ -1656,6 +1668,78 @@ class App:
         name_lbl.bind("<Button-1>", _press, add="+")
         name_lbl.bind("<B1-Motion>", _motion)
         name_lbl.bind("<ButtonRelease-1>", _release)
+
+    def _bind_file_tree_drag(self):
+        """文件树条目可拖拽：按住文件拖到聊天输入区/消息区放下 = 加入对话。
+
+        效果等同右键「添加到对话」（追加到待发送附件栏）；无位移的普通点击
+        仍走 _on_file_click（选中/展开/双击打开），不触发拖拽。
+        目录与空白区不可拖（与右键菜单一致：仅文件可加入对话）。
+        """
+        drag = {"sx": 0, "sy": 0, "moved": False, "ghost": None, "path": None}
+
+        def _item_file_path(y):
+            """返回鼠标 y 坐标对应条目的文件路径；目录/空白返回 None。"""
+            try:
+                iid = self.file_tree.identify_row(y)
+            except Exception:            # noqa: BLE001
+                iid = ""
+            if not iid:
+                iid = self.file_tree.focus()
+            if not iid:
+                return None
+            vals = self.file_tree.item(iid, "values")
+            if not vals or len(vals) < 2:
+                return None
+            if str(vals[1]).strip().lower() == "true":   # 目录：不拖
+                return None
+            return vals[0] or None
+
+        def _press(e):
+            drag["sx"], drag["sy"] = e.x_root, e.y_root
+            drag["moved"] = False
+            drag["path"] = _item_file_path(e.y)
+
+        def _motion(e):
+            # 未超过阈值视为点击，不弹拖影
+            if abs(e.x_root - drag["sx"]) < 6 and abs(e.y_root - drag["sy"]) < 6:
+                return
+            if not drag["path"]:
+                return
+            drag["moved"] = True
+            if drag["ghost"] is None:
+                g = tk.Toplevel(self.root)
+                g.overrideredirect(True)
+                try:
+                    g.attributes("-topmost", True)
+                except Exception:    # noqa: BLE001
+                    pass
+                tk.Label(g, text="📄 " + os.path.basename(drag["path"]),
+                         bg=self._TAB_ON, fg=self._TAB_FG_ON,
+                         font=(FONT_UI, 9), padx=8, pady=4).pack()
+                drag["ghost"] = g
+            try:
+                drag["ghost"].geometry(f"+{e.x_root + 10}+{e.y_root + 10}")
+            except Exception:        # noqa: BLE001
+                pass
+
+        def _release(e):
+            ghost = drag["ghost"]
+            drag["ghost"] = None
+            if ghost is not None:
+                try:
+                    ghost.destroy()
+                except Exception:    # noqa: BLE001
+                    pass
+            if not drag["moved"] or not drag["path"]:
+                return
+            if self._point_over_widget(self.input, e.x_root, e.y_root) or                self._point_over_widget(self.chat, e.x_root, e.y_root):
+                self._add_selected_to_chat(drag["path"])
+            drag["path"] = None
+
+        self.file_tree.bind("<Button-1>", _press, add="+")
+        self.file_tree.bind("<B1-Motion>", _motion)
+        self.file_tree.bind("<ButtonRelease-1>", _release)
 
     def _file_restyle(self):
         for view_id, (tab, name_lbl, cls_lbl) in self._file_tabs.items():
@@ -3828,32 +3912,29 @@ class App:
         if not _shot.available():
             self._set_status("截图不可用：需 tkinter + Pillow")
             return
+        self._set_status("📷 截图：拖选区域，回车保存 / ESC 取消")
         import threading as _th, sys as _sys
         def _work():
-            path = None
             if not _sys.platform.startswith("win32") and hasattr(_shot, "portal_capture"):
-                # Linux：portal 真抓屏 → 再弹标注界面（qwen-cordis 风格）→ 确认进附件/取消
+                # Linux(Wayland)：portal 真抓屏 → 标注窗确认（保持原路径）
                 try:
                     raw = _shot.portal_capture()
                 except Exception:        # noqa: BLE001
                     raw = None
                 if raw:
-                    def _after_annotate(annotated):
-                        self._on_shot_done(annotated)
-                    self.root.after(0, lambda: self._open_annotate_modal(raw, _after_annotate))
+                    self.root.after(0, lambda r=raw: self._open_annotate_modal(r, self._on_shot_done))
                 else:
                     self.root.after(0, lambda: self._on_shot_done(None))
-            else:
-                # Windows/macOS：抓全屏 → 居中模态标注窗（与 Linux 一致），不弹全屏覆盖层
-                try:
-                    raw = _shot.grab_fullscreen()
-                except Exception:        # noqa: BLE001
-                    raw = None
-                if raw:
-                    self.root.after(0, lambda: self._open_annotate_modal(raw, self._on_shot_done))
-                else:
-                    self.root.after(0, lambda: self._on_shot_done(None))
-        self._set_status("📸 截图：拖选区域保存（回车/选区），ESC 取消")
+                return
+            # Windows/macOS：微信式——覆盖层按显示器几何 1:1 盖住每一块屏幕，
+            # 直接在屏上拖选区域并标注，回车保存为临时 PNG 后自动进附件栏；
+            # 覆盖层在独立进程里跑（capture 子进程），不占本窗口主循环。
+            try:
+                path = _shot.capture()
+            except Exception as e:        # noqa: BLE001
+                self.root.after(0, lambda msg=str(e): self._set_status("截图失败：" + msg))
+                return
+            self.root.after(0, lambda p=path: self._on_shot_done(p))
         _th.Thread(target=_work, daemon=True).start()
 
     def _open_annotate_modal(self, image_path, on_done):
@@ -4955,7 +5036,7 @@ class App:
 
 def _setup_fonts(root):
     """根据系统已安装字体重选 FONT_MONO / FONT_UI（跨平台）。"""
-    global FONT_MONO, FONT_UI
+    global FONT_MONO, FONT_UI, FONT_EMOJI
     try:
         import tkinter.font as tkfont
         families = set(tkfont.families(root))
@@ -4968,6 +5049,7 @@ def _setup_fonts(root):
 
         FONT_MONO = pick(_MONO_CANDIDATES, "TkFixedFont")
         FONT_UI = pick(_UI_CANDIDATES, "TkDefaultFont")
+        FONT_EMOJI = pick(_FONT_EMOJI_CANDIDATES, FONT_UI)   # 没彩色 emoji 时回退正文字体（显示为黑字形但不报错）
     except Exception:  # noqa: BLE001
         pass  # 查询失败则保留默认，界面仍可用
 

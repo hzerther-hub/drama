@@ -34,6 +34,7 @@ SP_1, SP_2, SP_3, SP_4 = 4, 8, 12, 16
 # ---------------- 字号（工具条统一，不能忽大忽小） ----------------
 FS_TOOLBAR = 11   # 工具条文字按钮统一字号（模型/语言/字体/附件/发送…）
 FS_ICON = 11      # 工具条纯图标按钮统一字号（与文字按钮同大小）
+FS_STAT = 9       # 底部统计/状态行统一字号（token 统计、空闲徽标、附件按钮同行同号）
 
 
 def apply(root, base_font: str = "TkDefaultFont", mono_font: str = "TkFixedFont"):

@@ -44,9 +44,9 @@ def test_devtool_local_is_full():
         assert prof.feature(k) is True
 
 
-def test_novelwriter_no_editor():
+def test_novelwriter_features():
     prof = products.load_profile("novelwriter")
-    assert prof.feature("editor") is False
+    assert prof.feature("editor") is True
     assert prof.feature("gpulocal") is False
     assert prof.feature("rag") is True
     assert prof.feature("dispatch") is True

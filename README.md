@@ -1,195 +1,120 @@
-# Local AI Studio
+# Local AI Writer
 
 **English** | [简体中文](README.zh-CN.md)
 
-A local coding assistant with a **Tkinter GUI**, a **local Qwen** backend (DFlash2-accelerated), and streaming function-calling. The UI is **bilingual (English by default)** — switch via the model menu → 🌐 Language, persisted in the `language` field of `models.json` (`en`/`zh`).
+**Local AI Writer** is a desktop AI writing studio for **short-drama screenplays (短剧) and web novels (网文)** — a Tkinter GUI backed by any OpenAI-compatible model, with streaming chat and an agent that actually reads and writes your manuscript files in a project directory. Python 3.12+, Linux / Windows / macOS.
 
-Local GPU model management is built in via the embedded `gpulocal/` panel (start/stop/switch models, live GPU/system/hardware status).
+Everything runs on your machine: no account, no bundled cloud service. Your manuscripts leave the computer only if you point the app at a cloud endpoint you configure yourself. The UI is bilingual (English / 简体中文) — switch via the model menu → 🌐 Language, persisted in `models.json`.
 
-> 📊 **Hardware & models write-up**: [2080Ti Second Spring — Qwen3.8-27B (DFlash2) / Qwen3-VL-32B / Ornith-1.5-35B-A3B](docs/2080ti-second-spring.md) — how two RTX 2080 Ti (44 GiB, NVLink) run three local models, and why llama.cpp over vLLM on this rig.
+> This repo is the standalone home of the writing product, carved out of the **Local AI Studio** kernel ("one kernel, multiple products"). The default product is `novelwriter` — `python main.py` boots straight into the writing UI. The sibling profiles (`devtool`, `devtool_local`, `quant`, `devrag`) still ship in `products/` as kernel by-products; see [Products](#products-one-kernel-many-faces).
 
-## Screenshots
+## Screenshot
 
-<table>
-  <tr>
-    <td align="center"><img src="docs/screenshots/local-model-panel.png" width="420" alt="Local Model Panel"><br><em>Embedded local model panel</em></td>
-    <td align="center"><img src="docs/screenshots/main.png" width="560" alt="Main UI"><br><em>Main coding interface</em></td>
-  </tr>
-</table>
+![Main UI](docs/screenshots/main.png)
+
+## Current status
+
+**v0.1 — kernel migration.** The full creation kernel below works today: agent chat that writes real files, multi-root knowledge base, attachments, sessions, voice input, model management. The writing-specific panels from the roadmap (chapter tree, character cards, beat templates) are not built yet — [Roadmap](#roadmap).
+
+## Why a writing studio on an agent kernel
+
+Most AI writing tools confine you to a chat box and a copy button. Here the agent has hands:
+
+- **Your manuscript is a project directory.** Drafts, outlines, and settings live as plain files; the model uses `read_file` / `write_file` to revise chapter 12 in place instead of re-printing the whole script into a chat bubble.
+- **A knowledge base keeps the canon straight.** Index your worldbuilding docs, character sheets, and previous volumes in a persistent multi-root KB; the model retrieves the relevant fragments itself (`kb_search`) instead of you re-pasting settings into every prompt.
+- **Reference material goes in as attachments.** docx/pdf/txt/md/csv are analyzed in place; zips are extracted with a manifest; images go to vision models.
+- **Long serials don't blow the context.** Three-stage compaction (1M-token budget by default) keeps a running story coherent, and the stats bar shows what you're spending.
 
 ## Features
 
-- **Streaming chat** — body & reasoning stream live, progress spinner while running
-- **Tool calling** — the model autonomously calls 8 built-in tools for coding tasks
-- **Web search** — `web_search` tool (DuckDuckGo, zero deps, no API key needed)
-- **MCP external tools** — connect any local stdio / remote HTTP MCP server, tools auto-discovered
-- **📎 Attachment vision** — send images with a message (needs a vision model), audio/video by path
-- **Embedded media** — inline images, GIFs, audio player, video thumbnails in chat
-- **Copyable chat** — selectable text, Ctrl+C, right-click menu (copy / select all)
-- **Auto attachment analysis** — txt/md/csv inlined; docx/pdf text extracted; zip/tar.gz extracted to `extract/` with a file manifest; rar/7z handled via `run_shell`
-- **Multi-session** — auto-save, history switching, per-directory grouping, global search
-- **Context compaction** — auto truncate/collapse long conversations (DeepSeek Harness style)
-- **Token stats** — usage, cache hit rate, fast-reply savings shown live
-- **Cache layer** — SQLite / memory backends, duplicate requests answered instantly
-- **Codebase index** — semantic search over the project (opencode-codebase-index style)
-- **Model management** — multiple providers, add/edit/delete, custom endpoints, vision models
-- **🖥 Local GPU models** — embedded `gpulocal/` panel; start/stop/switch local models from the model dropdown, live status
-- **🔗 Auto link fetching** — image URLs downloaded for vision; web pages fetched for the model (background thread)
-- **Voice input** — one button: hold to talk (release to transcribe) or quick-tap for auto-pause (local Whisper)
-- **Bundled fonts** — JetBrains Mono + Noto Sans CJK shipped, consistent across platforms
-- **Three permission modes** — read-only / ask every time / always allow
-- **Workspace switching** — switch projects, relative paths based on the selected dir
-- **Cross-platform** — Linux / Windows / macOS
+- **Streaming chat** — body & reasoning stream live; tool calls shown as cards
+- **File-backed writing** — agent reads/writes files inside the chosen workspace; drafts survive the chat
+- **Multi-root knowledge base (RAG)** — index 设定/素材/往期作品 directories into SQLite; TF-IDF retrieval with optional embedding boost; `kb_search` tool + optional auto-inject into context
+- **Attachments** — multi-select files with a message; txt/md/csv inlined, docx/pdf text-extracted, zip/tar.gz extracted with a file manifest; images downscaled to ≤1568px and sent to vision models (`"vision": true`)
+- **Inline media** — images/GIFs displayed, audio player, video thumbnails in chat; text selectable, Ctrl+C / right-click copy
+- **Auto link fetching** — image URLs in a message are downloaded for vision; web pages are fetched and summarized for the model (background thread)
+- **Web search** — `web_search` over DuckDuckGo, zero deps, no API key
+- **Smart dispatch** — `call_model` tool delegates a heavy subtask (a brutal plot surgery, image understanding) to a stronger configured model; targets (simple / high-end / vision) managed in a panel
+- **Voice input** — one button: hold to talk, or quick-tap for auto-pause detection (local Whisper, faster-whisper)
+- **Multi-session** — auto-save at send time, per-directory grouping, global search across projects
+- **Context compaction** — over-budget conversations auto-truncate tool results, then collapse old rounds into summaries (system + first question + recent rounds kept)
+- **Cache layer** — identical requests answered instantly; SQLite (persists) or in-memory backend; live token / cache-hit / fast-reply stats
+- **Model management** — multiple providers, add/edit/delete, custom endpoints, `/models` auto-fetch, per-model vision & reasoning-effort flags
+- **Three permission modes** — readonly / ask (default) / always, with sandbox guardrails
+- **Workspace switching** — switch between works; relative paths follow the selected directory
+- **Bundled fonts** — JetBrains Mono + Noto Sans CJK, consistent across platforms
+
+## A writing session
+
+```bash
+mkdir 我的短剧 && python main.py     # then pick 我的短剧 as the workspace
+```
+
+1. Attach `大纲.docx` and ask: *“把大纲拆成 20 集的分集梗概，保存到 分集梗概.md”*
+2. *“读分集梗概，把第 1 集扩写成 1200 字短剧剧本，存到 剧本/EP01.md，开场 30 秒内放钩子”*
+3. Next day, open the session again (auto-saved), or switch to another work's directory — sessions are grouped per project.
+4. Point the KB at your 设定集/ folder so character settings are retrieved automatically while writing.
+
+## Tools
+
+| Tool | What it does | Permission |
+|---|---|---|
+| `read_file` | Read a file (with line numbers) | read |
+| `write_file` | Write / overwrite a file | **write** |
+| `list_dir` | List a directory | read |
+| `glob_search` | Find files by wildcard | read |
+| `grep_search` | Full-text search across the work | read |
+| `index_search` | Semantic search over the workspace index | read |
+| `web_search` | Search the web (DuckDuckGo, no key) | read |
+| `run_shell` | Run a shell command (e.g. ffmpeg, pandoc exports) | **write** |
+| `call_model` | Delegate a subtask to another configured model | read |
+| `kb_search` | Retrieve fragments from the multi-root knowledge base | read |
+
+(`lsp_diagnostics` also ships as a kernel tool; it only matters for code-like projects.)
 
 ## Architecture
 
 ```
-local-ai-studio/
-├── config.py     # endpoints, models, generation params, system prompt
-├── llm.py        # OpenAI-compatible streaming client (tool_calls chunking + usage)
-├── tools.py      # 8 built-in tools + executor + permission tiers
-├── mcp.py        # MCP client (stdio subprocess / remote HTTP + tool discovery)
-├── media.py      # media support (images/GIF/audio/video thumbnails)
-├── agent.py      # function-calling loop + permissions + usage + multimodal
-├── context.py    # context compaction (budget + truncate + collapse)
-├── cache.py      # cache layer (SQLite/memory, auto fallback)
-├── codeindex.py  # codebase index (chunk + TF-IDF + SQLite search)
-├── localmodels.py# local GPU model bridge (embedded gpulocal registry + cross-platform controls)
-├── gpulocal/     # embedded local model panel (local_model_panel.py + services/ + setup.ps1)
-├── weblinks.py   # auto-fetch links (image download / web page text)
-├── sessions.py   # multi-session (save/switch/search/dir binding)
-├── voice.py      # voice input (PortAudio + local Whisper)
-├── ui.py         # Tkinter UI (models/cache/MCP/sessions + media + help)
-├── fonts/        # bundled fonts (JetBrains Mono + Noto Sans CJK)
-└── main.py       # entry point
+main.py → ui.launch() → App (Tkinter mainloop; one worker thread per message)
+   └─ agent.Agent.run()     synchronous function-calling loop
+        ├─ llm.py           OpenAI-compatible SSE streaming client (stdlib urllib)
+        ├─ tools.py         built-in tools + executor + permission tiers + sandbox
+        ├─ codera.py        multi-root knowledge base (TF-IDF + optional embedding)
+        ├─ context.py       token budget + three-stage compaction
+        ├─ cache.py         LLM/tool cache (SQLite WAL / memory)
+        ├─ sessions.py      session DB (SQLite, per-directory grouping)
+        ├─ attach.py        docx/pdf/zip attachment analysis
+        ├─ voice.py         PortAudio capture + faster-whisper
+        └─ weblinks.py      auto-fetch links from messages
 ```
 
-Data flow:
+**Agent loop**: stream chat request (with tool schemas) → tool_calls? → approval in `ask` mode → execute sandboxed → feed results back → repeat (≤ 12 rounds) → final text streamed.
 
-```
-user question → Agent.run()
-  → llm.stream_chat() streaming request (with tools schema)
-  → model returns tool_calls or final text
-  → if tool calls: approval (ask mode) → tools.execute_tool() → feed back results
-  → loop until no more tool calls
-  → final text returned and streamed
-```
+## Products: one kernel, many faces
 
-## Tools
+The repo root is the shared kernel; `products/<name>/profile.json` defines a product's brand and feature gates (`import products; products.feature("rag")`). This repo's default product:
 
-| Tool | Description | Permission |
+| Gate | Value | Meaning |
 |---|---|---|
-| `read_file` | Read a file (with line numbers) | read |
-| `list_dir` | List a directory | read |
-| `glob_search` | Find files by wildcard | read |
-| `grep_search` | Search contents | read |
-| `index_search` | Semantic codebase search (relevant code chunks) | read |
-| `web_search` | Web search (DuckDuckGo, no API key) | read |
-| `write_file` | Write / overwrite a file | **write** |
-| `run_shell` | Run a shell command | **write** |
+| `dispatch` | ✅ | smart routing + `call_model` enabled |
+| `rag` | ✅ | knowledge base + `kb_search` enabled |
+| `attachments` / `sessions` / `voice` | ✅ | attachments, multi-session, voice input |
+| `gpulocal` | ❌ | no embedded local-GPU model panel |
+| `mcp` | ❌ | no external MCP tool servers |
+| `editor` | ✅ | side file tree + editor panel |
 
-## Web search
+Sibling profiles (`devtool`, `devtool_local`, `quant`, `devrag`) are still runnable for kernel development: `LOCAL_AI_PRODUCT=devtool python3 main.py`, or `python3 products/<name>/run.py`.
 
-`web_search` uses the DuckDuckGo HTML endpoint (title/URL/snippet, default 8, max 10), no dependencies or API key. Ask anything needing current info (versions, news, docs) and the model calls it automatically.
+## Getting started
 
-## 🖥 Local GPU models (embedded gpulocal)
-
-The local model panel lives under `gpulocal/` and is maintained inside this repo, making Local AI Studio a local model launcher. One-click setup per platform: `bash gpulocal/setup.sh` (Ubuntu/NVIDIA: CUDA + llama.cpp-dflash2 + systemd), `powershell -File gpulocal/setup.ps1` (Windows), `bash gpulocal/setup-mac.sh` (macOS: Homebrew llama.cpp with Metal); each supports a `download`-only mode for models.
-
-- **Auto registry sync** — on startup reads gpulocal's `MODELS` registry (mtime-cached) into `models.json` as `gpulocal-8097/8098/8099` providers; edits on the other side follow automatically
-- **One-click start/stop from the dropdown** — each local model shows a live status dot (`●` ready / `◐` loading / `○` stopped); submenu ▶ Start / ■ Stop / ↻ Restart; auto-selects a model once ready
-- **Serial management** — starting one model stops the others (44 GiB VRAM fits one at a time)
-- **Two-way dynamic sync** — both sides operate the same `systemctl --user` services (Linux) / background processes (Windows/macOS); a change on either side is reflected within ~4s
-- Models with `mmproj` are auto-marked vision (`vision: true`)
-- Degrades gracefully if `gpulocal/` is absent
-
-## MCP external tools
-
-Model menu → 🔌 Manage MCP servers. Two transports:
-
-- **Local stdio** — spawned as a subprocess (`command` + `args`), JSON-RPC 2.0 line-delimited
-- **Remote streamable HTTP** — `url` (optional `headers`), POST, JSON or SSE
-
-Config lives in `~/.config/local-ai-studio/mcp.json`:
-
-```json
-{"servers": {"name": {"command": "...", "args": [], "url": "", "headers": {}, "enabled": true, "readonly": false}}}
-```
-
-Tools are named `mcp_<server>_<tool>` and merged into the model's tool table. `readonly` servers skip approval and are cacheable; unmarked are writable (ask mode needs confirm). MCP images are saved to `media/` and embedded. Example: `python3 examples/mcp_echo_server.py`.
-
-## 📎 Attachments & media
-
-- **📎 Attach** — multi-select images/audio/video with the message (privacy bar has per-item ✕)
-- **Images** — converted to data URLs for vision (needs `"vision": true` on the model), downscaled to ≤1568px
-- **Audio/video** — attach path + note; model analyzes with ffmpeg/ffprobe
-- **Inline in chat** — images shown, GIFs animated, audio with ▶/⏸ player, video with ffmpeg first-frame thumbnail; double-click or "Open externally"; MCP images embedded too
-- Chat text selectable, Ctrl+C, right-click copy/select-all
-- Optional `pip install Pillow` for more formats (PNG/GIF work without it)
-
-## Cache (speed + save tokens)
-
-- **LLM reply cache** — identical model+messages+tools requests return cached reply
-- **Tool result cache** — read-only tools cached within a short window
-- **Two backends** (model menu → ⚡ Manage cache): SQLite (`cache.db`, survives restart) and memory (process-only); `auto` uses SQLite, falling back to memory
-- Settings in `~/.config/local-ai-studio/cache.json`; UI can tune TTLs (LLM 3600s / tool 300s) and clear the cache
-- Stats bar shows token usage, KV cache hit rate, fast-reply count
-
-## Codebase index (opencode-codebase-index style)
-
-Not stuffing code into the prompt — parse → chunk → vectorize (TF-IDF) → SQLite. The model uses `index_search` to fetch relevant chunks (with file+line), then reads them, saving many tokens.
-
-- **Code-aware tokenization** — camelCase/snake_case split, Chinese comments bigram-indexed, en+zh queries supported
-- **Incremental** — skips unchanged files by mtime/size; builds on first use
-- **Storage** — `~/.config/wellfuture-coder/index/<workspace-hash>.db`, skips .git/node_modules/build
-- UI: model menu → 🗂 Rebuild code index
-
-## Multi-session
-
-- **Auto-save** — persisted at send time (crash-safe)
-- **Directory binding** — each session records its workspace; menu shows only the current dir's sessions
-- **Global search** — by title/content across projects (＋ New session → 🔍)
-- **Auto-switch dir** — opening another project's session switches to its workspace
-- Storage: `~/.config/local-ai-studio/sessions/*.json` (OpenAI-format messages)
-
-## Context compaction (DeepSeek Harness style)
-
-Over budget (~24000 tokens) auto-compacts and notifies before/after usage:
-
-1. Stage 0: truncate any oversized tool result (old rounds 400 chars / recent 3000)
-2. Stage 1: further compress old tool results if still over
-3. Stage 2: collapse middle rounds into summary lines (keep system + first question + last 2 rounds)
-
-## Model management
-
-- Multiple providers (local Qwen / Qwen2.5-VL vision / DeepSeek / custom OpenAI-compatible)
-- Add: one endpoint + key can hold multiple model IDs; auto-fetch the endpoint's `/models` list
-- Edit: display name / model ID / endpoint / key
-- Vision: set `"vision": true` to accept image attachments
-- Config: `~/.config/local-ai-studio/models.json` (old wellfuture-coder / qwen-coder dirs auto-migrate)
-
-## Token stats
-
-Bottom stats bar: token usage (in/out/think) & request count, KV cache hits, fast-reply count & estimated savings. Click to reset.
-
-## Permission modes
-
-| Mode | Behavior |
-|---|---|
-| `readonly` | Only read-only tools; no writes |
-| `ask` (default) | Confirm before write tools (Allow / Deny) |
-| `always` | Run directly, no confirmation |
-
-## Running (Linux / Windows / macOS)
-
-Tkinter GUI (built into Python), PortAudio (sounddevice) for recording, faster-whisper for local ASR — cross-platform, no OS-specific deps.
+**Requires Python 3.12+.**
 
 ```bash
-pip install -r requirements.txt   # voice deps; skippable if not using voice
+pip install -r requirements.txt   # numpy/sounddevice/faster-whisper (voice), psutil, tkinterdnd2
 python3 main.py                   # Windows: python main.py
 ```
 
-**Requires Python 3.12+.** On Windows, if the system Python is older, run the app from a venv; if no 3.12 interpreter is installed, get one via Miniconda (Windows-only guidance):
+Voice deps are optional — skip them (and the voice button degrades) if you don't dictate. On Windows without a 3.12 interpreter, bootstrap via Miniconda:
 
 ```bat
 D:\miniconda3\Scripts\conda.exe create -n py312 python=3.12 -y
@@ -198,43 +123,51 @@ D:\miniconda3\Scripts\conda.exe create -n py312 python=3.12 -y
 .venv\Scripts\python main.py
 ```
 
-> Windows missing PortAudio? Reinstall sounddevice: `pip uninstall sounddevice && pip install sounddevice`.
+> Windows missing PortAudio? `pip uninstall sounddevice && pip install sounddevice`.
 > macOS mic permission: System Settings → Privacy & Security → Microphone → allow Python/Terminal.
 
-**Config & data directory** — Linux/macOS: `~/.config/local-ai-studio/`; Windows: `%APPDATA%\local-ai-studio\`.
-Holds `models.json`, `mcp.json`, `cache.json`, `state.json`, `sessions/`, `index/`, `media/`.
-Old config dirs from previous names (`wellfuture-coder`, and the earlier `qwen-coder`) auto-migrate on first run.
+**Models** — first run seeds `models.json` with a local Qwen endpoint as default plus a DeepSeek placeholder. If you don't run a local backend, open model management (模型 menu → add provider) and enter any OpenAI-compatible endpoint with your own key: DeepSeek, Kimi, GLM, OpenAI, or a local llama.cpp/vLLM server. Mark vision models with `"vision": true` to use image attachments.
 
-### Packaging
+**Config & data directory** — Linux/macOS: `~/.config/local-ai-studio/`; Windows: `%APPDATA%\local-ai-studio\` (shared kernel name; legacy `wellfuture-coder` / `qwen-coder` dirs auto-migrate). Holds `models.json`, `cache.json`, `state.json`, `sessions/`, `index/`, `media/`, `extract/`.
+
+## Packaging
 
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --windowed --name LocalAIStudio main.py   # Linux / Windows
-pyinstaller --windowed --name LocalAIStudio main.py             # macOS
+python packaging/build.py novelwriter          # → dist/LocalAIWriter-<platform>/
+python packaging/build.py novelwriter --clean  # rebuild without cache
 ```
 
-> `LocalAIStudio.spec` is included: it excludes torch/faster-whisper/onnx, dropping size from ~3.9GB to ~69MB. Use `pyinstaller LocalAIStudio.spec`.
+The build is product-aware: `profile.json` decides the exe name (`LocalAIWriter`) and drops the AI heavy stack (torch/faster-whisper/onnx excluded, ~tens of MB). CI (`.github/workflows/test.yml`) runs tests and builds packages on ubuntu / windows / macos.
 
-## Backend dependency
+## Roadmap
 
-Local Qwen inference service (`qwen38-27b-q8.service`, port 8097, DFlash2 speculative decoding).
+From [`PLAN-五产品矩阵.md`](PLAN-五产品矩阵.md) (product 3; market analysis in [`PLAN-市场前景分析.md`](PLAN-市场前景分析.md)):
 
-- Endpoint: `http://127.0.0.1:8097/v1`
-- Model: `qwen3.8-27b-q8`
-- Vision model: `qwen2.5-vl-7b` (`http://127.0.0.1:8099/v1`, `"vision": true`)
+| Version | Scope |
+|---|---|
+| v0.1 ✅ | Kernel migration: chat, model management, sessions, file-backed writing (this repo today) |
+| v0.5 | Creation skeleton: chapter-tree panel, character cards, worldbuilding cards, style templates, serialization management; txt/docx export |
+| v1.0 | Template library: short-drama hook structures (first-3-episode hooks, paywall cliffhangers), web-novel pacing templates (golden three chapters, payoff density); shareable configs |
+| v1.1 | Sensitivity/compliance check, multi-model comparative drafting, rewrite/expand/continue commands |
 
 ## Security notes
 
-- `run_shell` / `write_file` really execute system commands / write files; default `ask` mode is safest
-- Built-in sandbox guardrails (on by default, `LAS_SANDBOX=off` to disable): `write_file` is confined to the workspace; `run_shell` rejects obviously destructive commands (rm -rf /, mkfs, disk format, shutdown, fork bombs). Guardrail, not OS-level isolation
-- Tool exec timeout (`TOOL_EXEC_TIMEOUT=60s`) and round cap (`MAX_TOOL_ROUNDS=20`) prevent runaway loops
-- No full sandbox yet — avoid letting the model process untrusted instructions in `always` mode
+- `run_shell` / `write_file` really execute commands and write files; the default **ask** mode confirms every write
+- Sandbox guardrails (default on, `LAS_SANDBOX=off` to disable): `write_file` is confined to the workspace; `run_shell` rejects obviously destructive commands (rm -rf /, mkfs, shutdown, fork bombs). Guardrails, not OS-level isolation
+- Tool execution timeout (60 s) and a 12-round cap prevent runaway loops
+- Avoid `always` mode when feeding the model untrusted text
 
 ## Development
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest tests/ -q     # 122 unit tests; LLM transport mocked, HOME/APPDATA isolated
+python -m py_compile *.py            # syntax gate (same as CI)
+python -m pytest tests/ -q           # 294 unit tests; LLM transport mocked, HOME/APPDATA isolated
 ```
 
-CI: `.github/workflows/test.yml` runs py_compile + pytest on ubuntu / windows / macos × Python 3.12. UI dialogs live in `ui_panel_*.py` modules (extracted from `ui.py`); `App` methods are thin delegates.
+Core modules import stdlib only; optional deps (numpy, faster-whisper, psutil, Pillow, tkinterdnd2) degrade gracefully. UI dialogs live in `ui_panel_*.py`. Conventions in [`AGENTS.md`](AGENTS.md).
+
+## License
+
+[Mulan Permissive Software License, v2](LICENSE) (木兰宽松许可证，第2版).
