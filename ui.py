@@ -21,6 +21,7 @@ from tkinter import filedialog, scrolledtext, ttk
 import agent as agent_mod
 import attach
 import config
+import errlog
 import media
 import mcp
 import theme
@@ -5929,6 +5930,13 @@ def launch():
     _setup_fonts(root)
     theme.apply(root, base_font=FONT_UI, mono_font=FONT_MONO)   # 设计令牌 + ttk 定制
     app = App(root)
+    # 异常统一上报：Tk 回调 + 工作线程异常写日志（CONFIG_DIR/logs/ui_errors.log）
+    # 并提示到状态栏——GUI 里异常只进 stderr、界面无感，是难排查问题的根源
+    _reporter = errlog.ErrorReporter(
+        os.path.join(config.CONFIG_DIR, "logs"),
+        notify=lambda msg: root.after(0, lambda: app._set_status(msg)))
+    _reporter.install_tk(root)
+    _reporter.install_threading()
     if dnd_ready:
         _register_dnd_targets(app)
     else:
