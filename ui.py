@@ -4093,14 +4093,26 @@ class App:
     ]
 
     def _show_command_menu(self, anchor=None):
-        menu = tk.Menu(self.root, tearoff=0, font=(FONT_UI, 10))
-        for cmd, dkey, _key in self._COMMANDS:
-            menu.add_command(label=f"{cmd:<16} {_t(dkey)}",
-                             command=lambda c=cmd: self._insert_command(c))
-        tgt = anchor or self.input
-        try: x = tgt.winfo_rootx(); y = tgt.winfo_rooty() + tgt.winfo_height()
-        except Exception: x = y = 0
-        menu.tk_popup(x, y)
+        """➕ 按钮：斜杠命令速查菜单。
+
+        用统一的候选弹窗（原生气泡菜单在窗口底部会向下展开到屏幕外，
+        看起来像"点了没反应"）。点选命令 → 插入输入框（可补参数后发送）。
+        """
+        cmds = [c for c, _d, _k in self._COMMANDS]
+        rows = [(f"{c}   {_t(d)}", _emoji_icon("26a1"))
+                for c, d, _k in self._COMMANDS]
+        self._command_menu_cmds = [c for c, _d, _k in self._COMMANDS]
+        try:
+            pop, lb = self._show_token_popup(rows, self._on_command_menu_pick)
+            self._command_menu_pop = pop
+            self._command_menu_lb = lb
+        except Exception as e:        # noqa: BLE001
+            self._set_status(str(e))
+
+    def _on_command_menu_pick(self, i):
+        cmd = getattr(self, "_command_menu_cmds", [None] * (i + 1))[i]
+        if cmd:
+            self._insert_command(cmd)
 
     def _insert_command(self, cmd):
         if self._placeholder_active:
@@ -4258,7 +4270,15 @@ class App:
             word = m.group(0) if m else "/"
             start = f"{line_start}+{max(0, len(prefix) - len(word))}c"
             self.input.delete(start, idx)
-            self.input.insert(start, self._cmd_cands[self._cmd_idx] + " ")
+            # 优先取弹窗列表的实际选中项（键盘选择/鼠标点选都一致）
+            i = self._cmd_idx
+            try:
+                sel = self._cmd_lb.selection()
+                if sel:
+                    i = _tv_index(self._cmd_lb)
+            except Exception:        # noqa: BLE001
+                pass
+            self.input.insert(start, self._cmd_cands[i] + " ")
         except Exception:            # noqa: BLE001
             pass
         self._cmd_hide()
@@ -4294,6 +4314,29 @@ class App:
 
         lb.bind("<MouseWheel>", _wheel)
         lb.bind("<Button-1>", _pick)
+        # 弹窗自身也能响应键盘（万一焦点被 Windows 分给了弹窗）：
+        lb.bind("<Return>", lambda _e: _confirm())
+        lb.bind("<KP_Enter>", lambda _e: _confirm())
+        lb.bind("<Tab>", lambda _e: _confirm())
+        lb.bind("<Up>", lambda _e: _nav(-1))
+        lb.bind("<Down>", lambda _e: _nav(1))
+        lb.bind("<Escape>", lambda _e: _esc())
+        # 弹窗一旦获得焦点立刻弹回输入框（Windows 新建 Toplevel 会抢焦点，
+        # 这是『回车选不中』的根源——键事件全进了弹窗而不是输入框）
+        pop.bind("<FocusIn>", lambda _e: self.input.focus_set())
+
+        def _nav(d):
+            _tv_select(lb, _tv_index(lb) + d)
+            return "break"
+
+        def _confirm():
+            on_pick(_tv_index(lb))
+            return "break"
+
+        def _esc():
+            self._cmd_hide()
+            self._at_hide()
+            return "break"
 
         # ---- 定位：先算可用空间，再决定上/下 ----
         pop.update_idletasks()
@@ -4311,6 +4354,27 @@ class App:
             y = max(8, caret_y - h - 6)    # 放不下 → 改到光标上方
         x = max(8, min(x, sw - w - 8))
         pop.geometry("%dx%d+%d+%d" % (w, h, x, y))
+        # Windows 上新弹出的 Toplevel 会抢走键盘焦点——必须立刻把焦点还给
+        # 输入框，否则回车/方向键事件进不了输入框的绑定
+        # （Treeview 原生只响应方向键，这就是"回车选不中"的根源）
+        try:
+            self.input.focus_set()
+        except Exception:            # noqa: BLE001
+            pass
+        # 焦点持续校正：与窗口管理器抢焦点的过程有竞态，弹窗存活期间
+        # 每 80ms 把焦点拉回输入框一次（弹窗销毁后循环自然停止）
+        def _reassert_focus():
+            if pop.winfo_exists():
+                try:
+                    if root.focus_displayof() is not self.input:
+                        self.input.focus_set()
+                except Exception:    # noqa: BLE001
+                    pass
+                pop.after(80, _reassert_focus)
+        _reassert_focus()
+        # 双保险：即便焦点被抢到列表上，回车也直接确认
+        lb.bind("<Return>", lambda _e: (on_pick(_tv_index(lb)), "break")[1])
+        lb.bind("<KP_Enter>", lambda _e: (on_pick(_tv_index(lb)), "break")[1])
         return pop, lb
 
     def _at_hide(self):
@@ -4491,9 +4555,17 @@ class App:
             pass
 
     def _input_on_keyrelease(self, event):
-        # 弹窗打开时：导航/确认/重扫描全部已在 KeyPress 阶段处理
+        # 兜底确认：KeyRelease 时弹窗还在且是回车 → 说明 KeyPress 阶段的
+        # 确认没有送达（焦点被抢），在这里补一次。若 KeyPress 已确认，
+        # 弹窗已销毁，这里自然跳过（幂等）。
         cmd_open = getattr(self, "_cmd_pop", None) and self._cmd_pop.winfo_exists()
         at_open = getattr(self, "_at_pop", None) and self._at_pop.winfo_exists()
+        if (cmd_open or at_open) and event.keysym in ("Return", "KP_Enter"):
+            if cmd_open:
+                self._cmd_insert()
+            else:
+                self._at_insert()
+            return "break"
         if cmd_open or at_open:
             return None
         k = event.keysym
@@ -5181,17 +5253,20 @@ class App:
         import ui_panel_sessions
         ui_panel_sessions.show_all(self)
 
-    def _new_session(self):
-        """开始新会话：立即在当前工作区创建并落盘，使其出现在侧栏项目下。"""
+    def _new_session(self, persist: bool = True):
+        """开始新会话：persist=True 时立即在当前工作区落盘（出现在侧栏）；
+        删除工作区后的重建请传 persist=False——否则新会话马上把刚删除的
+        工作区分组又顶回来，看起来像"删不掉"。"""
         import sessions as sess_mod
         self.session_id = sess_mod.new_id()
         self.session_title = _t("sess.new")
         self.messages = []
-        try:
-            sess_mod.save(self.session_id, [], self.session_title,
-                          workspace=tools.get_workspace())
-        except Exception:            # noqa: BLE001
-            pass
+        if persist:
+            try:
+                sess_mod.save(self.session_id, [], self.session_title,
+                              workspace=tools.get_workspace())
+            except Exception:            # noqa: BLE001
+                pass
         self.clear()
         self.sess_btn.config(text=_t("top.sessions"))
         self._set_status(_t("sess.started"))
