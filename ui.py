@@ -4314,29 +4314,36 @@ class App:
 
         lb.bind("<MouseWheel>", _wheel)
         lb.bind("<Button-1>", _pick)
-        # 弹窗自身也能响应键盘（万一焦点被 Windows 分给了弹窗）：
-        lb.bind("<Return>", lambda _e: _confirm())
-        lb.bind("<KP_Enter>", lambda _e: _confirm())
-        lb.bind("<Tab>", lambda _e: _confirm())
-        lb.bind("<Up>", lambda _e: _nav(-1))
-        lb.bind("<Down>", lambda _e: _nav(1))
-        lb.bind("<Escape>", lambda _e: _esc())
-        # 弹窗一旦获得焦点立刻弹回输入框（Windows 新建 Toplevel 会抢焦点，
-        # 这是『回车选不中』的根源——键事件全进了弹窗而不是输入框）
-        pop.bind("<FocusIn>", lambda _e: self.input.focus_set())
 
-        def _nav(d):
-            _tv_select(lb, _tv_index(lb) + d)
-            return "break"
+        # ---- 键盘：弹窗接管全部按键（焦点显式给列表）----
+        # 设计：lb.focus_set() 让键盘事件确定性地进入弹窗；回车/Tab 确认、
+        # ↑↓ 选择、Esc 关闭、字符/退格转发回输入框后重过滤。
+        # （输入框自己的 KeyPress 处理器仍保留，覆盖点击输入框后的场景。）
+        def _popup_key(e):
+            k = e.keysym
+            if k in ("Return", "KP_Enter", "Tab"):
+                on_pick(_tv_index(lb))
+                return "break"
+            if k == "Escape":
+                self._cmd_hide()
+                self._at_hide()
+                return "break"
+            if k in ("Up", "Down"):
+                _tv_select(lb, _tv_index(lb) + (1 if k == "Down" else -1))
+                return "break"
+            if k == "BackSpace":
+                self.input.delete("insert-1c", "insert")
+                self.root.after(0, self._popup_rescan)
+                return "break"
+            if e.char and e.char.isprintable():
+                self.input.insert("insert", e.char)
+                self.root.after(0, self._popup_rescan)
+                return "break"
+            return None
 
-        def _confirm():
-            on_pick(_tv_index(lb))
-            return "break"
-
-        def _esc():
-            self._cmd_hide()
-            self._at_hide()
-            return "break"
+        for _w in (pop, lb):
+            _w.bind("<Key>", _popup_key)
+        lb.focus_set()
 
         # ---- 定位：先算可用空间，再决定上/下 ----
         pop.update_idletasks()
@@ -4382,6 +4389,7 @@ class App:
             try: self._at_pop.destroy()
             except Exception: pass
         self._at_pop = None
+        self._at_lb = None
 
     def _at_candidates(self, frag: str) -> list:
         """工作区文件/目录候选：@ 后的片段做子串过滤（忽略大小写）。"""
@@ -4432,10 +4440,12 @@ class App:
             sel = self._at_lb.selection()
             if sel:
                 path = self._at_cands[_tv_index(self._at_lb)]
-        except Exception:            # noqa: BLE001
-            pass
+        except Exception as e:       # noqa: BLE001
+            self._set_status(f"@ 确认异常(读取选中): {e}")
+            return
         self._at_hide()
         if not path:
+            self._set_status("@ 确认异常: 未取到选中项")
             return
         try:
             idx = self.input.index("insert")
@@ -4447,8 +4457,12 @@ class App:
                 start = f"{line_start}+{m.start(0)}c"
                 self.input.delete(start, idx)
                 self.input.insert(start, "@" + path + " ")
-        except Exception:            # noqa: BLE001
-            pass
+                self._set_status(f"已插入 @{path}")
+            else:
+                self.input.insert("insert", "@" + path + " ")
+                self._set_status(f"已插入 @{path}（光标处未找到 @token，已追加）")
+        except Exception as e:       # noqa: BLE001
+            self._set_status(f"@ 确认异常(插入): {e}")
 
     def _expand_at_refs(self, text: str) -> str:
         """发送前把 @相对路径 展开为绝对路径（仅存在的文件才替换），
@@ -4535,8 +4549,8 @@ class App:
                 pop, lb = self._show_token_popup(rows, _pick_cmd)
                 self._cmd_pop = pop
                 self._cmd_lb = lb
-            except Exception:        # noqa: BLE001
-                pass
+            except Exception as e:       # noqa: BLE001
+                self._set_status(f"命令弹窗错误: {e}")
             return
         self._at_hide()
         if not m_at:
@@ -4551,21 +4565,13 @@ class App:
             pop, lb = self._show_token_popup(rows, lambda _i: self._at_insert())
             self._at_pop = pop
             self._at_lb = lb
-        except Exception:            # noqa: BLE001
-            pass
+        except Exception as e:       # noqa: BLE001
+            self._set_status(f"弹窗错误: {e}")
 
     def _input_on_keyrelease(self, event):
-        # 兜底确认：KeyRelease 时弹窗还在且是回车 → 说明 KeyPress 阶段的
-        # 确认没有送达（焦点被抢），在这里补一次。若 KeyPress 已确认，
-        # 弹窗已销毁，这里自然跳过（幂等）。
+        # 弹窗打开时：导航/确认/重扫描全部已在 KeyPress 阶段处理
         cmd_open = getattr(self, "_cmd_pop", None) and self._cmd_pop.winfo_exists()
         at_open = getattr(self, "_at_pop", None) and self._at_pop.winfo_exists()
-        if (cmd_open or at_open) and event.keysym in ("Return", "KP_Enter"):
-            if cmd_open:
-                self._cmd_insert()
-            else:
-                self._at_insert()
-            return "break"
         if cmd_open or at_open:
             return None
         k = event.keysym

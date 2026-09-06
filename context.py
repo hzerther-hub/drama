@@ -30,6 +30,7 @@ _CJK_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿　-〿＀-￯]")
 IMAGE_TOKEN_ESTIMATE = 1100
 
 
+
 def estimate_text_tokens(s: str) -> int:
     """估算单段文本的 token 数：tiktoken 精确值优先，否则 CJK/ASCII 分段启发式。"""
     if not s:
@@ -48,6 +49,7 @@ def estimate_tokens(messages: list) -> int:
     n = 0
     for m in messages:
         c = m.get("content") or ""
+	
         if isinstance(c, str):
             n += estimate_text_tokens(c) + 8
         elif isinstance(c, list):
