@@ -39,7 +39,7 @@ def tv_index(lb) -> int:
 # ---------------- 按键决策矩阵（纯函数） ----------------
 
 def decide(popup: str | None, k: str, char: str,
-           shift: bool, ctrl: bool):
+           shift: bool, ctrl: bool, exact_cmd: bool = False):
     """返回输入框对一次 KeyPress 的处置。
 
     popup: None | "cmd" | "at"（命令/文件候选弹窗）。
@@ -55,6 +55,9 @@ def decide(popup: str | None, k: str, char: str,
     is_enter = k in ("Return", "KP_Enter") or char in ("\r", "\n")
     if popup:
         if is_enter or k == "Tab":
+            # 已输入完整命令（如 /help）时回车=直接发送，而非原样重插候选
+            if popup == "cmd" and is_enter and exact_cmd:
+                return "send"
             return ("confirm", popup)
         if k == "Escape":
             return ("hide", popup)
@@ -96,7 +99,11 @@ class InputController:
         char = getattr(event, "char", "") or ""
         shift = bool(event.state & 0x0001)
         ctrl = bool(event.state & 0x0004)
-        act = decide(popup, k, char, shift, ctrl)
+        word = self._cmd_word() if popup == "cmd" else ""
+        cand = self._cmd_cands[self._cmd_idx] if (
+            popup == "cmd" and self._cmd_cands) else None
+        exact_cmd = popup == "cmd" and bool(word) and word == cand
+        act = decide(popup, k, char, shift, ctrl, exact_cmd)
         if act is None:
             return None
         if act == "send":
@@ -122,6 +129,14 @@ class InputController:
             else:
                 self._at_idx = tv_select(self._at_lb, self._at_idx + act[1])
         return "break"
+
+    def _cmd_word(self) -> str:
+        """光标前正在输入的 /命令 token（未匹配到返回空串）。"""
+        inp = self.app.input
+        idx = inp.index("insert")
+        line_start = inp.index(f"{idx} linestart")
+        m = re.search(r"/[a-z]*$", inp.get(line_start, idx))
+        return m.group(0) if m else ""
 
     def on_keyrelease(self, event):
         """KeyRelease：弹窗未开时检测 / 或 @ token，打开候选弹窗。"""

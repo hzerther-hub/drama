@@ -4471,7 +4471,7 @@ class App:
             self._route_btn.config(text="🔀")
         if hasattr(self, "bottom_route_btn") and self.bottom_route_btn:
             self.bottom_route_btn.config(text="🔀")
-        self._set_status(_t("route.status", mode=txt))
+        self._set_status(_t("route.status", mode=self._route_mode_text()))
 
     def _route_complex(self, text: str) -> str | None:
         """应用层判定任务是否复杂/超本地能力 → 返回应委派的云端模型 key，否则 None。

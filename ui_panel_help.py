@@ -38,6 +38,8 @@ def show(app):
     win.update_idletasks()
     win.lift(app.root)
     win.focus_force()
+    win.attributes("-topmost", True)
+    win.after(150, lambda: win.attributes("-topmost", False))
     ui._make_modal(win, app.root)
     # 顶部拖动条
     grip = tk.Frame(win, bg=theme.BORDER, height=26)
