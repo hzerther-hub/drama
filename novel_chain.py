@@ -50,7 +50,7 @@ _DEAD = {
     "chapters": "章节执行",
 }
 
-_MAX_CHAPTERS = 12
+_MAX_CHAPTERS = 999              # 硬上限（长篇连载量级）
 _MAX_WORDS = 160
 _MAX_LEDGER = 60
 _MAX_OPEN_FORESHADOW = 8
@@ -62,7 +62,6 @@ _SYS_WRITER = "你是网文作者，直接输出章节正文，正文前第一�
 _SYS_REVIEWER = (
     "你是网文审校，按五个维度逐项检查：连贯性、角色OOC、设定冲突、"
     "风格漂移、节奏。输出规则：问题行以「问题：」开头（可多条）；"
-    "新事实以「事实：」开头；新埋伏笔以「伏笔：」开头；"
     "回收了旧伏笔以「偿还：」开头（写伏笔关键词）；全部通过则第一行输出 PASS。")
 _SYS_DRAMA = ("你是短剧编剧。把小说章节改编为竖屏短剧：输出「场景」行、"
               "人物对白（角色名：台词）、每场结尾「镜头：」行给出景别与时长。")
@@ -245,6 +244,19 @@ def new_pipeline(idea: str, total: int, model_key: str,
              "ledger": [], "foreshadows": [], "arc_summaries": [],
              "pid": pid, "file": os.path.join(ws, "novels", pid + ".md")}
     return Pipeline(pid, idea[:20], STAGES, state)
+
+
+def extend_total(p: Pipeline, n: int):
+    """加写 n 章：调大总数；已完成流水线回到可续跑状态。"""
+    n = max(1, int(n))
+    p.state["total_chapters"] = min(
+        int(p.state.get("total_chapters", 0)) + n, _MAX_CHAPTERS)
+    if p.pipeline_status == "done" and p.cursor is None \
+            and len(p.state.get("chapters", [])) < p.state["total_chapters"]:
+        p.pipeline_status = "paused"
+        p.cursor = "chapters"
+    p.updated = time.time()
+    p.save()
 
 
 # ---------------- 衍生：重写 / 短剧 / 拆书 ----------------

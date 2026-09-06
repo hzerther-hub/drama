@@ -764,12 +764,14 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "novel.status_running": {"en": "✍ Novel production running…", "zh": "✍ 小说生产进行中…"},
     "novel.pause_review": {"en": "⏸ 「{stage}」done, paused", "zh": "⏸ 「{stage}」完成，已暂停"},
     "novel.usage":  {"en": "Sub: start <idea> [chapters] | ok | adjust <fb> | "
-                          "status | drama a-b | rewrite N [fb] | deconstruct <file>",
+                          "status | drama a-b | rewrite N [fb] | extend N | deconstruct <file>",
                      "zh": "子命令：start <一句灵感> [章数] | stop | resume [pid] | "
-                           "status | drama 起-止 | rewrite 章号 [反馈] | deconstruct <txt>"},
+                           "status | drama 起-止 | rewrite 章号 [反馈] | extend 加写N章 | deconstruct <txt>"},
     "novel.img_need": {"en": "Image service not configured (LAS_IMAGE_BASE_URL / LAS_IMAGE_MODEL)",
                        "zh": "未配置图像服务（LAS_IMAGE_BASE_URL / LAS_IMAGE_MODEL）"},
-    "novel.cover_done": {"en": "✅ Cover generated: {file}", "zh": "✅ 封面已生成：{file}"},
+        "novel.extend_done": {"en": "Total chapters now: {n}. /novel ok to continue",
+                        "zh": "总章数已加到 {n}，/novel ok 继续写"},
+"novel.cover_done": {"en": "✅ Cover generated: {file}", "zh": "✅ 封面已生成：{file}"},
     "novel.publish_usage": {"en": "Usage: /novel publish txt|md|epub|html|wattpad|webhook [a-b]",
                             "zh": "用法：/novel publish txt|md|epub|html|wattpad|webhook [起-止]"},
     "novel.export_done": {"en": "✅ Exported: {file}", "zh": "✅ 已导出：{file}"},

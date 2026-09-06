@@ -168,3 +168,14 @@ def test_drama_no_chapters_raises(fake, tmp_path):
     p = _start()
     with pytest.raises(novel_chain.StageStopError):
         novel_chain.drama_adapt(p.state, 1, 2)
+
+
+def test_extend_total_then_continue(fake, tmp_path):
+    p = _start(total=1)
+    assert p.run() == "done"
+    n_before = len(p.state["chapters"])
+    novel_chain.extend_total(p, 2)
+    assert p.state["total_chapters"] == 3
+    assert p.pipeline_status == "paused" and p.cursor == "chapters"
+    assert p.run() == "done"
+    assert len(p.state["chapters"]) == 3

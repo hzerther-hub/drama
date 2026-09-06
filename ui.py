@@ -4270,7 +4270,7 @@ class App:
                 return
             auto = bool(re.search(r"\s+(?:auto|自动)\s*$", rest, re.I))
             rest = re.sub(r"\s+(?:auto|自动)\s*$", "", rest)
-            m = re.search(r"\s+(\d{1,2})$", rest)
+            m = re.search(r"\s+(\d{1,3})$", rest)
             total = int(m.group(1)) if m else 3
             idea = rest[:m.start()].strip() if m else rest.strip()
             if self._running or getattr(self, "_novel_busy", False):
@@ -4337,6 +4337,23 @@ class App:
                     self.root.after(0, lambda: setattr(
                         self, "_novel_busy", False))
             threading.Thread(target=drama_work, daemon=True).start()
+        elif head == "extend":
+            p = getattr(self, "_novel_pipe", None)
+            try:
+                n = int(rest.strip())
+            except ValueError:
+                self._set_status(_t("novel.usage"))
+                return
+            if not p:
+                self._set_status(_t("novel.none"))
+                return
+            novel_chain.extend_total(p, n)
+            self._append("✅ " + _t("novel.extend_done",
+                                    n=p.state["total_chapters"]) + "\n", "meta")
+            if p.pipeline_status == "paused" and not getattr(
+                    self, "_novel_busy", False):
+                self._novel_busy = True
+                self._novel_run(p)
         elif head == "rewrite":
             p = getattr(self, "_novel_pipe", None)
             m = re.match(r"^(\d+)(?:\s+(.*))?$", rest.strip())
