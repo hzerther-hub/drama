@@ -41,10 +41,10 @@ STRINGS: dict = {
 
     # —— 输入占位 / 状态 ——
     "input.placeholder": {
-        "en": "Type a message… (Enter to send, Shift+Enter for newline)\n"
+        "en": "Type a message… (Shift+Enter to send, Enter for newline)\n"
               "· paste an image/file path (C:\\ or file://) to auto-attach\n"
               "· 🎤 hold to talk / auto transcribe · 📎 attach · ❓ full usage",
-        "zh": "输入消息…（回车发送，Shift+回车换行）\n"
+        "zh": "输入消息…（Shift+回车发送，回车换行）\n"
               "· 粘贴图片/文件路径（C:\\ 或 file://）自动转附件\n"
               "· 🎤 按住说话 / 自动识别 · 📎 附件识图 · ❓ 查看完整使用方式",
     },
@@ -61,20 +61,18 @@ STRINGS: dict = {
     "model.mcp":       {"en": "🔌 Manage MCP servers…", "zh": "🔌 管理 MCP 服务器…"},
     "model.cache":     {"en": "⚡ Manage cache…", "zh": "⚡ 管理缓存…"},
     "model.index":     {"en": "🗂 Rebuild code index…", "zh": "🗂 重建代码索引…"},
-    "model.gpu":       {"en": "🖥 Open local model panel (gpulocal)", "zh": "🖥 打开本地模型面板（gpulocal）"},
     "model.reasoning": {"en": "🧠 Reasoning effort", "zh": "🧠 推理等级"},
+    "model.current":   {"en": "✓ Current: {name}", "zh": "✓ 当前：{name}"},
+    "model.menu.cloud":   {"en": "☁ {name}  ({n})", "zh": "☁ {name}  ({n})"},
+    "model.menu.empty":   {"en": "— 暂无模型 —", "zh": "— 暂无模型 —"},
+    "settings.menu":   {"en": "⚙ Settings", "zh": "⚙ 设置"},
+    "settings.btn":    {"en": "⚙ Settings", "zh": "⚙ 设置"},
     "model.reasoning.default": {"en": "Model default", "zh": "模型默认"},
     "model.reasoning.set": {"en": "Reasoning effort set: {v}", "zh": "推理等级已设置：{v}"},
     "think.toggle":   {"en": "🧠 Think", "zh": "🧠 思考"},
     "think.off":      {"en": "🌫 No think", "zh": "🌫 不思考"},
     "think.on":       {"en": "🧠 Think on", "zh": "🧠 思考开"},
     "think.set":      {"en": "Thinking mode: {v}", "zh": "思考模式：{v}"},
-    "model.local.start": {"en": "▶ Start (auto-stop others, switch when ready)", "zh": "▶ 启动（自动停其它，就绪后切换）"},
-    "model.local.stop":  {"en": "■ Stop", "zh": "■ 停止"},
-    "model.local.restart": {"en": "↻ Restart", "zh": "↻ 重启"},
-    "model.local.use":    {"en": "✓ Switch to this model", "zh": "✓ 切换到此模型"},
-
-    # —— 语言 ——
     "lang.menu":       {"en": "🌐 Language", "zh": "🌐 语言"},
     "lang.en":         {"en": "English", "zh": "English"},
     "lang.zh":         {"en": "中文", "zh": "中文"},
@@ -116,6 +114,18 @@ STRINGS: dict = {
                         "zh": "🧠 推理等级"},
     "add.reasoning_hint": {"en": "blank = model default; none/low/medium/high/xhigh/max",
                            "zh": "留空 = 模型默认；none/low/medium/high/xhigh/max"},
+    "add.context_window": {"en": "Context window (tokens; 0 = unset)",
+                           "zh": "上下文窗口（token；0 = 不设置）"},
+    "add.max_tokens":     {"en": "Max output tokens (0 = unset, capped to 32768)",
+                           "zh": "最大输出 token（0 = 不设置，上限 32768）"},
+    "add.tokens_hint":    {"en": "blank/0 → fall back to heuristic (16K local / global cloud)",
+                           "zh": "留空或 0 → 按启发式兜底（本地 16K / 云端全局）"},
+    "add.api_type":       {"en": "API type",
+                           "zh": "API 类型"},
+    "add.api_type_hint":  {"en": "Anthropic uses /messages + x-api-key; OpenAI uses /chat/completions",
+                           "zh": "Anthropic 走 /messages + x-api-key；OpenAI 走 /chat/completions"},
+    "add.endpoint_fixed": {"en": "Endpoint: {url} · API type: {api} (follows the provider)",
+                           "zh": "端点：{url} · API 类型：{api}（随 Provider，修改请编辑 Provider）"},
     "add.fetch":       {"en": "🔍 Fetch model list (auto-fill)", "zh": "🔍 获取模型列表（自动填入）"},
     "add.require":     {"en": "base_url and at least one model ID required",
                         "zh": "base_url 和至少一个模型 ID 必填"},
@@ -131,17 +141,18 @@ STRINGS: dict = {
                         "zh": "🧠 推理等级"},
     "edit.reasoning_hint": {"en": "blank = model default; none/low/medium/high/xhigh/max",
                             "zh": "留空 = 模型默认；none/low/medium/high/xhigh/max"},
+    "edit.context_window": {"en": "Context window (tokens; 0 = unset)",
+                            "zh": "上下文窗口（token；0 = 不设置）"},
+    "edit.max_tokens":     {"en": "Max output tokens (0 = unset, capped to 32768)",
+                            "zh": "最大输出 token（0 = 不设置，上限 32768）"},
+    "edit.tokens_hint":    {"en": "blank/0 → fall back to heuristic (16K local / global cloud)",
+                            "zh": "留空或 0 → 按启发式兜底（本地 16K / 云端全局）"},
+    "edit.api_type":       {"en": "API type",
+                            "zh": "API 类型"},
+    "edit.api_type_hint":  {"en": "Anthropic uses /messages + x-api-key; OpenAI uses /chat/completions",
+                            "zh": "Anthropic 走 /messages + x-api-key；OpenAI 走 /chat/completions"},
     "edit.fetch":      {"en": "🔍 Fetch / refresh model list", "zh": "🔍 获取 / 刷新模型列表"},
     "edit.done":       {"en": "Updated model: {name}", "zh": "已修改模型：{name}"},
-    "local.ready": {"en": "● Local model ready: {name}", "zh": "● 本地模型已就绪：{name}"},
-    "local.err": {"en": "✖ Local model exited: {name} (check journalctl --user -u)", "zh": "✖ 本地模型异常退出：{name}（journalctl --user -u 查看）"},
-    "local.switched": {"en": "● Switched to local model: {name}", "zh": "● 已切换到本地模型：{name}"},
-    "local.starting": {"en": "▶ Starting local model: {name} (stops others, takes tens of seconds)…", "zh": "▶ 启动本地模型：{name}（先停其它，加载需几十秒）…"},
-    "local.stopping": {"en": "■ Stopping local model: {name}", "zh": "■ 停止本地模型：{name}"},
-    "local.restart": {"en": "↻ Restarting local model: {name}", "zh": "↻ 重启本地模型：{name}"},
-    "local.panel_err": {"en": "✖ gpulocal panel load failed", "zh": "✖ 内嵌 gpulocal 加载失败"},
-    "local.panel_none": {"en": "✖ gpulocal ModelPanel not found", "zh": "✖ 内嵌 gpulocal 未找到 ModelPanel"},
-    "local.panel_open_err": {"en": "✖ Failed to open local panel: {e}", "zh": "✖ 本地面板打开失败：{e}"},
     "ui.thinking": {"en": "Thinking…", "zh": "思考中…"},
     "ui.processing": {"en": "Processing", "zh": "处理中"},
     "ui.busy": {"en": "Busy", "zh": "进行中"},
@@ -186,7 +197,7 @@ STRINGS: dict = {
     "chat.welcome": {
         "en": """👋 Welcome to Local AI Studio
 
-· Type below, Enter to send, Shift+Enter for newline
+· Type below, Shift+Enter to send, Enter for newline
 · 📎 Attach/Vision (status bar): send images for recognition, plus audio/video;
   pasting a file path (C:\\... or file:///) into the message auto-attaches it
 · 🎤 Voice input: hold to talk, release to finish; a quick tap switches to
@@ -199,7 +210,7 @@ STRINGS: dict = {
 """,
         "zh": """👋 欢迎使用 Local AI Studio
 
-· 下方输入消息，Enter 发送，Shift+Enter 换行
+· 下方输入消息，Shift+回车发送，回车换行
 · 📎 附件/识图（状态行）：发图片可识图，也支持音频/视频；
   消息里粘贴文件路径（C:\\... 或 file:///）会自动转为附件
 · 🎤 语音输入：长按说话、松手结束；轻点一下则静音 1.5 秒自动结束
@@ -213,7 +224,7 @@ STRINGS: dict = {
         "en": """Local AI Studio — Help
 
 [Basics]
-· Type in the box, press Enter to send; Shift+Enter for newline
+· Type in the box, press Shift+Enter to send; Enter for newline
 · "Clear" only clears the view, does not delete the session; sessions are managed in the top "＋ New session" menu
 · Context toggle (top bar): "🔗 Keep context" continues the session history by default;
   "⚡ Standalone" sends each message without history — saves tokens and keeps questions
@@ -277,7 +288,7 @@ External MCP servers add more tools (model menu → 🔌 Manage MCP servers)
         "zh": """Local AI Studio — 使用帮助
 
 【基本操作】
-· 输入框回车发送；Shift+回车换行
+· 输入框 Shift+回车发送；回车换行
 · 「清空」只清屏，不删会话；会话在顶部「＋ 新会话」菜单管理
 · 上下文开关（顶部工具栏）：默认「🔗 续上下文」延续会话历史；
   切为「⚡ 独立提问」后每条消息不带历史单独发送——省 token、问题互不干扰，
@@ -587,6 +598,59 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "mm.add":         {"en": "＋ Add", "zh": "＋ 添加"},
     "mm.edit":        {"en": "✏ Edit", "zh": "✏ 编辑"},
     "mm.delete":      {"en": "🗑 Delete", "zh": "🗑 删除"},
+    # —— 两栏：providers / models ——
+    "mm.providers":            {"en": "Providers",          "zh": "服务提供商"},
+    "mm.models":               {"en": "Models",             "zh": "模型"},
+    "mm.add_provider":         {"en": "＋ Add provider",   "zh": "＋ 添加 Provider"},
+    "mm.edit_provider":        {"en": "✏ Edit provider",    "zh": "✏ 编辑 Provider"},
+    "mm.rename_provider":      {"en": "✏ Edit provider",    "zh": "✏ 编辑 Provider"},
+    "mm.del_provider":         {"en": "🗑 Delete provider", "zh": "🗑 删除 Provider"},
+    "mm.col_ctx":              {"en": "Context",  "zh": "上下文"},
+    "mm.col_out":              {"en": "Max out",  "zh": "最大输出"},
+    "mm.use":                  {"en": "✓ Use this model",  "zh": "✓ 选用此模型"},
+    "mm.in_use":               {"en": "✓ In use",          "zh": "✓ 使用中"},
+    "mm.pick_provider":        {"en": "Select a provider on the left first",
+                                "zh": "请先在左侧选择一个 Provider"},
+    "mm.pick_model":           {"en": "Select a model on the right first",
+                                "zh": "请先在右侧选择一个模型"},
+    "mm.provider_current":     {"en": "✓ current", "zh": "✓ 当前"},
+    # —— 添加 / 重命名 provider 对话框 ——
+    "dlg.add_provider":        {"en": "Add provider",       "zh": "添加 Provider"},
+    "dlg.edit_provider":       {"en": "Edit provider — {id}",
+                                "zh": "编辑 Provider — {id}"},
+    "dlg.rename_provider":     {"en": "Edit provider — {id}",
+                                "zh": "编辑 Provider — {id}"},
+    "add_provider.id":         {"en": "Provider id (a-z, 0-9, _, -)",
+                                "zh": "Provider id（小写字母、数字、_、-）"},
+    "add_provider.id_hint":    {"en": "Lowercase letters, digits, _ or -; must be unique",
+                                "zh": "小写字母、数字、_ 或 -；不能与现有重复"},
+    "add_provider.name":       {"en": "Display name", "zh": "显示名"},
+    "add_provider.name_hint":  {"en": "Shown in dropdowns (must be unique)",
+                                "zh": "下拉里显示的名字（不能与现有重复）"},
+    "add_provider.base_url":   {"en": "API endpoint base_url (optional)",
+                                "zh": "API 端点 base_url（可后填）"},
+    "add_provider.api_key":    {"en": "API Key (blank for local)",
+                                "zh": "API Key（本地可留空）"},
+    "add_provider.api_type":   {"en": "API type", "zh": "API 类型"},
+    "add_provider.done":       {"en": "Added provider: {name}", "zh": "已添加 Provider：{name}"},
+    "add_provider.fail":       {"en": "Add provider failed: {e}",
+                                "zh": "添加 Provider 失败：{e}"},
+    "rename_provider.new":     {"en": "New display name", "zh": "新显示名"},
+    "rename_provider.dup":     {"en": "Another provider already uses this name",
+                                "zh": "已有 Provider 使用该名称"},
+    "rename_provider.empty":   {"en": "Name cannot be empty", "zh": "名称不能为空"},
+    "rename_provider.missing": {"en": "Provider not found: {id}",
+                                "zh": "未找到 Provider：{id}"},
+    "rename_provider.done":    {"en": "Renamed: {name}", "zh": "已重命名为：{name}"},
+    "edit_provider.done":      {"en": "Provider updated: {name}",
+                                "zh": "已更新 Provider：{name}"},
+    "rename_provider.fail":    {"en": "Rename failed: {e}", "zh": "重命名失败：{e}"},
+    "del_provider.confirm":    {"en": "Delete provider {name} and its {n} model(s)?",
+                                "zh": "删除 Provider {name} 及其 {n} 个模型？"},
+    "del_provider.deleted":    {"en": "Deleted provider: {name}",
+                                "zh": "已删除 Provider：{name}"},
+    "del_provider.missing":    {"en": "Provider not found: {id}",
+                                "zh": "未找到 Provider：{id}"},
     "add.base_first": {"en": "Fill in the endpoint base_url first", "zh": "请先填端点 base_url"},
     "add.fetching":   {"en": "🔍 Fetching model list…", "zh": "🔍 正在拉取模型列表…"},
     "edit.fetching":  {"en": "🔍 Fetching model list…", "zh": "🔍 正在获取模型列表…"},
@@ -671,7 +735,6 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "ui.dispatch_complex_switch": {"en": "Complex task → routed to {to} (was {on})", "zh": "复杂任务 → 已切到 {to}（原：{on}）"},
     "ui.dispatch_complex_status": {"en": "Routed complex task to {model}", "zh": "复杂任务已路由到 {model}"},
     "route.auto":   {"en": "🤖 Auto route", "zh": "🤖 自动"},
-    "route.local":  {"en": "▶ Local", "zh": "▶ 本地"},
     "route.cloud":  {"en": "☁ Cloud", "zh": "☁ 云端"},
     "route.status": {"en": "Routing: {mode}", "zh": "路由模式：{mode}"},
     "quant.llm_model": {"en": "LLM model:", "zh": "LLM 模型："},
@@ -694,6 +757,38 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "cmd.delete":   {"en": "Delete current session", "zh": "删除当前会话"},
     "cmd.refresh":  {"en": "Refresh files/sessions/models", "zh": "刷新文件/会话/模型"},
     "cmd.compact":  {"en": "Compact context", "zh": "压缩上下文"},
+    "cmd.init":     {"en": "Analyze workspace & create AGENTS.md", "zh": "分析项目并生成 AGENTS.md"},
+    "cmd.brainstorm": {"en": "Brainstorm ideas for a topic (/brainstorm 主题)",
+                       "zh": "头脑风暴（/brainstorm 主题）"},
+    "cmd.plan":     {"en": "Make an execution plan, no code changes (/plan 任务)",
+                     "zh": "制定执行计划，不改代码（/plan 任务）"},
+    "cmd.work":     {"en": "Execute the latest plan step by step (/work)",
+                     "zh": "按计划逐步执行（/work）"},
+    "cmd.loop":     {"en": "Work in a loop until done & verified (/loop 任务)",
+                     "zh": "循环执行直到完成且验证通过（/loop 任务）"},
+    "cmd.compress": {"en": "Compress session history (/compress)",
+                     "zh": "压缩会话历史（/compress）"},
+    "q.need_arg":   {"en": "Fill in the task after the command, then send",
+                     "zh": "请在命令后补全任务描述，再发送"},
+    "compress.short":  {"en": "Session too short to compress", "zh": "会话较短，无需压缩"},
+    "compress.working": {"en": "🧹 Compressing session…", "zh": "🧹 正在压缩会话…"},
+    "compress.done":   {"en": "🧹 Session compressed: {before} → {after} tokens",
+                        "zh": "🧹 会话已压缩：{before} → {after} tokens"},
+    "compress.fail":   {"en": "Compress failed: {e}", "zh": "压缩失败：{e}"},
+    "compress.prompt": {
+        "en": "Summarize the conversation below into a coherent brief. Keep: all user requests "
+              "and intents, decisions made, important file/code references, unfinished items. "
+              "Use bullet points, stay under 600 words, no commentary.",
+        "zh": "请把下面的对话历史压缩成一份连贯摘要，必须保留：用户的全部请求与意图、"
+              "已做出的决定、重要文件/代码引用、未完成事项。用要点列出，控制在 600 字以内，"
+              "不要附加评论。",
+    },
+    "compress.header": {"en": "[Summary of earlier conversation]\n",
+                        "zh": "【此前会话的摘要】\n"},
+    "compress.ack":    {"en": "OK, continuing from the summary above.",
+                        "zh": "好的，我已根据摘要恢复上下文，请继续。"},
+    "help.cmds_title": {"en": "Slash commands (type / in the input box):",
+                        "zh": "斜杠命令（在输入框输入 / 触发）："},
     "file.preview":   {"en": "Preview", "zh": "预览"},
     "file.edit":      {"en": "Edit", "zh": "编辑"},
     "time.now":      {"en": "now", "zh": "刚刚"},
@@ -738,6 +833,70 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "v.err":          {"en": "❌ Speech recognition failed: {e}", "zh": "❌ 语音识别失败: {e}"},
     "v.vad_hint":     {"en": "🎤 Recording, please speak (auto-stops after 1.5s of silence)…",
                        "zh": "🎤 录音中，请说话（静音 1.5 秒自动结束）…"},
+
+    # —— 模式命令的注入提示词（/init /brainstorm /plan /work /loop） ——
+    "init.prompt": {
+        "en": "Analyze the project in the current working directory and create an AGENTS.md "
+              "at the workspace root (use write_file) so future AI assistants can get up to speed. "
+              "1) Investigate first with list_dir/read_file: directory layout, README/config files, "
+              "build/test/run commands, key modules and responsibilities; "
+              "2) AGENTS.md must cover: project overview, common commands, architecture overview, "
+              "conventions & gotchas; keep it under 100 lines; only verified facts, no invention; "
+              "3) Register your steps with task_plan first; "
+              "4) After writing, spot-check with read_file.",
+        "zh": "请分析当前工作目录的项目，并用 write_file 在工作区根目录生成 AGENTS.md，"
+              "供后续 AI 助手快速了解本项目。要求："
+              "1) 先用 list_dir/read_file 调查：目录结构、README/配置文件、构建/测试/运行命令、"
+              "关键模块与职责；"
+              "2) AGENTS.md 覆盖：项目概述、常用命令、架构概览（核心模块及职责）、代码约定与注意事项；"
+              "控制在 100 行以内；只写有真实依据的信息，不要编造；"
+              "3) 先用 task_plan 登记调查与写作步骤；"
+              "4) 写完后用 read_file 抽查确认。",
+    },
+    "brainstorm.prompt": {
+        "en": "Enter BRAINSTORM mode for the topic below. Do NOT write or modify any files. "
+              "Produce 3-5 distinctly different ideas/approaches; for each: core idea, pros, "
+              "risks/costs, best-fit scenario. End with your recommendation + reasoning, and "
+              "1-2 clarifying questions about key unknowns. Topic:\n{arg}",
+        "zh": "进入头脑风暴模式：针对下面的主题给出 3~5 个明显不同的方案/创意。"
+              "不要写代码、不要改任何文件。每个方案说明：核心思路、优点、风险/代价、适用场景。"
+              "最后给出你的推荐与理由，并向用户提出 1~2 个澄清关键未知点的问题。主题：\n{arg}",
+    },
+    "plan.prompt": {
+        "en": "Enter PLAN mode for the task below: investigate with read-only tools, then produce a "
+              "detailed execution plan — do NOT modify any files. Requirements: 1) investigate relevant "
+              "code first; 2) step-by-step plan: for each step state which files change, what to do, "
+              "how to verify; 3) call task_plan to register the steps; 4) list risks and rollback "
+              "points; 5) end with 'plan ready — confirm or run /work'. Task:\n{arg}",
+        "zh": "进入计划模式：针对下面的任务制定详细执行计划，但不要修改任何文件。要求："
+              "1) 先用只读工具调查相关代码/文件；2) 给出分步计划：每步写清楚改哪些文件、做什么、"
+              "如何验证；3) 调用 task_plan 把步骤登记为任务清单；4) 指出风险与回滚点；"
+              "5) 结尾注明『计划完成，可直接确认或用 /work 执行』。任务：\n{arg}",
+    },
+    "work.prompt": {
+        "en": "Enter WORK mode: execute the most recent plan in this session step by step "
+              "(if a new task is given below, plan it with task_plan first, then execute). "
+              "Each step: state what you do → implement with tools → verify with tests/"
+              "lsp_diagnostics/run; update task_plan after each step; if a step fails, fix and "
+              "retry instead of skipping; only finish when all steps pass verification. "
+              "Task (optional):\n{arg}",
+        "zh": "进入执行模式：按本会话最近的计划逐步执行（下面给了新任务则先用 task_plan 规划再执行）。"
+              "每一步：先说明做什么 → 用工具实施 → 用测试/lsp_diagnostics/运行验证；"
+              "每完成一步调用 task_plan 更新状态；某步失败就修复后重试，不许跳过；"
+              "全部步骤验证通过后才给最终总结。任务（可选）：\n{arg}",
+    },
+    "loop.prompt": {
+        "en": "Enter AUTO-LOOP mode for the task below: keep running an implement→verify→fix loop "
+              "until ALL verification passes. 1) register the plan with task_plan; 2) implement each "
+              "step and verify immediately (tests/diagnostics/run); 3) on failure, fix and retry — "
+              "never skip or declare partial completion; 4) do not pause to ask questions — make "
+              "reasonable assumptions and record them; 5) when everything passes, output the final "
+              "summary with verification evidence. Task:\n{arg}",
+        "zh": "进入自动循环模式：对下面的任务持续执行『实现 → 验证 → 修复』循环，直到全部验证通过"
+              "才算完成。要求：1) 先用 task_plan 建立计划；2) 逐项实现并立即验证（测试/诊断/运行）；"
+              "3) 验证失败必须修复后重试，禁止跳过或宣告部分完成；4) 不要中途向用户提问——做出"
+              "合理假设并记录；5) 全部通过后输出最终总结与验证证据。任务：\n{arg}",
+    },
 }
 
 

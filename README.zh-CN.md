@@ -39,7 +39,11 @@
 - **多会话**——发送即落盘（崩溃不丢），按目录分组，跨项目全局搜索
 - **上下文压缩**——超预算自动截断工具结果，再把旧轮折叠为摘要（保留 system + 首问 + 最近几轮）
 - **缓存层**——重复请求秒回；SQLite（重启保留）/ 内存双后端；token、缓存命中、秒回次数实时统计
-- **模型管理**——多 provider、增删改、自定义端点、自动拉取 `/models`、逐模型 vision 与推理等级开关
+- **模型管理**——provider 优先的两栏管理器：按 Provider 分组、可重命名（唯一性校验）、可改端点/密钥/API 类型（OpenAI 兼容 & Anthropic 双协议）；逐模型配置 识图 / 推理等级 / 上下文窗口 / 最大输出 token，改完即生效
+- **快捷命令**——`/init` 生成 AGENTS.md、`/brainstorm` 头脑风暴、`/plan` 制定计划、`/work` 按计划执行、`/loop` 循环执行直到验证通过、`/compress` 压缩会话历史；输入 `/` 弹出联想
+- **@ 文件引用**——输入 `@` 弹出工作区文件/目录选择器（类 Cursor），选中的文件引用发送时自动转附件
+- **任务步骤面板**——多步任务先经 `task_plan` 生成功能级计划清单再执行，逐步勾选；工具审批内嵌聊天底部，不再弹窗
+- **回车换行，Shift+回车发送**——长文写作友好；Ctrl+回车 排队消息
 - **三档权限模式**——只读 / 每次询问（默认）/ 总是允许，带沙箱护栏
 - **工作目录切换**——多部作品间切换，相对路径跟随所选目录
 - **内置字体**——JetBrains Mono + Noto Sans CJK，三平台显示一致
@@ -68,6 +72,7 @@ mkdir 我的短剧 && python main.py     # 然后把 我的短剧 选为工作�
 | `web_search` | 联网搜索（DuckDuckGo，无需 Key） | 只读 |
 | `run_shell` | 执行 shell 命令（如 ffmpeg、pandoc 导出） | **可写** |
 | `call_model` | 把子任务委派给另一个已配置模型 | 只读 |
+| `task_plan` | 制定/更新任务计划（界面显示为任务步骤清单） | 只读 |
 | `kb_search` | 检索多根知识库 | 只读 |
 
 （`lsp_diagnostics` 也是内核自带工具；只在代码类项目里有用。）
@@ -77,7 +82,7 @@ mkdir 我的短剧 && python main.py     # 然后把 我的短剧 选为工作�
 ```
 main.py → ui.launch() → App (Tkinter 主循环；每条消息一个工作线程)
    └─ agent.Agent.run()     同步 function-calling 循环
-        ├─ llm.py           OpenAI 兼容 SSE 流式客户端（stdlib urllib）
+        ├─ llm.py           SSE 流式客户端：OpenAI 兼容 & Anthropic 双协议（stdlib urllib）
         ├─ tools.py         内置工具 + 执行器 + 权限分级 + 沙箱
         ├─ codera.py        多根知识库（TF-IDF + 可选 embedding）
         ├─ context.py       token 预算 + 三段式压缩
@@ -88,7 +93,7 @@ main.py → ui.launch() → App (Tkinter 主循环；每条消息一个工作线
         └─ weblinks.py      消息内链接自动取材
 ```
 
-**Agent 循环**：流式请求（带工具 schema）→ 有 tool_calls？→ `ask` 模式弹审批 → 沙箱内执行 → 结果回传 → 循环（≤ 12 轮）→ 最终文本流式显示。
+**Agent 循环**：流式请求（带工具 schema）→ 有 tool_calls？→ `ask` 模式在内嵌审批条确认 → 沙箱内执行 → 结果回传 → 循环（≤ 24 轮；用完强制一次「无工具」汇总，保证有最终结论）→ 最终文本流式显示。
 
 ## 产品：一个内核，多张面孔
 
@@ -155,7 +160,7 @@ python packaging/build.py novelwriter --clean  # 清缓存重打
 
 - `run_shell` / `write_file` 会真实执行命令和写文件；默认**每次询问**模式逐次确认
 - 沙箱护栏（默认开启，`LAS_SANDBOX=off` 关闭）：`write_file` 只允许写工作目录内；`run_shell` 拦截明显高危命令（rm -rf /、mkfs、关机、fork bomb）。护栏性质，非操作系统级隔离
-- 工具执行有 60 秒超时和 12 轮上限，防失控循环
+- 工具执行有 60 秒超时和 24 轮上限（用完强制汇总收尾），防失控循环
 - 让模型处理不可信文本时，避免使用「总是允许」模式
 
 ## 开发
@@ -163,7 +168,7 @@ python packaging/build.py novelwriter --clean  # 清缓存重打
 ```bash
 pip install -r requirements-dev.txt
 python -m py_compile *.py            # 语法门禁（与 CI 相同）
-python -m pytest tests/ -q           # 294 个单元测试；LLM 传输层 mock，HOME/APPDATA 隔离
+python -m pytest tests/ -q           # 350+ 单元测试；LLM 传输层 mock，HOME/APPDATA 隔离
 ```
 
 核心模块只依赖标准库；可选依赖（numpy、faster-whisper、psutil、Pillow、tkinterdnd2）缺失时自动降级。UI 对话框在 `ui_panel_*.py`。代码约定见[`AGENTS.md`](AGENTS.md)。

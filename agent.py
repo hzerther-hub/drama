@@ -352,6 +352,11 @@ class Agent:
                 except json.JSONDecodeError:
                     args = {}
 
+                # 计划工具：先让界面把任务步骤换成模型的计划，再执行确认
+                if name == "task_plan":
+                    self._emit({"type": "plan",
+                                "steps": args.get("steps") or []})
+
                 # 权限判断：ask 模式下可写工具（内置或 MCP）需审批
                 if self.mode == MODE_ASK and (tools.is_write_tool(name) or
                                               self._is_mcp_write(name)):
@@ -373,5 +378,49 @@ class Agent:
                 })
 
             self._emit({"type": "round", "n": round_no})
+
+        else:
+            # 工具轮次用完仍没给出最终回答：做一次"无工具"强制收尾，
+            # 避免分析类任务读了一圈文件却没有任何结论。
+            self._emit({"type": "text",
+                        "delta": "\n（工具轮次已达上限，正在汇总已有信息…）\n"})
+            messages.append({
+                "role": "system",
+                "content": "工具调用轮次已达上限。请立即基于以上已收集的信息"
+                           "给出最终完整回答，不要再调用任何工具。",
+            })
+            text_collected = []
+            round_events = []
+            forced_ok = True
+            try:
+                for event in llm.stream_chat(self.model, messages, []):
+                    if self.on_stop and self.on_stop():
+                        forced_ok = False
+                        self._emit({"type": "text",
+                                    "delta": "\n（已按用户请求停止）"})
+                        break
+                    if event["type"] == "text":
+                        text_collected.append(event["delta"])
+                        self._emit(event)
+                    elif event["type"] == "reasoning":
+                        self._emit(event)
+                    elif event["type"] == "usage":
+                        self._accumulate_usage(event["usage"])
+                        self._emit({"type": "usage",
+                                    "usage": event["usage"],
+                                    "total": dict(self.usage_total)})
+                    if event["type"] != "usage":
+                        round_events.append(event)
+            except llm.LLMError as e:
+                forced_ok = False
+                self._emit({"type": "text",
+                            "delta": f"\n⚠️ 汇总失败：{e}\n"})
+            if text_collected:
+                final_text.extend(text_collected)
+                if forced_ok:
+                    cache.put_llm(self.model.model_id, messages, [],
+                                  round_events)
+                messages.append({"role": "assistant",
+                                 "content": "".join(text_collected)})
 
         return "".join(final_text)

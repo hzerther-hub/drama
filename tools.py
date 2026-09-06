@@ -179,6 +179,29 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "task_plan",
+            "description": (
+                "制定/更新当前任务的计划清单（3~8 步），会在界面显示为任务步骤。"
+                "每步写『做什么、达成什么』的功能描述（如『梳理配置加载流程』），"
+                "不要写成工具名或文件名罗列。多步任务开始前必须先调用一次；"
+                "每完成一步就重新调用，把已完成步骤的文本前加 '[x] ' 标记。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "steps": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "计划步骤列表，每项一句功能描述；已完成的前缀 '[x] '",
+                    },
+                },
+                "required": ["steps"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "glob_search",
             "description": "按通配符查找文件，如 '*.py' 或 '**/*.js'。",
             "parameters": {
@@ -816,6 +839,20 @@ def call_model_schema() -> list:
     return [CALL_MODEL_SCHEMA]
 
 
+def _task_plan(args: dict) -> str:
+    """任务计划工具本体：只做校验与确认，界面渲染由 agent 发 plan 事件完成。"""
+    steps = args.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return "错误：steps 必须是非空的字符串数组"
+    steps = [str(s).strip() for s in steps if str(s).strip()]
+    if len(steps) < 2:
+        return "错误：计划至少需要 2 步；单步任务直接做即可，不必调用 task_plan"
+    done_n = sum(1 for s in steps if s.lower().startswith("[x]"))
+    return (f"任务计划已更新：共 {len(steps)} 步（已完成 {done_n}）。"
+            f"请按计划逐步执行；每完成一步就重新调用 task_plan 更新状态，"
+            f"全部完成后给出最终答复。")
+
+
 _EXECUTORS = {
     "read_file": _read_file,
     "write_file": _write_file,
@@ -828,6 +865,7 @@ _EXECUTORS = {
     "web_search": _web_search,
     "lsp_diagnostics": _lsp_diagnostics,
     "call_model": _call_model,
+    "task_plan": _task_plan,
 }
 
 

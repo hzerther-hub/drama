@@ -45,7 +45,7 @@ class TestConfigDispatch:
     def test_defaults_when_missing(self):
         cfg = config.get_dispatch_config()
         assert cfg["model_dispatch"] is True
-        assert cfg["dispatch_model"] == "gpulocal-8097/qwen38-27b-q8"
+        assert cfg["dispatch_model"] == "deepseek/deepseek-v4-pro"
         assert cfg["dispatch_flash"] == "deepseek/deepseek-v4-flash"
         assert cfg["dispatch_pro"] == "deepseek/deepseek-v4-pro"
         # dispatch_vision 必选，默认已给出
@@ -231,7 +231,9 @@ class TestResolveVision:
 
 class TestLocalHealthy:
     def test_false_when_no_models(self, monkeypatch):
-        import localmodels
+        pytest = __import__("pytest")
+        localmodels = pytest.importorskip(
+            "localmodels", reason="gpulocal/localmodels 已移除")
         monkeypatch.setattr(localmodels, "list_models", lambda: {})
         assert tools._local_healthy("gpulocal-8097/qwen38-27b-q8") is False
 

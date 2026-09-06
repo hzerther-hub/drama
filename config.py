@@ -11,10 +11,24 @@ from dataclasses import dataclass
 
 # 生成参数
 TEMPERATURE = 0.2
-MAX_TOKENS = 256000
+# 后端要求 max_tokens 范围 [1, 32768]；超过会被拒 (invalid_parameter_error)。
+# 早期设为 256000 是为了对齐 DeepSeek 256K 上下文，但实际只能填输出上限。
+MAX_TOKENS = 32768
+
+# 模型 API 类型（provider 级字段，缺省走 OpenAI 兼容协议）
+_API_TYPES = ("openai_compatible", "anthropic")
+
+
+def _normalize_api_type(raw, base_url: str = "") -> str:
+    """归一化 api_type：未知值兜底为 openai_compatible。"""
+    s = str(raw or "").strip().lower()
+    if s in _API_TYPES:
+        return s
+    return "openai_compatible"
 
 # Agent 循环安全上限
-MAX_TOOL_ROUNDS = 12          # 最多 tool-calling 轮次：读文件+分析+写结论留足空间
+MAX_TOOL_ROUNDS = 24          # 最多 tool-calling 轮次（分析项目要连续读多个文件）；
+                              # 用完仍会强制一次"无工具"汇总，保证出最终结论
 TOOL_EXEC_TIMEOUT = 60        # 单个工具执行超时（秒）
 
 # 写操作沙箱（护栏，非操作系统级隔离）：
@@ -131,7 +145,9 @@ SYSTEM_PROMPT = (
     "修改/增强代码文件时，必须调用 write_file 把改动真正写回文件（不要只把新内容输出在回复里）；"
     "写完再用 read_file 抽查确认。"
     "完成纪律（必须遵守）："
-    "1) 动手前列出完成该任务所需的步骤 todo（读文件→改动→验证→收尾），并逐项完成、逐项确认；"
+    "1) 多步任务动手前必须先调用 task_plan 建立计划（3~8 步，每步写『做什么、达成什么』"
+    "的功能描述，不要罗列工具名/文件名），之后每完成一步就调用 task_plan 更新状态"
+    "（已完成步骤文本前加 '[x] '），全部步骤完成后再给最终答复；"
     "2) 改完必须用 lsp_diagnostics 或运行相关测试/脚本验证，发现问题就修，直到通过；"
     "3) 只有当所有步骤完成且验证通过、目标真正达成时，才给出最终答复；"
     "绝不在半途（改了一部分、还没验证通过）就草草结束。"
@@ -172,7 +188,8 @@ _DEFAULT_MODELS = {
             "base_url": "http://127.0.0.1:8097/v1",
             "api_key": "local-noauth",
             "models": [
-                {"id": "qwen3.8-27b-q8", "name": "Qwen3.8-27B (DFlash2 加速)"}
+                {"id": "qwen3.8-27b-q8", "name": "Qwen3.8-27B (DFlash2 加速)",
+                 "context_window": 131072, "max_tokens": 16384}
             ],
         },
         {
@@ -181,8 +198,10 @@ _DEFAULT_MODELS = {
             "base_url": "https://api.deepseek.com/v1",
             "api_key": "",
             "models": [
-                {"id": "deepseek-chat", "name": "DeepSeek Chat"},
-                {"id": "deepseek-reasoner", "name": "DeepSeek Reasoner"},
+                {"id": "deepseek-chat", "name": "DeepSeek Chat",
+                 "context_window": 128000, "max_tokens": 8192},
+                {"id": "deepseek-reasoner", "name": "DeepSeek Reasoner",
+                 "context_window": 128000, "max_tokens": 8192},
             ],
         },
     ],
@@ -218,6 +237,8 @@ class ModelConfig:
     reasoning_effort: str = ""  # 推理等级（reasoning effort，如 low/medium/high；空=不发送，用模型默认）
     reasoning_choices: tuple = ()  # 该模型支持的等级列表（空 = 按 provider 推断）
     context_window: int = 0      # 上下文窗口（token 数；0 = 未知，用全局 CONTEXT_BUDGET）
+    max_tokens: int = 0          # 单次输出上限（token 数；0 = 未知，按 key 推断兜底）
+    api_type: str = "openai_compatible"  # 端点协议：openai_compatible | anthropic
 
 
 # 推理等级支持集合：DeepSeek 扩展集 vs 标准集（OpenAI/Kimi/GLM/本地 llama.cpp）
@@ -253,6 +274,8 @@ def load_models() -> tuple[list[ModelConfig], str]:
         pname = provider.get("name", pid)
         base_url = provider.get("base_url", "")
         api_key = provider.get("api_key", "")
+        # api_type 是 provider 级字段（旧条目缺失则按 base_url 启发式兜底）
+        api_type = _normalize_api_type(provider.get("api_type"), base_url)
         for m in provider.get("models", []):
             mid = m.get("id", "")
             mname = m.get("name", mid)
@@ -268,6 +291,8 @@ def load_models() -> tuple[list[ModelConfig], str]:
                 reasoning_effort=str(m.get("reasoning_effort", "") or ""),
                 reasoning_choices=reasoning_choices_for(pid, pname, m),
                 context_window=int(m.get("context_window", 0) or 0),
+                max_tokens=int(m.get("max_tokens", 0) or 0),
+                api_type=api_type,
             ))
     default = data.get("default", "")
     return models, default
@@ -374,8 +399,8 @@ def set_font_size_editor(n: int):
 _DISPATCH_DEFAULTS = {
     "model_dispatch": True,                                     # 总开关
     "dispatch_smart": True,                                     # 智排：按任务类型自动路由/识图预路由
-    "auto_cloud_fallback": True,                                # 本地模型不可用（加载中/未运行）时自动回退云端
-    "dispatch_model": "gpulocal-8097/qwen38-27b-q8",            # 本地大脑
+    "auto_cloud_fallback": True,                                # 目标模型不可用时自动回退云端
+    "dispatch_model": "deepseek/deepseek-v4-pro",               # 派发大脑（云端）
     "dispatch_flash": "deepseek/deepseek-v4-flash",             # 云端简单
     "dispatch_pro": "deepseek/deepseek-v4-pro",                 # 云端复杂/高性能
     "dispatch_vision": "deepseek/deepseek-v4-flash-vision-exp", # 云端识图（必选）
@@ -624,29 +649,43 @@ def _save_models_data(data: dict):
 
 def add_custom_model(model_ids, base_url: str, api_key: str,
                      display_names=None, vision: bool = False,
-                     reasoning_effort: str = "") -> list:
+                     reasoning_effort: str = "",
+                     context_window: int = 0,
+                     max_tokens: int = 0,
+                     api_type: str = "openai_compatible",
+                     provider_id: str = "custom") -> list:
     """批量添加自定义模型（同一端点下可挂多个模型 ID）。
 
     model_ids: 模型 ID 列表，如 ["deepseek-v4-flash", "deepseek-v4-pro"]
     vision: True 则这批模型标记为识图模型（models.json 写 "vision": true）
     reasoning_effort: 推理等级（写 "reasoning_effort"，如 low/medium/high；空=不写）
+    context_window: 上下文窗口 token 数（0 = 不写）
+    max_tokens: 单次输出上限 token 数（0 = 不写）
+    api_type: 端点协议（openai_compatible | anthropic；默认 OpenAI 兼容）
+    provider_id: 目标 provider id，默认 "custom"；也允许指向已存在的
+                  任何 provider（用于「给 DeepSeek 等已注册 provider 追加
+                  新模型」场景）。当目标 provider 不存在时，函数会按传入
+                  的 provider_id/name 创建一个新 provider。
     返回新添加（或已存在）的 ModelConfig 列表。
     """
     data = _load_models_data()
     if not api_key:
         api_key = "local-noauth"
     display_names = display_names or []
+    api_type = _normalize_api_type(api_type)
 
-    pid = "custom"
+    pid = (provider_id or "custom").strip() or "custom"
     provider = next((p for p in data.get("providers", []) if p.get("id") == pid), None)
     if provider is None:
-        provider = {"id": pid, "name": "自定义", "base_url": base_url,
-                    "api_key": api_key, "models": []}
+        provider = {"id": pid, "name": pid, "base_url": base_url,
+                    "api_key": api_key,
+                    "api_type": api_type, "models": []}
         data.setdefault("providers", []).append(provider)
     else:
-        # 已有 custom provider：端点和 key 以最近一次填写为准
+        # 已有 provider：端点、key、协议以最近一次填写为准
         provider["base_url"] = base_url
         provider["api_key"] = api_key
+        provider["api_type"] = api_type
 
     added = []
     for i, model_id in enumerate(model_ids):
@@ -663,6 +702,10 @@ def add_custom_model(model_ids, base_url: str, api_key: str,
                 entry["vision"] = True
             if reasoning_effort:
                 entry["reasoning_effort"] = reasoning_effort
+            if context_window:
+                entry["context_window"] = int(context_window)
+            if max_tokens:
+                entry["max_tokens"] = int(max_tokens)
             provider["models"].append(entry)
         elif vision:
             # 已存在的模型重新添加且勾了识图 → 补上标记
@@ -678,6 +721,9 @@ def add_custom_model(model_ids, base_url: str, api_key: str,
             api_key=api_key,
             vision=vision,
             reasoning_effort=reasoning_effort,
+            context_window=int(context_window) if context_window else 0,
+            max_tokens=int(max_tokens) if max_tokens else 0,
+            api_type=api_type,
         ))
 
     _save_models_data(data)
@@ -713,6 +759,153 @@ def augment_provider_models(provider_id: str, model_ids: list,
     if added:
         _save_models_data(data)
     return added
+
+
+def _check_provider_uniqueness(data: dict, *, exclude_id: str = "",
+                                new_id: str | None = None,
+                                new_name: str | None = None) -> str | None:
+    """检查 id / name 唯一性。返回错误信息字符串，无冲突返回 None。
+
+    exclude_id: 排除自己（修改现有 provider 时用）。
+    new_id / new_name: 待写入的候选值；非 None 时参与比较。
+    """
+    if new_id is not None:
+        nid = str(new_id).strip()
+        for p in data.get("providers", []):
+            if p.get("id") == exclude_id:
+                continue
+            if p.get("id") == nid:
+                return f"id 已存在：{nid}"
+    if new_name is not None:
+        nm = str(new_name).strip()
+        for p in data.get("providers", []):
+            if p.get("id") == exclude_id:
+                continue
+            if p.get("name", "").strip() == nm:
+                return f"显示名已存在：{nm}"
+    return None
+
+
+def add_provider(provider_id: str, name: str,
+                 base_url: str = "", api_key: str = "",
+                 api_type: str = "openai_compatible") -> str | None:
+    """新建一个空的 provider。成功返回 None；冲突/非法返回错误信息。"""
+    pid = str(provider_id or "").strip()
+    nm = str(name or "").strip()
+    if not pid:
+        return "id 不能为空"
+    if not nm:
+        return "显示名不能为空"
+    import re as _re
+    if not _re.match(r"^[a-z0-9_-]+$", pid):
+        return "id 只能用小写字母、数字、_ 或 -"
+    if pid.startswith("gpulocal-"):
+        return "gpulocal-* 由系统自动管理，不能手动添加"
+    data = _load_models_data()
+    err = _check_provider_uniqueness(data, new_id=pid, new_name=nm)
+    if err:
+        return err
+    if not api_key:
+        api_key = "local-noauth"
+    provider = {
+        "id": pid,
+        "name": nm,
+        "base_url": base_url,
+        "api_key": api_key,
+        "api_type": _normalize_api_type(api_type),
+        "models": [],
+    }
+    data.setdefault("providers", []).append(provider)
+    _save_models_data(data)
+    return None
+
+
+def rename_provider(provider_id: str, new_name: str) -> str | None:
+    """重命名 provider 的显示名。成功返回 None；冲突/非法返回错误信息。
+
+    - 显示名去空白后非空、且不与其它 provider 重名。
+    """
+    return update_provider(provider_id, name=new_name)
+
+
+def update_provider(provider_id: str, *, name: str | None = None,
+                    base_url: str | None = None,
+                    api_key: str | None = None,
+                    api_type: str | None = None) -> str | None:
+    """整体修改 provider（显示名 / 端点 / 密钥 / 协议）。
+
+    成功返回 None；未找到、显示名冲突等返回错误信息。
+    传 None 的字段不动；name 传空白串视为非法。
+    gpulocal 本地功能已移除，遗留的 gpulocal-* 条目允许正常编辑。
+    """
+    pid = str(provider_id or "").strip()
+    if not pid:
+        return "provider id 不能为空"
+    if name is not None and not str(name).strip():
+        return "显示名不能为空"
+    data = _load_models_data()
+    provider = next((p for p in data.get("providers", [])
+                     if p.get("id") == pid), None)
+    if provider is None:
+        return f"未找到 Provider：{pid}"
+    if name is not None:
+        err = _check_provider_uniqueness(data, exclude_id=pid,
+                                         new_name=str(name).strip())
+        if err:
+            return err
+        provider["name"] = str(name).strip()
+    if base_url is not None:
+        provider["base_url"] = str(base_url).strip().rstrip("/")
+    if api_key is not None:
+        provider["api_key"] = str(api_key).strip() or "local-noauth"
+    if api_type is not None:
+        provider["api_type"] = _normalize_api_type(api_type)
+    _save_models_data(data)
+    return None
+
+
+def get_provider(pid: str) -> dict | None:
+    """按 id 取 provider 原始 dict（含 base_url/api_key/api_type）。"""
+    pid = str(pid or "").strip()
+    data = _load_models_data()
+    return next((p for p in data.get("providers", [])
+                 if p.get("id") == pid), None)
+
+
+def delete_provider(provider_id: str) -> bool:
+    """删除整个 provider（含其全部模型）。成功返回 True。
+
+    gpulocal 本地功能已移除，遗留的 gpulocal-* 死条目允许删除。
+    """
+    pid = str(provider_id or "").strip()
+    if not pid:
+        return False
+    data = _load_models_data()
+    providers = data.get("providers", [])
+    new_providers = [p for p in providers if p.get("id") != pid]
+    if len(new_providers) == len(providers):
+        return False                           # 没找到
+    data["providers"] = new_providers
+    # default 指向被删 provider/model 时回退到第一个可用模型
+    if data.get("default", "").split("/", 1)[0] == pid:
+        first = ""
+        for p in new_providers:
+            if p.get("models"):
+                first = f"{p['id']}/{p['models'][0]['id']}"
+                break
+        data["default"] = first
+    _save_models_data(data)
+    return True
+
+
+def get_provider_name(provider_id: str) -> str:
+    """读取 provider 的当前显示名（不命中时返回 provider_id）。"""
+    pid = str(provider_id or "").strip()
+    data = _load_models_data()
+    for p in data.get("providers", []):
+        if p.get("id") == pid:
+            return p.get("name", "") or pid
+    return pid
 
 
 def remove_model(key: str) -> bool:
@@ -758,13 +951,18 @@ def update_model(key: str, base_url: str | None = None,
                  display_name: str | None = None,
                  vision: bool | None = None,
                  reasoning_effort: str | None = None,
-                 reasoning: bool | None = None):
+                 reasoning: bool | None = None,
+                 context_window: int | None = None,
+                 max_tokens: int | None = None,
+                 api_type: str | None = None):
     """修改一个已有模型（格式 "provider_id/model_id"）。
 
-    可改：端点、密钥、模型 ID、显示名称、识图标记。返回更新后的
-    ModelConfig，找不到返回 None。改 model_id 会同步更新 default 引用。
+    可改：端点、密钥、模型 ID、显示名称、识图标记、上下文窗口、最大输出 token、API 类型。
+    返回更新后的 ModelConfig，找不到返回 None。改 model_id 会同步更新 default 引用。
     vision 传 True/False 设置/取消识图；None = 不动。
     reasoning_effort 传字符串设置推理等级，传空串清掉；None = 不动。
+    context_window / max_tokens：正整数 = 写入；0 = 清掉字段；None = 不动。
+    api_type：字符串设置协议，传空串或 "openai_compatible" 视为还原默认；None = 不动。
     """
     data = _load_models_data()
     if "/" not in key:
@@ -801,6 +999,19 @@ def update_model(key: str, base_url: str | None = None,
                 m["reasoning"] = True      # 设过等级 = 一定支持
             else:
                 m.pop("reasoning_effort", None)  # 留空 = 清掉推理等级
+        if context_window is not None:
+            if context_window > 0:
+                m["context_window"] = int(context_window)
+            else:
+                m.pop("context_window", None)
+        if max_tokens is not None:
+            if max_tokens > 0:
+                m["max_tokens"] = int(max_tokens)
+            else:
+                m.pop("max_tokens", None)
+        if api_type is not None:
+            nt = _normalize_api_type(api_type)
+            provider["api_type"] = nt
         new_key = f"{pid}/{m['id']}"
         if data.get("default") == key:
             data["default"] = new_key
@@ -816,6 +1027,9 @@ def update_model(key: str, base_url: str | None = None,
             reasoning=bool(m.get("reasoning") or m.get("reasoning_effort")),
             reasoning_effort=str(m.get("reasoning_effort", "") or ""),
             reasoning_choices=reasoning_choices_for(pid, provider.get("name", pid), m),
+            context_window=int(m.get("context_window", 0) or 0),
+            max_tokens=int(m.get("max_tokens", 0) or 0),
+            api_type=_normalize_api_type(provider.get("api_type")),
         )
     return None
 

@@ -27,11 +27,6 @@ import theme
 import tools
 
 try:
-    import localmodels                # 本地 GPU 模型桥接（../gpulocal，缺失时降级）
-except Exception:                     # noqa: BLE001
-    localmodels = None
-
-try:
     import products                   # 产品 profile / 功能开关（缺失时全开）
 except Exception:                     # noqa: BLE001
     products = None
@@ -58,11 +53,6 @@ def _app_title() -> str:
             pass
     return _t("app.title")
 
-
-def _local_models_on() -> bool:
-    """本地模型功能 = profile 开关 + gpulocal 桥接可用。"""
-    return (_feature("gpulocal") and localmodels is not None
-            and localmodels.available())
 
 try:
     import weblinks                  # 消息内链接自动取材（图片识图/网页正文）
@@ -291,10 +281,13 @@ _EDITOR_CMT = {
 }
 
 
-def _fetch_openai_models(base_url: str, api_key: str) -> list:
-    """OpenAI 兼容端点获取模型列表（GET /models），失败抛异常。
+def _fetch_openai_models(base_url: str, api_key: str,
+                         api_type: str = "openai_compatible") -> list:
+    """端点获取模型列表（GET /models），失败抛异常。
 
     base_url 可能带或不带 /v1 后缀，自动尝试两种拼法；
+    api_type="anthropic" 时改用 x-api-key + anthropic-version 鉴权
+    （Anthropic /v1/models 与 OpenAI 响应同为 {"data":[{"id":...}]}）；
     返回按字母排序的模型 ID 列表（去重）。
     """
     import json
@@ -306,12 +299,18 @@ def _fetch_openai_models(base_url: str, api_key: str) -> list:
     candidates = [base + "/models"]
     if not base.endswith("/v1"):
         candidates.insert(1, base + "/v1/models")
+    # anthropic 型端点用 x-api-key + anthropic-version 鉴权（无 Bearer）
+    is_anthropic = (api_type == "anthropic")
     last_exc = None
     for url in candidates:
         req = urllib.request.Request(url, headers={
             "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                            "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")})
-        if api_key:
+        if is_anthropic:
+            if api_key:
+                req.add_header("x-api-key", api_key)
+            req.add_header("anthropic-version", "2023-06-01")
+        elif api_key:
             req.add_header("Authorization", "Bearer " + api_key)
         try:
             with urllib.request.urlopen(req, timeout=15) as r:
@@ -817,9 +816,7 @@ class App:
             except Exception:            # noqa: BLE001
                 pass
 
-        # 加载模型列表 + 默认模型；先同步 gpulocal 本地模型注册表
-        if _local_models_on():
-            localmodels.sync_to_config()
+        # 加载模型列表 + 默认模型
         self.models, default_key = config.load_models()
         self.model_map = {m.key: m for m in self.models}
         self.current_model = self.model_map.get(default_key) or (
@@ -861,10 +858,7 @@ class App:
         self._media_refs = []
         # 可点链接/弹窗标签的递增序号
         self._link_seq = 0
-        # 本地 GPU 模型状态（显示名 → (state, healthy)）；须在 _build_ui 前初始化
-        self._local_status = {}          # _update_dispatch_btn 会用到
-        self._pending_local = None
-        self._route_override = "auto"   # 路由覆盖：auto/local/cloud（侧栏按钮切换）
+        self._route_override = "auto"   # 路由覆盖：auto/cloud（侧栏按钮切换）
         # 界面字号（持久化）：聊天区 / 代码编辑器分别可调
         self._font_chat = config.get_font_size_chat()
         self._font_editor = config.get_font_size_editor()
@@ -876,9 +870,6 @@ class App:
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         # 后台连接 MCP 服务器（有配置才连，不阻塞界面）
         self._start_mcp()
-        # 本地 GPU 模型状态轮询（与 gpulocal 面板操作同一批 systemd 服务，双向同步）
-        if _local_models_on():
-            threading.Thread(target=self._local_poll_loop, daemon=True).start()
         # 派发守护：定时核验条件（本地大脑运行 + 云端可达），不满足自动关掉
         self._dispatch_cloud_fails = 0   # 云端连续探测失败次数（≥2 才关，防抖动）
         threading.Thread(target=self._dispatch_check_loop, daemon=True).start()
@@ -931,6 +922,20 @@ class App:
             self._show_think_menu)
         self.think_btn.pack(side="left", padx=(0, 10))
         self._update_thinking_btn()
+
+        # 设置按钮：管理模型 / MCP / 缓存 / 派发 / 代码索引 / 语言——从模型菜单独立出来
+        _set_img = _icon_image("⚙")
+        if _set_img is not None:
+            self.settings_btn = _image_button(ctrl, _set_img,
+                                              command=self._show_settings_menu)
+        else:
+            self.settings_btn = _flat_button(
+                ctrl, text="⚙",
+                command=self._show_settings_menu,
+                width=3,
+                font=(FONT_UI, theme.FS_TOOLBAR))
+            self.settings_btn.config(padx=10, bd=0, highlightthickness=0)
+        self.settings_btn.pack(side="left", padx=(0, 6))
 
         self.sess_btn = self._icon_button(
             ctrl, "💬", lambda: _t("top.sessions"), self._show_session_menu,
@@ -1002,7 +1007,7 @@ class App:
         _flat_button(ctrl, text="Aa", command=self._show_font_popup,
                      width=3, font=(FONT_MONO, theme.FS_TOOLBAR)).pack(side="right", padx=(0, 6))
 
-        # 状态文字（“就绪”等，置于帮助按钮左侧）
+        # 状态文字（"就绪"等，置于帮助按钮左侧）
         self.status_label = tk.Label(ctrl, text=_t("top.ready"), font=(FONT_MONO, 10))
         self.status_label.pack(side="right", padx=(0, 8))
 
@@ -1023,6 +1028,8 @@ class App:
         self.todo_frame = tk.Frame(self.center)
         # 任务步骤(todo)清单：从模型输出的步骤识别，实时显示并可在界面勾选
         self.todo_items: list[dict] = []   # {"label": str, "done": bool}
+        self._todo_tool_current: str | None = None   # 底部临时「正在执行」行
+        self._has_plan = False              # 是否已收到 task_plan 计划
         self.chat = scrolledtext.ScrolledText(
             self.center, state="disabled", wrap="word",
             font=(FONT_MONO, self._font_chat), padx=16, pady=12,
@@ -1113,12 +1120,16 @@ class App:
                              font=(FONT_MONO, self._font_chat + 1), wrap="word",
                              relief="flat", padx=12, pady=10, highlightthickness=0)
         self.input.pack(side="left", fill="both", expand=True)
-        self.input.bind("<Return>", self._on_return)
-        self.input.bind("<KP_Enter>", self._on_return)
-        self.input.bind("<Shift-Return>", lambda e: None)
+        # Enter 换行；Shift+Enter 发送；Ctrl+Enter 排队。
+        # 三个绑定都加上 return "break"，避免 Shift 状态识别漏掉时退化成"回车换行"
+        self.input.bind("<Shift-Return>", self._on_shift_return)
+        self.input.bind("<Shift-KP_Enter>", self._on_shift_return)
         self.input.bind("<Control-Return>", lambda e: self._send_queued())
         self.input.bind("<Control-space>", lambda e: self._queue_current())
         self.input.bind("<Command-Return>", lambda e: self._send_queued())
+        # 保险栓：<KeyRelease> 阶段若发现 Shift+Return 走漏了（变成换行），
+        # 由这里清掉插入的换行并补发。
+        self.input.bind("<KeyRelease-Return>", self._on_keyrelease_return)
         self._setup_placeholder()
         self.input.bind("<KeyRelease>", self._input_on_keyrelease)
 
@@ -1175,14 +1186,14 @@ class App:
             if pth and getattr(self, "_file_tabs", {}).get(pth):
                 self._editor_status_animate(pth)
         label = self._todo_tool_label(name, args)
-        # 找第一个未完成项设为 working（推进）；无则追加一条
+        # 工具调用不再作为步骤追加（读了个啥就列一行，无意义）——
+        # 步骤只来自 task_plan 计划；工具只更新底部一行临时「正在执行」
+        self._todo_tool_current = label
         for it in self.todo_items:
             if not it.get("done"):
                 it["state"] = "working"
                 it["spin"] = 0
                 break
-        else:
-            self.todo_items.append({"label": label, "done": False, "state": "working", "spin": 0})
         self._render_todo()
         self._todo_animate()
 
@@ -1192,15 +1203,38 @@ class App:
             if pth and getattr(self, "_file_tabs", {}).get(pth):
                 self._editor_status_stop(pth)
                 self._editor_status(pth, "\u2705")
-        for it in self.todo_items:
-            if it.get("state") == "working":
-                it["state"] = "done"
-                it["done"] = True
-                break
+        self._todo_tool_current = None
+        if not getattr(self, "_has_plan", False):
+            # 非计划模式（处理中占位/文本扫描项）：保持原来的完成推进
+            for it in self.todo_items:
+                if it.get("state") == "working":
+                    it["state"] = "done"
+                    it["done"] = True
+                    break
+        # 计划模式下步骤完成与否由模型经 task_plan 更新
+        self._render_todo()
+
+    def _todo_from_plan(self, steps):
+        """task_plan 下发的计划 → 任务步骤清单（'[x] ' 前缀视为已完成）。"""
+        items = []
+        for s in steps or []:
+            s = str(s).strip()
+            if not s:
+                continue
+            low = s.lower()
+            done = False
+            if low.startswith("[x] "):
+                done = True
+                s = s[4:].strip()
+            elif low.startswith("[ ] "):
+                s = s[4:].strip()
+            items.append({"label": s, "done": done,
+                          "state": "done" if done else "pending"})
+        self.todo_items = items
         self._render_todo()
 
     def _todo_animate(self):
-        """进行中的 todo 项：旋转 spinner（修改文件的“效果动画”）。"""
+        """进行中的 todo 项：旋转 spinner（修改文件的"效果动画"）。"""
         idx = next((i for i, it in enumerate(self.todo_items)
                     if it.get("state") == "working"), None)
         if idx is None:
@@ -1240,6 +1274,7 @@ class App:
     def _render_todo(self):
         for w in self.todo_frame.winfo_children():
             w.destroy()
+        self.todo_frame.config(bg=theme.PANEL)
         # 无条目，或全部完成 → 不再显示（完成后自动消失）
         if not self.todo_items:
             self.todo_frame.pack_forget()
@@ -1249,7 +1284,7 @@ class App:
         except Exception as e:            # noqa: BLE001
             self.todo_frame.pack(fill="x", padx=16, pady=(0, 2))
         # 头部一行：📋 任务步骤 (n)  [▾/▴]
-        hdr = tk.Frame(self.todo_frame)
+        hdr = tk.Frame(self.todo_frame, bg=theme.PANEL)
         hdr.pack(fill="x")
         tk.Label(hdr, text="\U0001F4CB " + _t("todo.title"),
                  font=(FONT_UI, 10, "bold"), fg="#334155").pack(side="left", padx=(0, 6))
@@ -1262,13 +1297,32 @@ class App:
                      font=(FONT_MONO, theme.FS_TOOLBAR)).pack(side="right", padx=(4, 0))
         if self._todo_collapsed:
             return
-        # 条目：从上到下（DSH 式，N 行）
+        # 条目：从上到下（DSH 式）；最多显示 6 条，超出用滚动条/滚轮下拉
+        body = tk.Frame(self.todo_frame, bg=theme.PANEL)
+        body.pack(fill="x")
+        canvas = tk.Canvas(body, bg=theme.PANEL, highlightthickness=0, bd=0)
+        sb = tk.Scrollbar(body, orient="vertical", command=canvas.yview,
+                          width=10)
+        canvas.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        inner = tk.Frame(canvas, bg=theme.PANEL)
+        canvas.create_window((0, 0), window=inner, anchor="nw", tags="inner")
+        inner.bind("<Configure>",
+                   lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+
         def _toggle(idx, var):
             var.set(not var.get())
             self.todo_items[idx]["done"] = var.get()
             self.todo_rows[idx].config(
                 text=("\u2611 " if var.get() else "\u2610 ") + self.todo_items[idx]["label"])
         self.todo_rows = []
+
+        def _wheel(e):
+            canvas.yview_scroll(-1 * (e.delta // 120 or 1), "units")
+        canvas.bind("<MouseWheel>", _wheel)
+        inner.bind("<MouseWheel>", _wheel)
+
         for i, it in enumerate(self.todo_items):
             st = it.get("state", "done" if it["done"] else "pending")
             if it["done"]:
@@ -1281,13 +1335,32 @@ class App:
                 prefix = "\u2610 "
                 color = "#475569"
             var = tk.BooleanVar(value=it["done"])
-            lb = tk.Label(self.todo_frame, text=prefix + it["label"],
-                          font=(FONT_UI, 9), fg=color,
+            lb = tk.Label(inner, text=prefix + it["label"],
+                          font=(FONT_UI, 9), fg=color, bg=theme.PANEL,
                           cursor="hand2", anchor="w", justify="left")
             lb.pack(side="top", fill="x", anchor="w", padx=(2, 0))
             lb.bind("<Button-1>", lambda e, i=i, v=var: _toggle(i, v))
+            lb.bind("<MouseWheel>", _wheel)
             self.todo_rows.append(lb)
-        # 确保有一条“进行中”（第一个未完成），展示旋转动画
+
+        # 可视高度 = min(内容高, 6 行)；内容不足 6 行时按内容收缩
+        _TODO_MAX_ROWS = 6
+
+        def _fit():
+            inner.update_idletasks()
+            row_h = max(22, (self.todo_rows[0].winfo_reqheight() + 4)
+                        if self.todo_rows else 26)
+            canvas.configure(height=min(inner.winfo_reqheight(),
+                                        row_h * _TODO_MAX_ROWS))
+        inner.after(10, _fit)
+        # 底部一行灰显当前正在执行的工具（临时行，不进清单）
+        cur = getattr(self, "_todo_tool_current", None)
+        if cur:
+            tk.Label(self.todo_frame, text="  \u2699 " + cur + "…",
+                     font=(FONT_UI, 9), fg="#94a3b8", bg=theme.PANEL,
+                     anchor="w",
+                     justify="left").pack(side="top", fill="x", anchor="w")
+        # 确保有一条"进行中"（第一个未完成），展示旋转动画
         if not any(it.get("state") == "working" for it in self.todo_items):
             for it in self.todo_items:
                 if not it["done"]:
@@ -1302,10 +1375,15 @@ class App:
 
     def _clear_todo(self):
         self.todo_items = []
+        self._has_plan = False
+        self._todo_tool_current = None
         self._render_todo()
 
     def _update_todo(self):
         # 抓模型的计划步骤（1)…2)…），先建立清单（DSH 式：先有、再推进）
+        # 计划模式下步骤以 task_plan 下发为准，不再从正文文本扫描
+        if getattr(self, "_has_plan", False):
+            return
         import re as _re
         if getattr(self, "_todo_collapsed", False):
             return
@@ -2156,7 +2234,7 @@ class App:
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
-            # 修改动画：重载前绿色闪烁提示“已更新”，500ms 后恢复
+            # 修改动画：重载前绿色闪烁提示"已更新"，500ms 后恢复
             try:
                 txt.config(bg="#dcfce7")
             except Exception:            # noqa: BLE001
@@ -2719,9 +2797,12 @@ class App:
         # 一敲键盘就清掉占位符：避免焦点事件没触发时占位符卡住、回车/发送被挡住
         self.input.bind("<Key>", self._on_input_key)
 
-    def _on_input_key(self, _event):
-        # 只要占位符还“活跃”，用户敲的第一个键就清掉它并放行该键
-        if self._placeholder_active:
+    def _on_input_key(self, event):
+        # 只要占位符还"活跃"，用户敲的第一个键就清掉它并放行该键。
+        # 不过滤修饰键（Shift/Ctrl/Alt）——它们是组合键，不该清掉占位符标记，
+        # 但也不该被算作"清占位符"——这里简单只对真正会插入字符的键动手。
+        if self._placeholder_active and getattr(event, "char", "") \
+                and event.char.isprintable():
             self.input.delete("1.0", "end")
             self.input.config(fg="black")
             self._placeholder_active = False
@@ -2741,15 +2822,30 @@ class App:
 
     # ================= 模型管理 =================
     def _refresh_models(self):
-        """重新加载模型列表；当前模型被删则切换到第一个可用模型。"""
+        """重新加载模型列表；当前模型被删则切换到第一个可用模型。
+
+        无论 key 是否变化都把 current_model 重绑到新加载的对象——
+        改 provider/model（端点、密钥、显示名、上下文等）后立即生效，
+        下一次请求就用新配置，无需重启。
+        """
         self.models, default_key = config.load_models()
         self.model_map = {m.key: m for m in self.models}
-        if self.current_model is None or self.current_model.key not in self.model_map:
+        if self.current_model is not None \
+                and self.current_model.key in self.model_map:
+            self.current_model = self.model_map[self.current_model.key]
+        else:
             self.current_model = self.model_map.get(default_key) or (
                 self.models[0] if self.models else None)
         if self.current_model:
-            self.model_btn.config(text=self._model_btn_label())
+            if str(self.model_btn.cget("image")):      # PNG 模式：前缀由图片承担
+                self.model_btn.config(text=self._model_btn_text())
+            else:
+                self.model_btn.config(text=self._model_btn_label(),
+                                      width=self._model_btn_width())
             self._update_thinking_btn()
+            if hasattr(self, "bottom_model_btn"):
+                self.bottom_model_btn.config(text=self._model_btn_label(),
+                                             width=self._model_btn_width())
         else:
             self.model_btn.config(text=_t("top.select_model"))
 
@@ -2846,40 +2942,6 @@ class App:
         设过等级自动打上 "reasoning" 能力标记（菜单继续显示 🧠）。
         """
         self._apply_reasoning(val)
-
-    # ================= 本地 GPU 模型（gpulocal 桥接） =================
-    LOCAL_POLL_S = 4                    # 状态轮询周期（秒）
-
-    def _local_poll_loop(self):
-        """后台轮询本地模型 systemd/健康状态，变化时更新状态栏。
-
-        gpulocal 面板与本程序操作同一批 systemd 用户服务，任一侧启停，
-        这里的轮询都会看到新状态（双向动态同步）。
-        """
-        while True:
-            try:
-                for name, cfg in localmodels.list_models().items():
-                    state, healthy = localmodels.status_of(cfg)
-                    if self._local_status.get(name) == (state, healthy):
-                        continue
-                    self._local_status[name] = (state, healthy)
-                    # 顶栏派发开关的 ●/○ 跟随本地模型状态变化
-                    self.root.after(0, self._update_dispatch_btn)
-                    if healthy:
-                        self._set_status(_t("local.ready", name=name))
-                    elif state == "failed":
-                        self._set_status(_t("local.err", name=name))
-                    # 等待就绪的模型 → 自动切换为当前模型
-                    if healthy and self._pending_local == name:
-                        self._pending_local = None
-                        key = localmodels.key_of(name)
-                        if key in self.model_map:
-                            self.root.after(0, lambda k=key, n=name: (
-                                self._select_model(k),
-                                self._set_status(_t("local.switched", name=n))))
-            except Exception:                       # noqa: BLE001
-                pass
-            threading.Event().wait(self.LOCAL_POLL_S)
 
     # ================= 派发守护：定时核验条件，不满足自动关掉 =================
     DISPATCH_CHECK_S = 4        # 本地大脑核验周期（秒）
@@ -2979,26 +3041,6 @@ class App:
         """切换工作区后重新预热（老的失效，重新探测）。"""
         threading.Thread(target=self._lsp_warm_loop, daemon=True).start()
 
-    def _local_start(self, name):
-        """启动本地模型：先停其它（串行显存），就绪后自动切换为当前模型。"""
-        self._pending_local = name
-        self._set_status(_t("local.starting", name=name))
-        localmodels.start(name, log=self._set_status)
-
-    def _local_stop(self, name):
-        self._set_status(_t("local.stopping", name=name))
-
-        def _w():
-            ok, msg = localmodels.stop(name)
-            self._set_status(("■ " if ok else "✖ ") + msg)
-
-        threading.Thread(target=_w, daemon=True).start()
-
-    def _local_restart(self, name):
-        self._pending_local = name
-        self._set_status(_t("local.restart", name=name))
-        localmodels.restart(name, log=self._set_status)
-
     def _bind_hint(self, btn, key):
         """悬停按钮时在状态栏显示全称。"""
         btn.bind("<Enter>", lambda e: self._set_status(_t(key)))
@@ -3047,98 +3089,6 @@ class App:
             except Exception:                # noqa: BLE001  面板已关闭
                 pass
 
-    def _open_gpu_panel(self):
-        """本地面板（完整 gpulocal 子面板）作为主窗口子窗口嵌入。
-
-        直接实例化内嵌 gpulocal 的 ModelPanel(master=self.root)——它是
-        Toplevel 子窗，GPU/系统/硬件/模型启停/下载/日志/语言切换等全部
-        原生功能保留，不再是我手搭的精简版。
-        """
-        try:
-            import gpulocal.local_model_panel as gpm
-        except Exception:                # noqa: BLE001
-            self._set_status(_t("local.panel_err"))
-            return
-        if not hasattr(gpm, "ModelPanel"):
-            self._set_status(_t("local.panel_none"))
-            return
-        try:
-            self._gpm = gpm    # 记住模块引用，主窗体切换语言时驱动面板
-            self._gp_panel = gpm.ModelPanel(master=self.root)   # 防 Tk GC
-            # 模态标志：面板开着时锁定主窗口关闭（比检查 _gp_panel 更可靠）
-            self._modal_open = True
-            try:
-                self._gp_panel.win.bind("<Destroy>",
-                                        lambda e: setattr(self, "_modal_open", False))
-            except Exception:            # noqa: BLE001
-                pass
-            # 面板语言与主窗体对齐（内嵌时 _load_lang 已读主 config，这里兜底）
-            if hasattr(gpm, "set_lang"):
-                gpm.set_lang(_get_lang())
-            if hasattr(self._gp_panel, "_relabel"):
-                self._gp_panel._relabel()
-            # 尺寸约束：本地面板不超过主窗口
-            self._fit_panel_size()
-            # GPU/硬件数据是异步填充的，等数据到位后再贴合一次高度，
-            # 避免按钮被挤出窗口
-            self.root.after(700, self._fit_panel_size)
-            self.root.after(2000, self._fit_panel_size)
-            # 模态子窗：依附主窗口并锁定主窗口交互，关闭（✕/Esc/destroy）自动释放 grab
-            try:
-                panel = self._gp_panel
-                win = panel.win
-                if win.grab_current():
-                    win.grab_release()
-                win.transient(self.root)   # 依附主窗口（模态对话框层级）
-                # 模态：窗口须真正显示后再 grab（未映射时 grab_set 静默失效）
-                self._ensure_modal_grab(win)
-            except Exception:                # noqa: BLE001  面板可能已关
-                pass
-        except Exception as e:           # noqa: BLE001
-            self._set_status(_t("local.panel_open_err", e=e))
-
-    def _ensure_modal_grab(self, win, tries=30):
-        """确保模态 grab 生效：重试 grab_set 直到 grab_current==win（约 3s）。"""
-        try:
-            if not win.winfo_exists():
-                return
-            if win.grab_current() == win:
-                return                       # 已抓到
-            try:
-                win.grab_set()
-            except Exception:                # noqa: BLE001
-                pass
-            if win.grab_current() == win:
-                return
-            if tries > 0:
-                self.root.after(100, lambda: self._ensure_modal_grab(win, tries - 1))
-        except Exception:                # noqa: BLE001
-            pass
-
-    def _fit_panel_size(self):
-        """把内嵌本地面板限制到 ≤ 主窗口，且高度贴合内容（去掉无用空白）。"""
-        panel = getattr(self, "_gp_panel", None)
-        if not panel:
-            return
-        try:
-            mw, mh = self.root.winfo_width(), self.root.winfo_height()
-            if mw < 100 or mh < 100:         # 主窗口尚未映射 → 用配置默认
-                mw, mh = 1000, 720
-            # 高度贴合内容：请求高度（GPU/系统/硬件/按钮自然高度），clamp 到主窗内
-            panel.win.update_idletasks()
-            reqh = panel.win.winfo_reqheight() or 620
-            gw = min(920, mw)
-            gh = min(max(reqh, 360), mh)
-            panel.win.minsize(480, 340)
-            panel.win.maxsize(mw, mh)        # 禁止超过主窗口
-            # 初始居中于主窗口内（不跑到外面）
-            tx, ty = self.root.winfo_rootx(), self.root.winfo_rooty()
-            gx = tx + max(0, (mw - gw) // 2)
-            gy = ty + max(0, (mh - gh) // 2)
-            panel.win.geometry("%dx%d+%d+%d" % (gw, gh, gx, gy))
-        except Exception:                # noqa: BLE001  面板可能已关
-            pass
-
     # ================= 端点模型动态探测 =================
     ENDPOINT_SYNC_INTERVAL = 60.0          # 两次探测最小间隔（秒）
 
@@ -3159,18 +3109,12 @@ class App:
         """遍历已配置 provider，探测 /models 并补全缺失模型。"""
         try:
             self._endpoint_sync_at = time.time()
-            local_ports = set()
-            if _local_models_on():
-                local_ports = {cfg["port"]
-                               for cfg in localmodels.list_models().values()}
             seen_url = set()
             new_total = 0
             for m in self.models:
                 url = m.base_url
-                is_local = any("127.0.0.1:%s/" % p in url or
-                               "localhost:%s/" % p in url for p in local_ports)
-                if is_local or url in seen_url or not url:
-                    continue                     # 本地 gpulocal 由 localmodels 负责
+                if url in seen_url or not url:
+                    continue
                 seen_url.add(url)
                 pid = m.key.split("/", 1)[0]     # provider id = key 前缀
                 try:
@@ -3187,58 +3131,64 @@ class App:
         finally:
             self._endpoint_syncing = False
 
+    def _provider_name(self, pid: str) -> str:
+        """从 models.json 取 provider 的当前显示名（不命中时返回空串）。
+
+        用 live lookup：用户在「设置 → 模型管理」里重命名后，
+        下一次打开模型下拉就能看到新名字，无需重启 app。
+        """
+        try:
+            return config.get_provider_name(pid)
+        except Exception:                # noqa: BLE001
+            return ""
+
     def _show_model_menu(self, anchor=None):
-        """下拉：快速选择模型 + 打开管理窗口。"""
+        """下拉：当前模型 + 按 provider 分组的云端模型 + 本地 GPU + 推理等级。
+
+        管理类（MCP / 缓存 / 派发 / 代码索引 / 语言 / 模型增删）已挪到独立的
+        ⚙ 设置菜单，避免 200+ 模型条目和设置项挤在一个下拉里。
+        """
         # 打开前触发端点模型探测（60s 节流，后台拉取，完成后自动刷新下拉）
         self._maybe_sync_endpoints()
         if self._endpoint_syncing:
             self._set_status(_t("probe.working"))
         menu = tk.Menu(self.root, tearoff=0, font=(FONT_UI, 10))
-        for m in self.models:
-            # 图标：当前模型 ✓；按能力缀 👁 识图 / 🧠 推理
-            mark = " ✓" if (self.current_model and m.key == self.current_model.key) else ""
-            caps = ""
-            if m.vision:
-                caps += " 👁"
-            if getattr(m, "reasoning", False):
-                caps += " 🧠"
-            icon = "✨" if m.key.startswith("gpulocal") else "☁️"
-            m_img = _icon_image(icon)          # Windows：下拉项前缀走 PNG（菜单条目支持 image）
-            if m_img is not None:
-                menu.add_command(image=m_img, compound="left",
-                                 label=f"{m.display_name}{caps}{mark}",
-                                 command=lambda k=m.key: self._select_model(k))
-            else:
-                menu.add_command(label=f"{icon} {m.display_name}{caps}{mark}",
-                                 command=lambda k=m.key: self._select_model(k))
-        # ---- 本地 GPU 模型（gpulocal 桥接，状态每次打开实时读取）----
-        if _local_models_on():
-            lms = localmodels.list_models()
-            if lms:
-                menu.add_separator()
-                for name, cfg in lms.items():
-                    state, healthy = self._local_status.get(name, ("unknown", False))
-                    dot = "●" if healthy else ("◐" if state == "activating" else "○")
-                    cur = " ✓" if (self.current_model
-                                   and self.current_model.key == localmodels.key_of(name)) else ""
-                    sub = tk.Menu(menu, tearoff=0, font=(FONT_UI, 10))
-                    sub.add_command(label=_t("model.local.start"),
-                                    command=lambda n=name: self._local_start(n))
-                    sub.add_command(label=_t("model.local.stop"),
-                                    command=lambda n=name: self._local_stop(n))
-                    sub.add_command(label=_t("model.local.restart"),
-                                    command=lambda n=name: self._local_restart(n))
-                    if healthy:
-                        sub.add_command(label=_t("model.local.use"),
-                                        command=lambda n=name: self._select_model(localmodels.key_of(n)))
-                    menu.add_cascade(label=f"🖥 {dot} {name}{cur}  [:{cfg['port']}]",
-                                     menu=sub)
-                menu.add_command(label=_t("model.gpu"),
-                                 command=self._open_gpu_panel)
-        menu.add_separator()
-        # ---- 推理等级：直接改当前模型并持久化（对应请求里的 reasoning_effort）----
-        # 始终显示（选了等级即自动打上 "reasoning" 能力标记，模型按钮随之显示 🧠）
+
+        # ---- 当前模型（始终置顶，方便看清当前在用哪个）----
         if self.current_model:
+            menu.add_command(
+                label=_t("model.current", name=self.current_model.display_name),
+                state="disabled")
+            menu.add_separator()
+
+        # ---- 按 provider 分组的模型 ----
+        # key 形如 "provider_id/model_id"；group 时取前缀。
+        from collections import OrderedDict
+        cloud_groups: "OrderedDict[str, list]" = OrderedDict()
+        for m in self.models:
+            pid = m.key.split("/", 1)[0]
+            cloud_groups.setdefault(pid, []).append(m)
+
+        cur_pid = (self.current_model.key.split("/", 1)[0]
+                   if self.current_model else "")
+
+        for pid, items in cloud_groups.items():
+            # 取 provider 显示名（live lookup：用户重命名后立即生效）
+            pname = self._provider_name(pid) or items[0].provider_name or pid
+            sub = tk.Menu(menu, tearoff=0, font=(FONT_UI, 10))
+            self._populate_model_submenu(sub, items)
+            mark = " ✓" if pid == cur_pid else ""
+            menu.add_cascade(
+                label=_t("model.menu.cloud", name=pname, n=len(items)) + mark,
+                menu=sub)
+
+        if not cloud_groups:
+            menu.add_command(label=_t("model.menu.empty"), state="disabled")
+
+        # ---- 推理等级：直接改当前模型并持久化（对应请求里的 reasoning_effort）----
+        # 留在模型菜单——它作用于当前模型，不属于通用设置。
+        if self.current_model:
+            menu.add_separator()
             cur_effort = (getattr(self.current_model, "reasoning_effort", "") or "").strip()
             eff = tk.Menu(menu, tearoff=0, font=(FONT_UI, 10))
             for val in self._reasoning_choices():
@@ -3251,6 +3201,36 @@ class App:
                 + (f" ({cur_effort})" if cur_effort
                    else f" ({_t('model.reasoning.default')})"),
                 menu=eff)
+
+        tgt = anchor or self.model_btn
+        x = tgt.winfo_rootx()
+        y = tgt.winfo_rooty() + tgt.winfo_height()
+        menu.tk_popup(x, y)
+
+    def _populate_model_submenu(self, sub, items):
+        """把一组模型塞进子菜单；按字母排序、当前模型置顶。"""
+        items = sorted(items, key=lambda m: m.display_name)
+        # 当前模型提到最前面，避免翻页
+        if self.current_model:
+            for i, m in enumerate(items):
+                if m.key == self.current_model.key:
+                    if i:
+                        items.insert(0, items.pop(i))
+                    break
+        for m in items:
+            mark = " ✓" if (self.current_model and m.key == self.current_model.key) else ""
+            caps = ""
+            if m.vision:
+                caps += " 👁"
+            if getattr(m, "reasoning", False):
+                caps += " 🧠"
+            label = f"{m.display_name}{caps}{mark}"
+            sub.add_command(label=label,
+                            command=lambda k=m.key: self._select_model(k))
+
+    def _show_settings_menu(self, anchor=None):
+        """独立的设置菜单：模型管理 / MCP / 缓存 / 派发 / 代码索引 / 语言。"""
+        menu = tk.Menu(self.root, tearoff=0, font=(FONT_UI, 10))
         menu.add_command(label=_t("model.manage"),
                          command=self._manage_models)
         menu.add_command(label=_t("model.mcp"),
@@ -3262,8 +3242,8 @@ class App:
                              command=self._manage_dispatch)
         menu.add_command(label=_t("model.index"),
                          command=self._rebuild_codeindex)
-        # ---- 语言切换（默认英文，可切中文）——「仅中文」产品不显示 ----
         if not _feature("zh_only", False):
+            menu.add_separator()
             lang = tk.Menu(menu, tearoff=0, font=(FONT_UI, 10))
             cur = _get_lang()
             lang.add_command(label=_t("lang.en") + ("  ✓" if cur != "zh" else ""),
@@ -3271,7 +3251,7 @@ class App:
             lang.add_command(label=_t("lang.zh") + ("  ✓" if cur == "zh" else ""),
                              command=lambda: self._switch_lang("zh"))
             menu.add_cascade(label=_t("lang.menu"), menu=lang)
-        tgt = anchor or self.model_btn
+        tgt = anchor or self.settings_btn
         x = tgt.winfo_rootx()
         y = tgt.winfo_rooty() + tgt.winfo_height()
         menu.tk_popup(x, y)
@@ -3316,22 +3296,11 @@ class App:
 
     # ---- 顶栏派发快捷开关 ----
     def _dispatch_brain_healthy(self) -> bool:
-        """本地大脑（dispatch_model）是否运行健康（据状态轮询缓存）。
+        """大脑健康核验：本地 GPU 腿已移除，派发只剩云端腿，视为恒健康。
 
-        纯云端产品线（gpulocal 功能关闭）没有本地大脑可言，直接视为健康：
-        派发的云端腿（复杂→pro / 识图→识图模型）不依赖本地大脑，
-        守护不应因此把派发自动关掉。
+        云端目标/网络可达性由 _dispatch_check_loop 的云端探测单独把关。
         """
-        key = config.get_dispatch_model()
-        if not key:
-            return False
-        if not (_local_models_on()):
-            return True
-        for name, _ in localmodels.list_models().items():
-            if localmodels.key_of(name) == key:
-                state, healthy = self._local_status.get(name, ("unknown", False))
-                return bool(healthy)
-        return False
+        return True
 
     def _update_dispatch_btn(self):
         """按 开关+大脑状态 刷新顶栏按钮文字（● 生效 / ○ 未生效 / 关）。"""
@@ -3686,14 +3655,75 @@ class App:
         if _feature("editor"):
             self._refresh_file_panel()
 
-    # ================= 审批弹窗 =================
+    # ================= 审批（聊天底部内嵌条） =================
     # 审批超时：用户长时间不响应则自动拒绝，避免工作线程永久挂起
     APPROVAL_TIMEOUT = 600  # 秒
 
-    def _make_approval_dialog(self, name, summary, result, done):
-        """创建审批对话框（实现在 ui_panel_approval.py）。"""
-        import ui_panel_approval
-        return ui_panel_approval.make_dialog(self, name, summary, result, done)
+    def _make_approval_bar(self, name, summary, result, done):
+        """内嵌审批条：停靠在聊天底部（统计栏与输入框之间），不再弹独立窗口。
+
+        result/done 由按钮回调写入；返回条容器（超时由调用方销毁）。
+        """
+        import tkinter as _tk2
+        from tkinter import scrolledtext as _st
+
+        bar = tk.Frame(self.center, bg=theme.PANEL,
+                       highlightthickness=1, highlightbackground=theme.ACCENT)
+        head = tk.Frame(bar, bg=theme.PANEL)
+        head.pack(fill="x", padx=10, pady=(6, 2))
+        tk.Label(head, text="\U0001F6E1 " + _t("ui.approve_want", name=name),
+                 font=(FONT_UI, 10, "bold"), fg=theme.TEXT,
+                 bg=theme.PANEL).pack(side="left")
+
+        closed = [False]   # 幂等防护：按钮/回车/超时销毁可能并发触发
+
+        def _finish(approved: bool):
+            if closed[0]:
+                return
+            closed[0] = True
+            result["approved"] = approved
+            try:
+                bar.destroy()
+            except tk.TclError:
+                pass
+            done.set()
+
+        def _btn(text, bg, fg, hbg, cmd):
+            b = tk.Button(head, text=text, command=cmd, width=8, bd=0,
+                          relief="flat", cursor="hand2", padx=10, pady=3,
+                          font=(FONT_UI, theme.FS_TOOLBAR), bg=bg, fg=fg,
+                          activebackground=hbg, highlightthickness=0)
+            b.bind("<Enter>", lambda _e: b.config(bg=hbg))
+            b.bind("<Leave>", lambda _e: b.config(bg=bg))
+            return b
+        allow_btn = _btn(_t("btn.allow"), theme.ACCENT, "#ffffff",
+                         "#1d4ed8", lambda: _finish(True))
+        allow_btn.pack(side="right", padx=(6, 0))
+        deny_btn = _btn(_t("btn.deny"), theme.BG, theme.TEXT,
+                        theme.BORDER, lambda: _finish(False))
+        deny_btn.pack(side="right")
+
+        # 参数摘要：最多 6 行，超出内部滚动
+        box = _st.ScrolledText(bar, wrap="word", font=(FONT_MONO, 9),
+                               height=max(2, min(6, summary.count("\n") + 1)),
+                               relief="flat", borderwidth=0,
+                               background=theme.PANEL, foreground=theme.TEXT,
+                               highlightthickness=1,
+                               highlightbackground=theme.BORDER)
+        box.insert("1.0", summary)
+        box.config(state="disabled")
+        _enable_text_copy(box)
+        box.pack(fill="x", padx=10, pady=(0, 8))
+
+        # 键盘：回车=允许，Esc=拒绝（焦点在条内时生效）
+        bar.bind("<Return>", lambda _e: _finish(True))
+        bar.bind("<Escape>", lambda _e: _finish(False))
+        bar.pack(fill="x", padx=16, pady=(0, 4), after=self.stat_frame)
+        try:
+            allow_btn.focus_set()
+        except _tk2.TclError:
+            pass
+        return bar
 
     @staticmethod
     def _destroy_if_alive(win):
@@ -3704,7 +3734,7 @@ class App:
             pass
 
     def _approve(self, name, args, summary):
-        # 双保险：非「每次询问」模式一律放行，不弹窗
+        # 双保险：非「每次询问」模式一律放行，不弹审批
         # （正常情况下 Agent 不会在 always/readonly 模式调到这里）
         if self.mode != agent_mod.MODE_ASK:
             return True
@@ -3713,26 +3743,19 @@ class App:
         holder = {}
 
         def _show():
-            # 弹窗前再查一次模式：本轮以 ask 发出、但用户中途已切「总是允许」
-            # → 自动允许，不再弹窗（所见即所得）
+            # 显示前再查一次模式：本轮以 ask 发出、但用户中途已切「总是允许」
+            # → 自动允许（所见即所得）
             if self.mode != agent_mod.MODE_ASK:
                 result["approved"] = True
                 done.set()
                 return
-            win = self._make_approval_dialog(name, summary, result, done)
-            holder["win"] = win
-            # 置顶 + 抢焦点 + 抓输入，确保窗口可见可点。
-            # 先 wait_visibility() 再 grab_set()，否则部分 Linux 桌面
-            # 管理器会把弹窗藏到主窗口后面，导致看起来整个界面卡死。
+            # 内嵌审批条：停靠聊天底部，与聊天同层，不再弹独立窗口
+            bar = self._make_approval_bar(name, summary, result, done)
+            holder["win"] = bar
             try:
-                win.attributes("-topmost", True)
-                win.lift()
-                win.wait_visibility()
-                win.focus_force()
-                win.grab_set()
-            except Exception as e:  # noqa: BLE001
-                self._append(_t("ui.approve_err", e=e)+"\n", "denied")
-                done.set()
+                bar.focus_set()
+            except Exception:        # noqa: BLE001
+                pass
 
         self.root.after(0, _show)
         done.wait(timeout=self.APPROVAL_TIMEOUT)
@@ -3796,20 +3819,25 @@ class App:
     # ---- /command 斜杠命令 ----
     _COMMANDS = [
         ("/help", "cmd.help", "help"),
+        ("/init", "cmd.init", "init"),
+        ("/brainstorm", "cmd.brainstorm", "brainstorm"),
+        ("/plan", "cmd.plan", "plan"),
+        ("/work", "cmd.work", "work"),
+        ("/loop", "cmd.loop", "loop"),
+        ("/compress", "cmd.compress", "compress"),
         ("/new", "cmd.new", "new"),
         ("/clear", "cmd.clear", "clear"),
-        ("/permission", "cmd.permission", "permission"),
-        ("/context", "cmd.context", "context"),
-        ("/reasoning", "cmd.reasoning", "reasoning"),
         ("/model", "cmd.model", "model"),
         ("/dir", "cmd.dir", "dir"),
+        ("/reasoning", "cmd.reasoning", "reasoning"),
+        ("/permission", "cmd.permission", "permission"),
+        ("/context", "cmd.context", "context"),
         ("/index", "cmd.index", "index"),
         ("/cache", "cmd.cache", "cache"),
         ("/mcp", "cmd.mcp", "mcp"),
         ("/sessions", "cmd.sessions", "sessions"),
         ("/delete", "cmd.delete", "delete"),
         ("/refresh", "cmd.refresh", "refresh"),
-        ("/compact", "cmd.compact", "compact"),
     ]
 
     def _show_command_menu(self, anchor=None):
@@ -3866,13 +3894,100 @@ class App:
                 self._delete_current_session()
             elif cmd == "/refresh":
                 self._refresh_all()
-            elif cmd == "/compact":
-                self._set_status(_t("evt.compact", before=0, after=0))
+            elif cmd in ("/compress", "/compact"):
+                self._compress_session()
+            elif cmd == "/init":
+                self._cmd_send(_t("init.prompt"))
+            elif cmd == "/brainstorm":
+                self._cmd_prompted(arg, _t("brainstorm.prompt"))
+            elif cmd == "/plan":
+                self._cmd_prompted(arg, _t("plan.prompt"))
+            elif cmd == "/work":
+                self._cmd_prompted(arg, _t("work.prompt"))
+            elif cmd == "/loop":
+                self._cmd_prompted(arg, _t("loop.prompt"))
             else:
                 self._set_status(_t("q.unknown", c=cmd))
         except Exception as e:  # noqa: BLE001
             self._set_status(_t("q.fail", e=str(e)))
         return True
+
+    def _cmd_send(self, prompt: str):
+        """命令注入提示词，走正常发送链路（含计划面板/审批/缓存）。"""
+        if self._running:
+            self._set_status(_t("ui.running"))
+            return
+        self._send_with(prompt, [])
+
+    def _cmd_prompted(self, arg: str, prompt: str):
+        """带任务参数的模式命令：有参立即发送；无参把模板填进输入框让用户补全。"""
+        if arg:
+            self._cmd_send(prompt.format(arg=arg))
+        else:
+            def _w():
+                self.input.delete("1.0", "end")
+                self.input.insert("1.0", prompt.format(arg="（在这里补充任务描述）"))
+                self.input.config(fg="black")
+                self._placeholder_active = False
+                self.input.focus_set()
+            self.root.after(0, _w)
+            self._set_status(_t("q.need_arg"))
+
+    def _compress_session(self):
+        """/compress：把当前会话历史压缩成摘要，替换旧消息（保留最近几轮原文）。"""
+        if self._running:
+            self._set_status(_t("ui.running"))
+            return
+        msgs = list(self.messages or [])
+        import context as _ctx
+        import llm as _llm
+        sys_head = msgs[:1] if (msgs and msgs[0].get("role") == "system") else []
+        rest = msgs[len(sys_head):]
+        keep_n = int(getattr(config, "CONTEXT_KEEP_ROUNDS", 2)) * 2
+        if len(rest) <= keep_n + 2:
+            self._set_status(_t("compress.short"))
+            return
+        to_sum = rest[:-keep_n]
+        keep = rest[-keep_n:]
+        model = self.current_model
+        before = _ctx.estimate_tokens(msgs)
+        self._set_status(_t("compress.working"))
+
+        def _worker():
+            summary = []
+            try:
+                smsgs = [{"role": "system", "content": _t("compress.prompt")}] + to_sum
+                for ev in _llm.stream_chat(model, smsgs, tools=None):
+                    if ev["type"] == "text":
+                        summary.append(ev["delta"])
+            except Exception as e:        # noqa: BLE001
+                self.root.after(0, lambda: self._set_status(
+                    _t("compress.fail", e=str(e)[:120])))
+                return
+            if not summary:
+                self.root.after(0, lambda: self._set_status(_t("compress.fail",
+                                                                e="empty")))
+                return
+            new_msgs = sys_head + [
+                {"role": "user", "content": _t("compress.header") + "".join(summary)},
+                {"role": "assistant", "content": _t("compress.ack")},
+            ] + keep
+            after = _ctx.estimate_tokens(new_msgs)
+            self.messages = new_msgs
+            try:
+                import sessions as sess_mod
+                sess_mod.save(self.session_id, self.messages,
+                              getattr(self, "session_title", "") or "会话",
+                              workspace=tools.get_workspace())
+            except Exception:            # noqa: BLE001  落盘失败不影响本次压缩
+                pass
+            self.root.after(0, lambda: (
+                self._append(_t("compress.done",
+                                before=before, after=after) + "\n", "meta"),
+                self._set_status(_t("compress.done",
+                                    before=before, after=after))))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     # ---- 输入框 /命令 联想 ----
     def _cmd_hide(self):
@@ -3896,6 +4011,100 @@ class App:
             pass
         self._cmd_hide()
 
+    # ---- @ 文件/目录选择（参考 Cursor）----
+    def _at_hide(self):
+        if getattr(self, "_at_pop", None) and self._at_pop.winfo_exists():
+            try: self._at_pop.destroy()
+            except Exception: pass
+        self._at_pop = None
+
+    def _at_candidates(self, frag: str) -> list:
+        """工作区文件/目录候选：@ 后的片段做子串过滤（忽略大小写）。"""
+        import os
+        try:
+            ws = tools.get_workspace() or os.getcwd()
+        except Exception:            # noqa: BLE001
+            ws = os.getcwd()
+        skip = {".git", "__pycache__", "node_modules", ".venv", "venv",
+                "dist", "build", ".idea", ".vscode", "__MACOSX"}
+        frag_l = (frag or "").lower()
+        out = []
+        for root, dirs, files in os.walk(ws):
+            rel_root = os.path.relpath(root, ws).replace("\\", "/")
+            if rel_root == ".":
+                rel_root = ""
+            dirs[:] = sorted(d for d in dirs if d not in skip)
+            for name in dirs:
+                rel = f"{rel_root}/{name}" if rel_root else name
+                if frag_l in rel.lower():
+                    out.append(rel + "/")
+            for name in sorted(files):
+                rel = f"{rel_root}/{name}" if rel_root else name
+                if frag_l in rel.lower():
+                    out.append(rel)
+            if len(out) >= 300:
+                break
+        return out[:80]
+
+    def _at_show(self, cands):
+        try:
+            pop = tk.Toplevel(self.root)
+            pop.overrideredirect(True)
+            lb = tk.Listbox(pop, font=(FONT_MONO, 9),
+                            height=min(len(cands), 10),
+                            borderwidth=0, highlightthickness=0)
+            for c in cands:
+                lb.insert("end", c)
+            lb.select_set(0)
+            lb.pack()
+            bbox = self.input.bbox("insert")
+            x = self.input.winfo_rootx() + (bbox[0] if bbox else 0)
+            y = self.input.winfo_rooty() + (bbox[1] + bbox[3] if bbox else 0) + 18
+            pop.geometry(f"+{x}+{y}")
+            self._at_pop = pop
+            self._at_lb = lb
+        except Exception:            # noqa: BLE001
+            pass
+
+    def _at_insert(self):
+        path = None
+        try:
+            sels = self._at_lb.curselection()
+            path = self._at_cands[sels[0] if sels else 0]
+        except Exception:            # noqa: BLE001
+            pass
+        self._at_hide()
+        if not path:
+            return
+        try:
+            idx = self.input.index("insert")
+            line_start = self.input.index(f"{idx} linestart")
+            prefix = self.input.get(line_start, idx)
+            import re
+            m = re.search(r"@[^\s@]*$", prefix)
+            if m:
+                start = f"{line_start}+{m.start(0)}c"
+                self.input.delete(start, idx)
+                self.input.insert(start, "@" + path + " ")
+        except Exception:            # noqa: BLE001
+            pass
+
+    def _expand_at_refs(self, text: str) -> str:
+        """发送前把 @相对路径 展开为绝对路径（仅存在的文件才替换），
+        交给 attach.extract_file_refs 自动转附件；目录/未知引用原样保留。"""
+        import os
+        import re
+        try:
+            ws = tools.get_workspace() or os.getcwd()
+        except Exception:            # noqa: BLE001
+            ws = os.getcwd()
+
+        def _sub(m):
+            rel = m.group(1).rstrip("/")
+            p = os.path.join(ws, rel)
+            return p if os.path.isfile(p) else m.group(0)
+        return re.sub(r"@([^\s@]+)", _sub, text)
+
     def _input_on_keyrelease(self, event):
         # 若命令弹窗在 → 处理导航/确认
         if getattr(self, "_cmd_pop", None) and self._cmd_pop.winfo_exists():
@@ -3916,43 +4125,74 @@ class App:
             self._cmd_lb.selection_clear(0, "end")
             self._cmd_lb.select_set(self._cmd_idx)
             return None
+        # 若 @ 文件弹窗在 → 处理导航/确认；其它键落入下方重扫描（随输入过滤）
+        if getattr(self, "_at_pop", None) and self._at_pop.winfo_exists():
+            k = event.keysym
+            if k == "Down":
+                self._at_idx = min(len(self._at_cands) - 1, self._at_idx + 1)
+            elif k == "Up":
+                self._at_idx = max(0, self._at_idx - 1)
+            elif k in ("Return", "Tab"):
+                self._at_insert()
+                return "break"
+            elif k == "Escape":
+                self._at_hide()
+                return "break"
+            self._at_lb.selection_clear(0, "end")
+            self._at_lb.select_set(self._at_idx)
         import re
         k = event.keysym
         if k in ("Return", "KP_Enter", "Tab", "Escape", "Up", "Down", "Left", "Right"):
             return
         if k == "BackSpace":
             self._cmd_hide()
+            self._at_hide()
             return
         idx = self.input.index("insert")
         line_start = self.input.index(f"{idx} linestart")
         prefix = self.input.get(line_start, idx)
-        m = re.search(r"/[a-z]*$", prefix)
+        m_cmd = re.search(r"/[a-z]*$", prefix)
+        m_at = re.search(r"@([^\s@]*)$", prefix)
         self._cmd_hide()
-        if not m:
+        if m_cmd:
+            self._at_hide()
+            word = m_cmd.group(0)
+            # 前缀匹配 + 容错（多打的字母不算错：/brainstorme 也能命中 /brainstorm）
+            cands = [c for c, _d, _key in self._COMMANDS
+                     if c.startswith(word) or word.startswith(c)]
+            if not cands:
+                return
+            self._cmd_cands = cands
+            self._cmd_idx = 0
+            try:
+                pop = tk.Toplevel(self.root)
+                pop.overrideredirect(True)
+                lb = tk.Listbox(pop, font=(FONT_MONO, 9), height=min(len(cands), 10),
+                                borderwidth=0, highlightthickness=0)
+                for c in cands:
+                    lb.insert("end", c)
+                lb.select_set(0)
+                lb.pack()
+                lb.bind("<MouseWheel>", lambda e: lb.yview_scroll(
+                    -1 * (e.delta // 120 or 1), "units"))
+                bbox = self.input.bbox("insert")
+                x = self.input.winfo_rootx() + (bbox[0] if bbox else 0)
+                y = self.input.winfo_rooty() + (bbox[1] + bbox[3] if bbox else 0) + 18
+                pop.geometry(f"+{x}+{y}")
+                self._cmd_pop = pop
+                self._cmd_lb = lb
+            except Exception:        # noqa: BLE001
+                pass
             return
-        word = m.group(0)
-        cands = [c for c, _d, _key in self._COMMANDS if c.startswith(word)]
+        self._at_hide()
+        if not m_at:
+            return
+        cands = self._at_candidates(m_at.group(1))
         if not cands:
             return
-        self._cmd_cands = cands
-        self._cmd_idx = 0
-        try:
-            pop = tk.Toplevel(self.root)
-            pop.overrideredirect(True)
-            lb = tk.Listbox(pop, font=(FONT_MONO, 9), height=min(len(cands), 10),
-                            borderwidth=0, highlightthickness=0)
-            for c in cands:
-                lb.insert("end", c)
-            lb.select_set(0)
-            lb.pack()
-            bbox = self.input.bbox("insert")
-            x = self.input.winfo_rootx() + (bbox[0] if bbox else 0)
-            y = self.input.winfo_rooty() + (bbox[1] + bbox[3] if bbox else 0) + 18
-            pop.geometry(f"+{x}+{y}")
-            self._cmd_pop = pop
-            self._cmd_lb = lb
-        except Exception:            # noqa: BLE001
-            pass
+        self._at_cands = cands
+        self._at_idx = 0
+        self._at_show(cands)
 
     def show_mode_help(self, arg):
         # 占位：permission 提示可选项
@@ -4072,17 +4312,36 @@ class App:
 
     def _on_return(self, event):
         # 回车提交：始终 return "break" 吞掉回车（避免空内容回车插入空行）。
-        # 占位符仍活跃：内容仍是占位符 → 忽略；已输入真实内容（IME/焦点边界）
-        # → 仅清占位符标记、保留内容并发送，绝不误删用户的输入。
+        # 容错：即使 _placeholder_active 状态被卡住（IME 组合、_on_input_key
+        # 未触发等），只要内容是真实文本就清掉占位符标记并发送，绝不误删。
+        raw = self.input.get("1.0", "end")
+        st = raw.strip()
+        is_placeholder = self._placeholder_active or st == self.PLACEHOLDER.strip()
+        if not st or is_placeholder:
+            return "break"               # 仍占位/纯空白：忽略回车
         if self._placeholder_active:
-            st = self.input.get("1.0", "end").strip()
-            if not st or st == self.PLACEHOLDER.strip():
-                return "break"           # 仍占位/纯空白：忽略回车
             self._placeholder_active = False
             self.input.config(fg="black")
-        if self.input.get("1.0", "end").strip():
-            self.send()
+        self.send()
         return "break"
+
+    def _on_shift_return(self, event):
+        """Shift+回车 → 发送。"""
+        self._set_status("⇧⏎ 发送中…")
+        return self._on_return(event)
+
+    def _on_keyrelease_return(self, event):
+        """兜底：KeyRelease-Return 阶段，如果输入框末尾多了一个换行
+        （说明 Shift+Return 漏发、走成了普通回车换行），删掉换行并补发。"""
+        # 仅在按住 Shift 时才补救，避免误删用户按 Enter 插入的真实换行
+        if not (event.state & 0x0001):    # 0x0001 = ShiftMask
+            return None
+        content = self.input.get("1.0", "end")
+        if content.endswith("\n") and not content.endswith("\n\n"):
+            self.input.delete("end-2c", "end-1c")
+            self.send()
+            return "break"
+        return None
 
     def send(self):
         if self._placeholder_active and not self._pending_attachments:
@@ -4103,6 +4362,11 @@ class App:
             self._render_attachments()
             return
         attachments = list(self._pending_attachments)
+        # @引用展开：@相对路径（选择器插入的）→ 绝对路径，存在才替换
+        try:
+            text = self._expand_at_refs(text)
+        except Exception:            # noqa: BLE001
+            pass
         # 本地文件引用自动转附件（file:// URI / 裸盘符路径；图片识图 / 音视频分析）
         file_paths, text = attach.extract_file_refs(text)
         attachments.extend(p for p in file_paths if p not in attachments)
@@ -4129,13 +4393,13 @@ class App:
         self._send_with(text, attachments)
 
     def _route_mode_text(self) -> str:
-        return {"auto": _t("route.auto"), "local": _t("route.local"),
+        return {"auto": _t("route.auto"),
                 "cloud": _t("route.cloud")}.get(self._route_override,
                                                 _t("route.auto"))
 
     def _cycle_route_override(self):
-        """自动→本地→云端→自动 循环切换，并刷新按钮/状态。"""
-        self._route_override = {"auto": "local", "local": "cloud",
+        """自动→云端→自动 循环切换，并刷新按钮/状态。"""
+        self._route_override = {"auto": "cloud",
                                 "cloud": "auto"}.get(self._route_override, "auto")
         # 图标化：按钮固定 🔀，当前模式悬停状态栏可见
         if hasattr(self, "_route_btn") and self._route_btn:
@@ -4161,17 +4425,17 @@ class App:
             r"深入分析|大改动|review\b|architecture|refactor\b|multi-?file)", t, re.I)
         if not heavy:
             return None
-        pk = config.get_dispatch_pro()
-        return pk if pk and not pk.startswith("gpulocal") else None
+        return config.get_dispatch_pro() or None
 
     def _send_with(self, text: str, attachments: list):
         """实际发送（send() 完成链接取材等预处理后调用）。"""
         # 识图预路由（智排）：当前模型不支持识图时，自动切到识图模型，而不是拦下发不了。
         # 本地优先：本地大脑（dispatch_model）带识图且在跑 → 用本地；否则回退云端识图。
-        # 本轮开始：清空任务步骤(todo)，按工具调用实时重建
+        # 本轮开始：清空任务步骤(todo)。面板只在模型下发 task_plan 计划后出现；
+        # 无计划的简单任务不再显示无意义的占位行
+        self._has_plan = False              # 新一轮：等待模型的 task_plan 计划
+        self._todo_tool_current = None
         self.todo_items = []
-        if not getattr(self, "_todo_collapsed", False):
-            self.todo_items.append({"label": _t("todo.processing"), "done": False})
         self._render_todo()
         run_model = self.current_model
         if attachments and self.current_model and not self.current_model.vision:
@@ -4214,16 +4478,13 @@ class App:
         # 轮次号：本条是第几条用户消息（回放时按轮次内插批注用）
         turn_no = sum(1 for m in (self.messages or [])
                       if m.get("role") == "user") + 1
-        # 路由覆盖（侧栏按钮）：local=强制本地本轮；cloud=强制云端本轮；auto=自动路由
+        # 路由覆盖（侧栏按钮）：cloud=强制云端本轮；auto=自动路由
         ov = getattr(self, "_route_override", "auto")
         routed_key = None
         if run_model is self.current_model:
-            if ov == "local":
-                routed_key = None
-            elif ov == "cloud":
-                routed_key = config.get_dispatch_pro() if config.get_model_dispatch() else None
-                if routed_key and routed_key.startswith("gpulocal"):
-                    routed_key = None
+            if ov == "cloud":
+                routed_key = (config.get_dispatch_pro()
+                              if config.get_model_dispatch() else None)
             else:
                 routed_key = self._route_complex(text)
             if routed_key:
@@ -4946,7 +5207,12 @@ class App:
                 segs.append({"text": s, "tag": "mdlist"}); segs.append(br); continue
             segs.extend(self._md_inline(line)); segs.append(br)
         if code:
-            segs.append({"text": "\n".join(code) + "\n", "tag": "mdcodeblock"})
+            # 回复被截断在 ``` 围栏中间时，这里会收到未闭合的尾部代码。
+            # 空内容（只有围栏/换行）不再渲染成深底色块——避免聊天底部
+            # 出现一条无意义的黑色框条。
+            tail = "\n".join(code)
+            if tail.strip():
+                segs.append({"text": tail + "\n", "tag": "mdcodeblock"})
         return segs
 
     def _md_inline(self, line):
@@ -4997,6 +5263,10 @@ class App:
                             width=self._model_btn_width())
                 self.root.after(0, _switch_btn)
                 self._set_status(_t("st.model", m=mc.display_name))
+        elif etype == "plan":
+            # 模型通过 task_plan 下发/更新计划：任务步骤整体替换为计划清单
+            self.root.after(0, lambda s=event.get("steps") or []:
+                            self._todo_from_plan(s))
         elif etype == "tool_start":
             self._md_reset_block()
             self._todo_start(event.get("name"), event.get("args") or {})
@@ -5181,7 +5451,7 @@ def _register_dnd_targets(app):
             pass
 
     # 文件树作为拖拽源：按住文件拖出 → 把该文件路径作为拖拽数据，
-    # 落到聊天/输入框即加入附件（效果等同“添加到对话”）
+    # 落到聊天/输入框即加入附件（效果等同"添加到对话"）
     try:
         ft = app.file_tree
         ft.drag_source_register(1, DND_FILES)

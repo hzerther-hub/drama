@@ -39,7 +39,11 @@ Most AI writing tools confine you to a chat box and a copy button. Here the agen
 - **Multi-session** — auto-save at send time, per-directory grouping, global search across projects
 - **Context compaction** — over-budget conversations auto-truncate tool results, then collapse old rounds into summaries (system + first question + recent rounds kept)
 - **Cache layer** — identical requests answered instantly; SQLite (persists) or in-memory backend; live token / cache-hit / fast-reply stats
-- **Model management** — multiple providers, add/edit/delete, custom endpoints, `/models` auto-fetch, per-model vision & reasoning-effort flags
+- **Model management** — provider-first two-pane manager: providers grouped & renameable (uniqueness enforced), editable endpoint/key/API type (**OpenAI-compatible & Anthropic dual protocol**); per-model vision / reasoning-effort / context-window / max-output tokens — changes apply instantly, no restart
+- **Slash commands** — `/init` generate AGENTS.md, `/brainstorm` ideate, `/plan` make an execution plan, `/work` execute it step by step, `/loop` iterate until verified, `/compress` compress session history; type `/` for the palette
+- **@ file references** — type `@` to pick a workspace file/directory (Cursor-style); file references are auto-attached on send
+- **Plan-first task steps** — multi-step tasks start from a `task_plan` checklist (functional descriptions, checked off as work proceeds); tool approval is an inline bar docked to the chat, no modal popups
+- **Enter = newline, Shift+Enter = send** — long-form writing friendly; Ctrl+Enter queues a message
 - **Three permission modes** — readonly / ask (default) / always, with sandbox guardrails
 - **Workspace switching** — switch between works; relative paths follow the selected directory
 - **Bundled fonts** — JetBrains Mono + Noto Sans CJK, consistent across platforms
@@ -68,6 +72,7 @@ mkdir 我的短剧 && python main.py     # then pick 我的短剧 as the workspa
 | `web_search` | Search the web (DuckDuckGo, no key) | read |
 | `run_shell` | Run a shell command (e.g. ffmpeg, pandoc exports) | **write** |
 | `call_model` | Delegate a subtask to another configured model | read |
+| `task_plan` | Create/update the task checklist shown in the plan panel | read |
 | `kb_search` | Retrieve fragments from the multi-root knowledge base | read |
 
 (`lsp_diagnostics` also ships as a kernel tool; it only matters for code-like projects.)
@@ -77,7 +82,7 @@ mkdir 我的短剧 && python main.py     # then pick 我的短剧 as the workspa
 ```
 main.py → ui.launch() → App (Tkinter mainloop; one worker thread per message)
    └─ agent.Agent.run()     synchronous function-calling loop
-        ├─ llm.py           OpenAI-compatible SSE streaming client (stdlib urllib)
+        ├─ llm.py           SSE streaming client: OpenAI-compatible & Anthropic (stdlib urllib)
         ├─ tools.py         built-in tools + executor + permission tiers + sandbox
         ├─ codera.py        multi-root knowledge base (TF-IDF + optional embedding)
         ├─ context.py       token budget + three-stage compaction
@@ -88,7 +93,7 @@ main.py → ui.launch() → App (Tkinter mainloop; one worker thread per message
         └─ weblinks.py      auto-fetch links from messages
 ```
 
-**Agent loop**: stream chat request (with tool schemas) → tool_calls? → approval in `ask` mode → execute sandboxed → feed results back → repeat (≤ 12 rounds) → final text streamed.
+**Agent loop**: stream chat request (with tool schemas) → tool_calls? → approval via the inline bar in `ask` mode → execute sandboxed → feed results back → repeat (≤ 24 rounds, then a forced no-tools wrap-up guarantees a final answer) → final text streamed.
 
 ## Products: one kernel, many faces
 
@@ -155,7 +160,7 @@ From [`PLAN-五产品矩阵.md`](PLAN-五产品矩阵.md) (product 3; market ana
 
 - `run_shell` / `write_file` really execute commands and write files; the default **ask** mode confirms every write
 - Sandbox guardrails (default on, `LAS_SANDBOX=off` to disable): `write_file` is confined to the workspace; `run_shell` rejects obviously destructive commands (rm -rf /, mkfs, shutdown, fork bombs). Guardrails, not OS-level isolation
-- Tool execution timeout (60 s) and a 12-round cap prevent runaway loops
+- Tool execution timeout (60 s) and a 24-round cap (with a forced wrap-up answer) prevent runaway loops
 - Avoid `always` mode when feeding the model untrusted text
 
 ## Development
@@ -163,7 +168,7 @@ From [`PLAN-五产品矩阵.md`](PLAN-五产品矩阵.md) (product 3; market ana
 ```bash
 pip install -r requirements-dev.txt
 python -m py_compile *.py            # syntax gate (same as CI)
-python -m pytest tests/ -q           # 294 unit tests; LLM transport mocked, HOME/APPDATA isolated
+python -m pytest tests/ -q           # 350+ unit tests; LLM transport mocked, HOME/APPDATA isolated
 ```
 
 Core modules import stdlib only; optional deps (numpy, faster-whisper, psutil, Pillow, tkinterdnd2) degrade gracefully. UI dialogs live in `ui_panel_*.py`. Conventions in [`AGENTS.md`](AGENTS.md).

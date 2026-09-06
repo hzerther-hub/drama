@@ -143,8 +143,12 @@ def effective_budget(model=None) -> int:
     budget = getattr(config, "CONTEXT_BUDGET", 24000)
     win = getattr(model, "context_window", 0) if model is not None else 0
     key = getattr(model, "key", "") if model is not None else ""
-    # 输出上限：本地 16K，云端 256K（与 llm.py 一致）；margin=输出+安全余量
-    out_mt = 16384 if key.startswith("gpulocal") else getattr(config, "MAX_TOKENS", 256000)
+    # 输出上限：模型自身声明 > 本地 16K 启发式 > 云端全局兜底；与 llm.py 一致
+    declared_mt = int(getattr(model, "max_tokens", 0) or 0) if model is not None else 0
+    if declared_mt > 0:
+        out_mt = declared_mt
+    else:
+        out_mt = 16384 if key.startswith("gpulocal") else getattr(config, "MAX_TOKENS", 32768)
     margin = out_mt + 1024
     # 本地(gpulocal)：context_window 常被同步重置为 0，按已知 131072 窗口兜底
     if key.startswith("gpulocal"):

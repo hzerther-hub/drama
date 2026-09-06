@@ -55,6 +55,10 @@ def show(app):
     box = scrolledtext.ScrolledText(win, wrap="word", font=(FONT_UI, 10),
                                     relief="flat", padx=14, pady=12)
     box.insert("1.0", _t("help.text"))
+    # 斜杠命令清单：从 app._COMMANDS 动态生成，新增命令自动出现在帮助里
+    box.insert("end", "\n\n" + _t("help.cmds_title") + "\n")
+    for cmd, dkey, _k in getattr(app, "_COMMANDS", []):
+        box.insert("end", "  %s   %s\n" % (cmd, _t(dkey)))
     box.config(state="disabled")
     ui._enable_text_copy(box)
     box.pack(fill="both", expand=True, padx=12, pady=(12, 0))

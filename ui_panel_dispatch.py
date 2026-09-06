@@ -10,7 +10,10 @@ import tkinter as tk
 from tkinter import ttk
 
 import config
-import localmodels
+try:
+    import localmodels
+except ImportError:                  # noqa: BLE001  gpulocal 已移除 → 降级为纯云端
+    localmodels = None
 from i18n import t as _t
 import theme
 
