@@ -25,6 +25,7 @@ import errlog
 import dircache
 import media
 import mcp
+import novel_chain
 import theme
 import tools
 import ui_input
@@ -3772,6 +3773,7 @@ class App:
         self._append_segments(segs)
 
     def _set_status(self, text, color=None):
+        self._status_text = text           # 供 /命令 回显的「└ 结果」镜像
         self.root.after(0, lambda: self.status_label.config(text=text))
 
     # ================= 右侧动态状态徽标 =================
@@ -4113,6 +4115,9 @@ class App:
         m = _re.match(r"^(/\S+)\s*(.*)$", text)
         cmd = (m.group(1) if m else text).lower()
         arg = (m.group(2).strip() if m else "")
+        echo = text if len(text) <= 80 else text[:77] + "..."
+        self._append("🛠 " + echo + "\n", "toolhead")   # 命令回显（工具提示同款）
+        self._cmd_status0 = getattr(self, "_status_text", "")
         try:
             if cmd in ("/help",):
                 self._show_help()
@@ -4123,7 +4128,7 @@ class App:
             elif cmd in ("/permission",):
                 self._set_status(_t("st.perm", m=_t("mode.ask"))); self.show_mode_help(arg)
             elif cmd == "/context":
-                self._toggle_ctx(); 
+                self._toggle_ctx()
             elif cmd in ("/reasoning",):
                 self._set_reasoning(arg or "medium")
             elif cmd == "/model":
@@ -4148,8 +4153,7 @@ class App:
                 self._append(("✅ " if ok else "⚠️ ") + msg + "\n", "meta")
                 self._set_status(msg)
             elif cmd == "/novel":
-                import ui_panel_novel
-                ui_panel_novel.show(self)
+                self._novel_command(arg)
             elif cmd in ("/compress", "/compact"):
                 self._compress_session()
             elif cmd == "/init":
@@ -4166,6 +4170,9 @@ class App:
                 self._set_status(_t("q.unknown", c=cmd))
         except Exception as e:  # noqa: BLE001
             self._set_status(_t("q.fail", e=str(e)))
+        new = getattr(self, "_status_text", "")
+        if new and new != getattr(self, "_cmd_status0", None):
+            self._append("└ " + new + "\n", "meta")
         return True
 
     def _cmd_send(self, prompt: str):
@@ -4245,6 +4252,155 @@ class App:
 
         threading.Thread(target=_worker, daemon=True).start()
 
+    # ---- /novel 写小说生产线（进度像工具提示一样渲染进聊天区）----
+
+    def _novel_command(self, arg: str):
+        """/novel 子命令：start <灵感> [章数] | stop | resume [pid] | status |
+        drama 起-止 | deconstruct <txt路径>。进度实时渲染进聊天区。"""
+        import novel_chain
+        import pipeline as _pl
+        sub = (arg or "").split(None, 1)
+        head = sub[0] if sub else "status"
+        rest = sub[1] if len(sub) > 1 else ""
+        if head == "start":
+            if not rest:
+                self._set_status(_t("novel.need_idea"))
+                self._append("⚠ " + _t("novel.need_idea") + "\n", "denied")
+                return
+            m = re.search(r"\s+(\d{1,2})$", rest)
+            total = int(m.group(1)) if m else 3
+            idea = rest[:m.start()].strip() if m else rest.strip()
+            if self._running or getattr(self, "_novel_busy", False):
+                self._set_status(_t("novel.busy"))
+                return
+            model_key = self.current_model.key if self.current_model else ""
+            if not model_key:
+                self._set_status(_t("novel.need_model"))
+                self._append("⚠ " + _t("novel.need_model") + "\n", "denied")
+                return
+            p = novel_chain.new_pipeline(idea, total, model_key)
+            self._novel_pipe = p
+            self._novel_busy = True
+            self._novel_run(p)
+        elif head == "stop":
+            if getattr(self, "_novel_pipe", None):
+                self._novel_pipe.request_stop()
+                self._set_status(_t("novel.stopped"))
+        elif head == "resume":
+            rows = _pl.list_pipelines()
+            cand = rest.strip()
+            if cand:
+                row = next((r for r in rows if r["pid"] == cand), None)
+            else:
+                row = next((r for r in rows if r["pipeline_status"]
+                            in ("paused", "failed")), None)
+            if not row:
+                self._set_status(_t("novel.none"))
+                return
+            p = _pl.load(row["pid"], novel_chain.STAGES)
+            if not p:
+                self._set_status(_t("novel.notfound"))
+                return
+            self._novel_pipe = p
+            self._novel_busy = True
+            self._novel_run(p)
+        elif head == "drama":
+            p = getattr(self, "_novel_pipe", None)
+            m = re.match(r"^(\d+)\s*-\s*(\d+)$", rest.strip())
+            if not (p and p.state.get("chapters")) or not m:
+                self._set_status(_t("novel.no_chapters"))
+                self._append("⚠ " + _t("novel.no_chapters") + "\n", "denied")
+                return
+            self._novel_busy = True
+
+            def drama_work():
+                try:
+                    out = novel_chain.drama_adapt(
+                        p.state, int(m.group(1)), int(m.group(2)),
+                        on_event=lambda e: self.root.after(
+                            0, lambda: self._novel_event(e)))
+                except Exception as e:          # noqa: BLE001
+                    self.root.after(0, lambda: self._append(
+                        "❌ " + str(e) + "\n", "denied"))
+                else:
+                    self.root.after(0, lambda: self._append(
+                        "✅ " + _t("novel.drama_done", file=out) + "\n", "meta"))
+                finally:
+                    self.root.after(0, lambda: setattr(
+                        self, "_novel_busy", False))
+            threading.Thread(target=drama_work, daemon=True).start()
+        elif head == "deconstruct":
+            path = rest.strip().strip('"')
+            model_key = self.current_model.key if self.current_model else ""
+            if not path or not model_key:
+                self._set_status(_t("novel.need_model"))
+                return
+            self._novel_busy = True
+
+            def deco_work():
+                try:
+                    out = novel_chain.deconstruct(path, model_key)
+                except Exception as e:          # noqa: BLE001
+                    self.root.after(0, lambda: self._append(
+                        "❌ " + str(e) + "\n", "denied"))
+                else:
+                    self.root.after(0, lambda: self._append(
+                        "✅ " + _t("novel.deconstruct_done", file=out) + "\n",
+                        "meta"))
+                finally:
+                    self.root.after(0, lambda: setattr(
+                        self, "_novel_busy", False))
+            threading.Thread(target=deco_work, daemon=True).start()
+        else:                                  # status
+            rows = _pl.list_pipelines()
+            if not rows:
+                self._append(_t("novel.none") + "\n", "meta")
+                return
+            for r in rows:
+                self._append(f"· {r['pid']} [{r['pipeline_status']}] "
+                             f"{r['title']}（债 {r['debts']}）\n", "meta")
+
+    def _novel_run(self, p):
+        """在 daemon 线程跑流水线；事件回主线程渲染进聊天区。"""
+        def on_event(e):
+            self.root.after(0, lambda: self._novel_event(e))
+
+        def work():
+            try:
+                p.run(on_event=on_event)
+            except Exception as e:          # noqa: BLE001
+                self.root.after(0, lambda: self._append(
+                    "❌ " + str(e) + "\n", "denied"))
+            finally:
+                self.root.after(0, lambda: setattr(self, "_novel_busy", False))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _novel_event(self, e):
+        """流水线事件 → 聊天区（工具提示同款样式）。"""
+        t = e.get("type")
+        labels = novel_chain.STAGE_LABELS
+        if t == "pipeline_started":
+            self._append("🛠 " + _t("novel.started",
+                                    pid=e["pid"]) + "\n", "toolhead")
+        elif t == "stage_start":
+            self._append("🛠 " + _t("novel.stage", label=labels.get(
+                e["name"], e["name"])) + "\n", "toolhead")
+        elif t == "chapter_done":
+            self._append(_t("novel.chapter", n=e["idx"], t=e["title"],
+                            w=e["words"]) + "\n", "toolresult")
+        elif t == "stage_debt":
+            self._append("⚠ " + _t("novel.debt",
+                                    e=e.get("detail", "")) + "\n", "denied")
+        elif t == "pipeline_done":
+            p = getattr(self, "_novel_pipe", None)
+            file = p.state.get("file", "") if p else ""
+            self._append("✅ " + _t("novel.done_msg",
+                                    file=file) + "\n", "meta")
+        elif t == "pipeline_paused":
+            self._append("⏸ " + _t("novel.paused_msg") + "\n", "meta")
+        elif t == "pipeline_failed":
+            self._append("❌ " + _t("novel.failed_msg",
+                                    e=e.get("detail", "")) + "\n", "denied")
     def _expand_at_refs(self, text: str) -> str:
         """发送前把 @相对路径 展开为绝对路径（仅存在的文件才替换），
         交给 attach.extract_file_refs 自动转附件；目录/未知引用原样保留。"""

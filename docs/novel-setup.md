@@ -1,4 +1,4 @@
-# novelwriter 整本生产工作台 — 外接工具与使用说明
+# novelwriter 整本生产线 — 外接工具与使用说明
 
 参考 [AI-Novel-Writing-Assistant](https://github.com/ExplosiveCoderflome/AI-Novel-Writing-Assistant)
 的功能主链，用 **纯 Tkinter + Python stdlib** 实现（零第三方 Python 依赖）。
@@ -47,27 +47,22 @@ setx LAS_EMBED_API_KEY "sk-..."
 
 ### 3. 图像生成服务（漫画工坊 / 角色形象图）— 按需配置
 
-OpenAI 兼容 `/images/generations` 接口：
+## 三、使用方法（全部在聊天输入框完成，进度直接流入聊天区）
+
 ```
-setx LAS_IMAGE_BASE_URL "https://api.openai.com/v1"
-setx LAS_IMAGE_MODEL    "gpt-image-1"
-setx LAS_IMAGE_API_KEY  "sk-..."
-setx LAS_IMAGE_SIZE     "1024x1024"
+/novel start 一句灵感 4      # 自动导演整本生产（章数≤12，可省略默认3）
+/novel status                # 全部流水线状态
+/novel stop                  # 当前章完成后暂停
+/novel resume [pid]          # 从检查点恢复（可省略 pid 取最近暂停的）
+/novel drama 1-3             # 已完成章节 → 短剧剧本+分镜 md
+/novel deconstruct 某书.txt  # 拆书报告（题材/结构/人物/写法特征）
 ```
-未配置 → 漫画/形象图功能明确提示，不影响文字主链。
 
-### 4. Python 依赖
+- 进度以工具提示样式实时渲染：🛠 阶段块、📖 章节完成块、⚠ 质量债、✅ 完成行
+- 书稿与衍生物保存在工作区 `novels/` 目录，随时可用编辑器打开
+- `写法参考`：把拆书报告里的写法特征条目放进 `state`（后续面板化），
+  或直接在 start 的灵感句尾描述风格要求
 
-**无。** 全部功能基于 Python 3.12+ 标准库实现。
-
-## 三、使用方法
-
-1. 应用内输入 `/novel` 打开「开书工作台」
-2. 「开书」页：填一句灵感 → 设章数（1-12）→ 可选写法参考 → 点「开书（自动导演）」
-   - 勾选「规划完成后暂停确认」= 专业模式：规划各阶段完成后停下，检查后再执行章节
-3. 「运行」页：看阶段状态/质量债/日志；「继续」恢复暂停的流水线；「打开书稿」在编辑器查看全文
-4. 「衍生」页：拆书（选一个 txt/md）；短剧改编（输入章节范围，输出剧本+分镜）
-5. 书稿与衍生物都保存在工作区 `novels/` 目录下，可随时用编辑器打开
 
 ## 四、文件清单
 
@@ -77,5 +72,4 @@ setx LAS_IMAGE_SIZE     "1024x1024"
 | `novel_chain.py` | 小说主链阶段定义 + 审校修复回灌 + 拆书/短剧 + RAG 钩子 |
 | `vecstore.py` | Qdrant REST 客户端 + embedding + 内存降级检索 |
 | `imggen.py` | 图像生成客户端（OpenAI 兼容 images API） |
-| `ui_panel_novel.py` | 开书工作台（纯 Tkinter 三标签页） |
 | `tests/test_pipeline.py` `tests/test_novel_chain.py` | 单元测试 |
