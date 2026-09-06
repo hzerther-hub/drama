@@ -333,6 +333,91 @@ def _fetch_openai_models(base_url: str, api_key: str,
     raise last_exc
 
 
+# 文件类型 → Noto 彩色图标（assets/icons/<hex>.png，见 _emoji_icon）
+_TREE_ICON_MAP = {
+    "py": "1f40d", "md": "1f4dd", "markdown": "1f4dd",
+    "txt": "1f4c4", "log": "1f4c4",
+    "json": "2699", "yaml": "2699", "yml": "2699", "toml": "2699",
+    "ini": "2699", "cfg": "2699", "conf": "2699",
+    "ipynb": "1f4d3",
+    "html": "1f310", "htm": "1f310", "css": "1f310", "js": "1f310",
+    "mjs": "1f310", "ts": "1f310", "tsx": "1f310", "jsx": "1f310",
+    "png": "1f5bc", "jpg": "1f5bc", "jpeg": "1f5bc", "gif": "1f5bc",
+    "bmp": "1f5bc", "webp": "1f5bc", "svg": "1f5bc", "ico": "1f5bc",
+    "csv": "1f4ca", "xlsx": "1f4ca", "xls": "1f4ca",
+    "zip": "1f4e6", "tar": "1f4e6", "gz": "1f4e6", "tgz": "1f4e6",
+    "7z": "1f4e6", "rar": "1f4e6",
+    "pdf": "1f4d5", "doc": "1f4d8", "docx": "1f4d8",
+    "mp3": "1f3b5", "wav": "1f3b5", "flac": "1f3b5", "m4a": "1f3b5",
+    "mp4": "1f3ac", "mov": "1f3ac", "avi": "1f3ac", "mkv": "1f3ac",
+    "bat": "1f527", "sh": "1f527", "ps1": "1f527",
+}
+
+
+def _emoji_icon(key: str):
+    """hex 码点 → 彩色 PNG PhotoImage（缺素材/非 Windows 返回 None）。"""
+    try:
+        return _icon_image(chr(int(key, 16)))
+    except Exception:                # noqa: BLE001
+        return None
+
+
+def _tv_select(lb, i) -> int:
+    """Treeview 候选框：选中第 i 行（夹紧范围）并滚动可见，返回实际 i。"""
+    kids = lb.get_children("")
+    if not kids:
+        return 0
+    i = max(0, min(i, len(kids) - 1))
+    lb.selection_set(kids[i])
+    lb.see(kids[i])
+    return i
+
+
+def _tv_index(lb) -> int:
+    """Treeview 候选框：当前选中行索引（无选中返回 0）。"""
+    sel = lb.selection()
+    return lb.index(sel[0]) if sel else 0
+
+
+def _fmt_size(n) -> str:
+    """字节数 → 人类可读：980 B / 12.3 KB / 4.5 MB。"""
+    try:
+        n = float(n or 0)
+    except (TypeError, ValueError):
+        return "-"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return ("%d %s" % (n, unit)) if unit == "B" else "%.1f %s" % (n, unit)
+        n /= 1024
+    return "%.1f TB" % n
+
+
+def _dir_size(path: str, max_entries: int = 20000) -> int:
+    """目录聚合大小（递归，含隐藏文件）。条目数超过 max_entries 提前止步，
+    防止 node_modules/.git 之类超大目录拖慢文件树刷新。"""
+    total = 0
+    count = 0
+    stack = [path]
+    while stack:
+        cur = stack.pop()
+        try:
+            with os.scandir(cur) as it:
+                for e in it:
+                    count += 1
+                    if count > max_entries:
+                        return total
+                    try:
+                        if e.is_dir(follow_symlinks=False):
+                            stack.append(e.path)
+                        else:
+                            total += e.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    return total
+
+
 def _project_fonts_dir() -> str:
     """项目自带字体目录。兼容源码运行和 PyInstaller 打包。"""
     if hasattr(sys, "_MEIPASS"):   # PyInstaller 解包目录
@@ -1131,6 +1216,9 @@ class App:
         # 由这里清掉插入的换行并补发。
         self.input.bind("<KeyRelease-Return>", self._on_keyrelease_return)
         self._setup_placeholder()
+        # 弹窗（/命令、@文件）的导航/确认必须在 KeyPress 拦截，
+        # 否则回车先被 Text 插入换行、方向键先移动光标
+        self.input.bind("<KeyPress>", self._on_input_keypress)
         self.input.bind("<KeyRelease>", self._input_on_keyrelease)
 
         btn_col = tk.Frame(bottom)
@@ -1669,8 +1757,11 @@ class App:
         self._file_views["__files__"] = tree_view
         self._file_tab_by_view["__files__"] = None
 
-        # 搜索框
-        self.file_search = tk.Entry(tree_view, font=(FONT_MONO, 10))
+        # 搜索框 + 刷新按钮
+        srow = tk.Frame(tree_view)
+        srow.pack(fill="x", padx=6, pady=(6, 4))
+        self.file_search = tk.Entry(srow, font=(FONT_MONO, 10))
+        self.file_search.pack(side="left", fill="x", expand=True)
         self.file_search.insert(0, _t("file.search"))
         self.file_search.bind("<FocusIn>", lambda e: (self.file_search.delete(0, "end"),
                                                      self.file_search.config(fg="black"))
@@ -1679,7 +1770,8 @@ class App:
                                                        self.file_search.config(fg="gray"))
                               if not self.file_search.get() else None)
         self.file_search.bind("<KeyRelease>", lambda e: self._apply_file_filter(self.file_search.get()))
-        self.file_search.pack(fill="x", padx=6, pady=(6, 4))
+        _flat_emoji_button(srow, "🔄", command=self._refresh_file_panel,
+                           font_size=theme.FS_TOOLBAR).pack(side="left", padx=(6, 0))
 
         # 文件树
         self.file_tree = ttk.Treeview(tree_view, show="tree", selectmode="browse")
@@ -1821,16 +1913,17 @@ class App:
         name_lbl.bind("<ButtonRelease-1>", _release)
 
     def _bind_file_tree_drag(self):
-        """文件树条目可拖拽：按住文件拖到聊天输入区/消息区放下 = 加入对话。
+        """文件树条目可拖拽：按住拖到聊天输入区/消息区放下 = 加入对话。
 
-        效果等同右键「添加到对话」（追加到待发送附件栏）；无位移的普通点击
-        仍走 _on_file_click（选中/展开/双击打开），不触发拖拽。
-        目录与空白区不可拖（与右键菜单一致：仅文件可加入对话）。
+        - 文件：追加到待发送附件栏（等同右键「添加到对话」）
+        - 目录：以 @引用 形式插入输入框（作为模型上下文，不转附件）
+        无位移的普通点击仍走 _on_file_click（选中/展开/双击打开），不触发拖拽。
         """
-        drag = {"sx": 0, "sy": 0, "moved": False, "ghost": None, "path": None}
+        drag = {"sx": 0, "sy": 0, "moved": False, "ghost": None,
+                "path": None, "isdir": False}
 
         def _item_file_path(y):
-            """返回鼠标 y 坐标对应条目的文件路径；目录/空白返回 None。"""
+            """返回鼠标 y 坐标对应条目的 (路径, 是否目录)；空白返回 (None, False)。"""
             try:
                 iid = self.file_tree.identify_row(y)
             except Exception:            # noqa: BLE001
@@ -1838,18 +1931,16 @@ class App:
             if not iid:
                 iid = self.file_tree.focus()
             if not iid:
-                return None
+                return None, False
             vals = self.file_tree.item(iid, "values")
-            if not vals or len(vals) < 2:
-                return None
-            if str(vals[1]).strip().lower() == "true":   # 目录：不拖
-                return None
-            return vals[0] or None
+            if not vals or len(vals) < 2 or not str(vals[0]).strip():
+                return None, False
+            return vals[0], str(vals[1]).strip().lower() == "true"
 
         def _press(e):
             drag["sx"], drag["sy"] = e.x_root, e.y_root
             drag["moved"] = False
-            drag["path"] = _item_file_path(e.y)
+            drag["path"], drag["isdir"] = _item_file_path(e.y)
 
         def _motion(e):
             # 未超过阈值视为点击，不弹拖影
@@ -1865,7 +1956,8 @@ class App:
                     g.attributes("-topmost", True)
                 except Exception:    # noqa: BLE001
                     pass
-                tk.Label(g, text="📄 " + os.path.basename(drag["path"]),
+                icon = "📁" if drag["isdir"] else "📄"
+                tk.Label(g, text=icon + " " + os.path.basename(drag["path"].rstrip("/\\")),
                          bg=self._TAB_ON, fg=self._TAB_FG_ON,
                          font=(FONT_UI, 9), padx=8, pady=4).pack()
                 drag["ghost"] = g
@@ -1885,7 +1977,10 @@ class App:
             if not drag["moved"] or not drag["path"]:
                 return
             if self._point_over_widget(self.input, e.x_root, e.y_root) or                self._point_over_widget(self.chat, e.x_root, e.y_root):
-                self._add_selected_to_chat(drag["path"])
+                if drag["isdir"]:
+                    self._insert_at_ref(drag["path"])
+                else:
+                    self._add_selected_to_chat(drag["path"])
             drag["path"] = None
 
         self.file_tree.bind("<Button-1>", _press, add="+")
@@ -1952,7 +2047,7 @@ class App:
             self._file_select_view("__files__")
 
     def _on_file_right(self, event):
-        """右键文件树：添加到对话 / 打开 / 删除。"""
+        """右键文件树：文件=添加到对话/打开/改名/删除；目录=在资源管理器中打开/添加到对话/改名/删除。"""
         try:
             self.file_tree.identify_row(event.y)
         except Exception:            # noqa: BLE001
@@ -1964,20 +2059,91 @@ class App:
             except Exception:        # noqa: BLE001
                 iid = ""
         vals = self.file_tree.item(iid, "values") if iid else ("", False)
+        path = str(vals[0]) if vals and vals[0] else ""
         is_dir = str(vals[1]).strip().lower() == "true" if len(vals) >= 2 else False
         menu = tk.Menu(self.root, tearoff=0, font=(FONT_UI, 10))
-        if not is_dir and vals and vals[0]:
+        if not path:
+            menu.tk_popup(event.x_root, event.y_root)
+            return
+        if is_dir:
+            menu.add_command(label=_t("file.open_dir"),
+                             command=lambda p=path: self._open_in_explorer(p))
             menu.add_command(label=_t("file.add_chat"),
-                             command=lambda p=vals[0]: self._add_selected_to_chat(p))
-            menu.add_command(label=_t("file.open"),
-                             command=lambda p=vals[0]: self._open_file_editor(p))
+                             command=lambda p=path: self._add_selected_to_chat(p))
+            menu.add_command(label=_t("file.rename"),
+                             command=lambda p=path: self._rename_tree_item(p, True))
             menu.add_separator()
             menu.add_command(label=_t("file.delete"),
-                             command=lambda p=vals[0]: self._delete_file(p))
+                             command=lambda p=path: self._delete_tree_item(p, True))
         else:
+            menu.add_command(label=_t("file.add_chat"),
+                             command=lambda p=path: self._add_selected_to_chat(p))
             menu.add_command(label=_t("file.open"),
-                             command=lambda: self._open_file_editor(vals[0]) if vals and vals[0] else None)
+                             command=lambda p=path: self._open_file_editor(p))
+            menu.add_command(label=_t("file.rename"),
+                             command=lambda p=path: self._rename_tree_item(p, False))
+            menu.add_separator()
+            menu.add_command(label=_t("file.delete"),
+                             command=lambda p=path: self._delete_file(p))
         menu.tk_popup(event.x_root, event.y_root)
+
+    def _open_in_explorer(self, path):
+        """在系统文件管理器中打开目录（Windows 资源管理器 / macOS Finder / xdg-open）。"""
+        try:
+            if sys.platform == "win32":
+                os.startfile(path)                    # noqa: S606
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception as e:            # noqa: BLE001
+            self._set_status(str(e))
+
+    def _rename_tree_item(self, path, is_dir):
+        """重命名文件/目录（带确认；打开中的文件改名后关闭旧标签）。"""
+        import os as _os
+        from tkinter import messagebox, simpledialog
+        old = _os.path.basename(path)
+        new = simpledialog.askstring(_t("file.rename"),
+                                     _t("file.rename_to", old=old),
+                                     initialvalue=old, parent=self.root)
+        if not new:
+            return
+        new = new.strip()
+        if not new or new == old:
+            return
+        target = _os.path.join(_os.path.dirname(path), new)
+        if _os.path.exists(target):
+            messagebox.showerror(_t("file.rename"), _t("file.exists"),
+                                 parent=self.root)
+            return
+        try:
+            _os.rename(path, target)
+        except OSError as e:
+            messagebox.showerror(_t("file.rename"), str(e), parent=self.root)
+            return
+        if not is_dir and path in getattr(self, "_file_tabs", {}):
+            view_id = self._file_tabs[path][2]
+            self._file_close_view(view_id)
+        self._refresh_file_panel()
+        self._set_status(_t("file.renamed", old=old, new=new))
+
+    def _delete_tree_item(self, path, is_dir):
+        import shutil
+        if is_dir:
+            from tkinter import messagebox
+            if not messagebox.askyesno(_t("file.delete"), path, parent=self.root):
+                return
+            try:
+                shutil.rmtree(path)
+            except OSError as e:
+                from tkinter import messagebox as _mb
+                _mb.showerror(_t("file.delete"), str(e), parent=self.root)
+                return
+            self._refresh_file_panel()
+            self._set_status(_t("mm.deleted", name=os.path.basename(path.rstrip("/\\"))))
+        else:
+            self._delete_file(path)
 
     def _delete_file(self, path):
         """删除文件（带确认）。"""
@@ -2001,16 +2167,24 @@ class App:
         return
 
     def _add_selected_to_chat(self, path=None):
-        """把选中的文件加入待发送附件栏（只显示文件名 chip，路径完整保留供发送）。"""
+        """把选中的文件加入待发送附件栏；目录则以 @引用 形式插入输入框。"""
         if not path:
             iid = self.file_tree.focus()
             if not iid:
                 return
             vals = self.file_tree.item(iid, "values")
-            if not vals or len(vals) < 2 or str(vals[1]).strip().lower() == 'true':
+            if not vals or len(vals) < 2:
                 return
             path = vals[0]
-        if not path or path in self._pending_attachments:
+            if str(vals[1]).strip().lower() == 'true':
+                self._insert_at_ref(path)
+                return
+        if not path:
+            return
+        if os.path.isdir(path):
+            self._insert_at_ref(path)
+            return
+        if path in self._pending_attachments:
             return
         self._pending_attachments.append(path)
         self._render_attachments()
@@ -2018,6 +2192,18 @@ class App:
             (media.classify(p) if isinstance(p, str) else attach.snippet_chip(p))
             or _t("msg.file") for p in self._pending_attachments)
         self._set_status(_t("msg.attached", n=len(self._pending_attachments), kinds=kinds))
+
+    def _insert_at_ref(self, path):
+        """把目录（或文件）以 @引用 插入输入框光标处，作为模型上下文。"""
+        try:
+            ws = tools.get_workspace() or os.getcwd()
+            rel = os.path.relpath(path, ws).replace("\\", "/")
+        except Exception:            # noqa: BLE001
+            rel = path
+        self.input.insert("insert", f"@{rel}/ " if os.path.isdir(path)
+                          else f"@{rel} ")
+        self.input.focus_set()
+        self._set_status(_t("file.dir_added", rel=rel))
 
     def _add_code_to_chat(self, path, start_line, end_line, content):
         """把编辑器选中区作为「代码片段」加入待发送附件栏。
@@ -2121,8 +2307,27 @@ class App:
         _walk(rid, root)
 
     def _refresh_file_panel(self):
-        """刷新右侧文件树：根节点=工作区文件夹，展开显示目录内全部文件（含隐藏项）。"""
+        """刷新右侧文件树：根节点=工作区文件夹，展开显示目录内全部文件（含隐藏项）。
+
+        重建前记录已展开目录的绝对路径，重建后恢复展开状态——
+        避免 Agent 删除/新增文件后刷新把用户展开的目录全部折叠回去。
+        """
         import os as _os
+
+        open_paths: set = set()
+
+        def _collect(iid):
+            for c in self.file_tree.get_children(iid):
+                v = self.file_tree.item(c, "values")
+                if not v or len(v) < 2 or not str(v[0]).strip():
+                    continue
+                if str(v[1]) in ("True", "1"):
+                    if self.file_tree.item(c, "open"):
+                        open_paths.add(str(v[0]))
+                    _collect(c)
+
+        _collect("")
+
         self.file_tree.delete(*self.file_tree.get_children())
         root = tools.get_workspace()
         if not root or not _os.path.isdir(root):
@@ -2132,20 +2337,59 @@ class App:
                                     values=(root, True))
         self._populate_file_dir(rid, root)
 
+        def _reopen(iid):
+            for c in self.file_tree.get_children(iid):
+                v = self.file_tree.item(c, "values")
+                if not v or len(v) < 2 or not str(v[0]).strip():
+                    continue
+                if str(v[1]) in ("True", "1") and str(v[0]) in open_paths:
+                    self.file_tree.item(c, open=True)
+                    # 该节点初始只带占位空行：先删占位再填充，避免占位与真实子项叠加
+                    self._ensure_dir_loaded(c, str(v[0]))
+                    _reopen(c)
+
+        _reopen(rid)
+
+        _reopen(rid)
+
+    def _schedule_fs_refresh(self):
+        """写/删文件操作后刷新文件树（2 秒去抖，连续工具调用不反复重建）。"""
+        import time as _t
+        now = _t.monotonic()
+        if now - getattr(self, "_fs_refresh_last", 0.0) < 2:
+            return
+        self._fs_refresh_last = now
+        self.root.after(0, self._refresh_file_panel)
+
     def _populate_file_dir(self, iid, path):
-        import os as _os
         try:
-            names = sorted(_os.listdir(path))
+            entries = sorted(os.scandir(path),
+                             key=lambda e: (not e.is_dir(), e.name.lower()))
         except OSError:
             return
-        for name in names:
-            full = _os.path.join(path, name)
+        for e in entries:
             try:
-                isdir = _os.path.isdir(full)
+                isdir = e.is_dir()
             except OSError:
-                isdir = False
-            txt = f"📁 {name}" if isdir else f"📄 {name}"
-            child = self.file_tree.insert(iid, "end", text=txt, values=(full, bool(isdir)))
+                continue
+            if isdir:
+                # 目录显示递归聚合大小；文件显示自身大小
+                size_txt = f"  ({_fmt_size(_dir_size(e.path))})"
+                icon_key, fallback = "1f4c1", "📁"
+            else:
+                try:
+                    sz = e.stat().st_size
+                except OSError:
+                    sz = 0
+                size_txt = f"  ({_fmt_size(sz)})"
+                ext = e.name.rsplit(".", 1)[-1].lower() if "." in e.name else ""
+                icon_key, fallback = _TREE_ICON_MAP.get(ext, "1f4c4"), "📄"
+            img = _emoji_icon(icon_key)
+            txt = f"{e.name}{size_txt}" if img is not None else f"{fallback} {e.name}{size_txt}"
+            kw = {"text": txt, "values": (e.path, isdir)}
+            if img is not None:
+                kw["image"] = img
+            child = self.file_tree.insert(iid, "end", **kw)
             if isdir:
                 self.file_tree.insert(child, "end", text="", values=("", False))  # 占位出展开箭头
 
@@ -2789,36 +3033,45 @@ class App:
     PLACEHOLDER = _t("input.placeholder")
 
     def _setup_placeholder(self):
-        self._placeholder_active = True
-        self.input.insert("1.0", self.PLACEHOLDER)
-        self.input.config(fg="gray")
-        self.input.bind("<FocusIn>", self._on_focus_in)
-        self.input.bind("<FocusOut>", self._on_focus_out)
-        # 一敲键盘就清掉占位符：避免焦点事件没触发时占位符卡住、回车/发送被挡住
-        self.input.bind("<Key>", self._on_input_key)
+        """占位提示改为悬浮灰字层：不再往输入框里插入真实文本。
 
-    def _on_input_key(self, event):
-        # 只要占位符还"活跃"，用户敲的第一个键就清掉它并放行该键。
-        # 不过滤修饰键（Shift/Ctrl/Alt）——它们是组合键，不该清掉占位符标记，
-        # 但也不该被算作"清占位符"——这里简单只对真正会插入字符的键动手。
-        if self._placeholder_active and getattr(event, "char", "") \
-                and event.char.isprintable():
-            self.input.delete("1.0", "end")
-            self.input.config(fg="black")
-            self._placeholder_active = False
-        return None
+        旧实现把占位符当正文插入（灰色），和用户输入混在同一缓冲里——
+        IME/粘贴/弹窗插入等路径没清干净时，就会出现『输入看不到』『选择后
+        残留占位符』。现在：内容为空 → 悬浮显示提示；有任何内容 → 自动隐藏。
+        """
+        self._placeholder_active = False      # 兼容旧引用：恒为 False
+        self._ph_label = tk.Label(
+            self.input, text=self.PLACEHOLDER, justify="left", anchor="nw",
+            font=(FONT_MONO, self._font_chat + 1), fg="#9aa4b2", bg=theme.PANEL)
+        self._ph_label.bind("<Button-1>", self._ph_click)
+        # 内容任何增删（含程序化 delete/insert）都会触发 <<Modified>>
+        self.input.bind("<<Modified>>", self._on_modified)
+        self._ph_update()
 
-    def _on_focus_in(self, _event):
-        if self._placeholder_active:
-            self.input.delete("1.0", "end")
-            self.input.config(fg="black")
-            self._placeholder_active = False
+    def _on_modified(self, _event):
+        # <<Modified>> 是粘性标志：处理后必须复位，否则只触发一次
+        try:
+            self.input.edit_modified(False)
+        except Exception:            # noqa: BLE001
+            pass
+        self.root.after(0, self._ph_update)
 
-    def _on_focus_out(self, _event):
-        if not self.input.get("1.0", "end").strip():
-            self._placeholder_active = True
-            self.input.insert("1.0", self.PLACEHOLDER)
-            self.input.config(fg="gray")
+    def _ph_update(self):
+        """空输入 → 显示悬浮占位符；有内容 → 隐藏。"""
+        has = bool(self.input.get("1.0", "end").strip())
+        if has:
+            try:
+                self._ph_label.place_forget()
+            except Exception:        # noqa: BLE001
+                pass
+        else:
+            self._ph_label.config(font=(FONT_MONO, self._font_chat + 1))
+            self._ph_label.place(x=12, y=8, anchor="nw")
+
+    def _ph_click(self, _event):
+        """点击占位符 → 把焦点还给输入框（占位符在下次内容更新时自动消失）。"""
+        self.input.focus_set()
+        return "break"
 
     # ================= 模型管理 =================
     def _refresh_models(self):
@@ -3071,10 +3324,9 @@ class App:
         self.voice_btn.config(text=_t("btn.voice"))
         self.send_btn.config(text=_t("btn.send"))
         self.status_badge.config(text=_t("status.idle"))
-        # 重设 placeholder（仅在未输入时）
-        if self._placeholder_active:
-            self.input.delete("1.0", "end")
-            self.input.insert("1.0", _t("input.placeholder"))
+        # 重设 placeholder：悬浮层文本随语言刷新（内容为空才显示）
+        self._ph_label.config(text=_t("input.placeholder"))
+        self._ph_update()
         if self.lang_btn:
             self.lang_btn.config(text="中/EN")
         self._update_workspace_label()
@@ -4012,6 +4264,55 @@ class App:
         self._cmd_hide()
 
     # ---- @ 文件/目录选择（参考 Cursor）----
+    def _show_token_popup(self, rows, on_pick):
+        """输入光标处的候选弹窗（/命令 与 @文件 共用）。
+
+        rows: [(label, icon_photo_or_None)]。
+        定位：优先光标下方；下方放不下改到光标上方；最后夹紧屏幕内。
+        交互：滚轮滚动；单击 = 选中并回调 on_pick(索引)；图标走彩色 PNG。
+        """
+        pop = tk.Toplevel(self.root)
+        pop.overrideredirect(True)
+        lb = ttk.Treeview(pop, columns=("label",), show="tree",
+                          selectmode="browse", height=min(len(rows), 10))
+        for label, img in rows:
+            kw = {"text": label}
+            if img is not None:
+                kw["image"] = img
+            lb.insert("", "end", **kw)
+        if rows:
+            lb.selection_set(lb.get_children("")[0])
+        lb.pack(fill="both", expand=True)
+
+        def _wheel(e):
+            lb.yview_scroll(-1 * ((e.delta // 120) or 1), "units")
+
+        def _pick(e):
+            sel = lb.selection()
+            if sel:
+                on_pick(lb.index(sel[0]))
+
+        lb.bind("<MouseWheel>", _wheel)
+        lb.bind("<Button-1>", _pick)
+
+        # ---- 定位：先算可用空间，再决定上/下 ----
+        pop.update_idletasks()
+        bbox = self.input.bbox("insert")
+        x = self.input.winfo_rootx() + (bbox[0] if bbox else 0)
+        caret_y = self.input.winfo_rooty() + (bbox[1] if bbox else 0)
+        line_h = (bbox[3] - bbox[1]) if bbox else 20
+        h = lb.winfo_reqheight() + 4
+        w = max(pop.winfo_reqwidth(), 240)
+        sh, sw = pop.winfo_screenheight(), pop.winfo_screenwidth()
+        below_y = caret_y + line_h + 6
+        if below_y + h <= sh - 8:
+            y = below_y                    # 下方放得下 → 光标下方
+        else:
+            y = max(8, caret_y - h - 6)    # 放不下 → 改到光标上方
+        x = max(8, min(x, sw - w - 8))
+        pop.geometry("%dx%d+%d+%d" % (w, h, x, y))
+        return pop, lb
+
     def _at_hide(self):
         if getattr(self, "_at_pop", None) and self._at_pop.winfo_exists():
             try: self._at_pop.destroy()
@@ -4046,21 +4347,16 @@ class App:
                 break
         return out[:80]
 
+    def _at_icon(self, path: str):
+        """@ 候选行的彩色图标：目录 📁，文件按扩展名映射。"""
+        key = "1f4c1" if path.endswith("/") else _TREE_ICON_MAP.get(
+            path.rsplit(".", 1)[-1].lower() if "." in path else "", "1f4c4")
+        return _emoji_icon(key)
+
     def _at_show(self, cands):
         try:
-            pop = tk.Toplevel(self.root)
-            pop.overrideredirect(True)
-            lb = tk.Listbox(pop, font=(FONT_MONO, 9),
-                            height=min(len(cands), 10),
-                            borderwidth=0, highlightthickness=0)
-            for c in cands:
-                lb.insert("end", c)
-            lb.select_set(0)
-            lb.pack()
-            bbox = self.input.bbox("insert")
-            x = self.input.winfo_rootx() + (bbox[0] if bbox else 0)
-            y = self.input.winfo_rooty() + (bbox[1] + bbox[3] if bbox else 0) + 18
-            pop.geometry(f"+{x}+{y}")
+            rows = [(p, self._at_icon(p)) for p in cands]
+            pop, lb = self._show_token_popup(rows, lambda _i: self._at_insert())
             self._at_pop = pop
             self._at_lb = lb
         except Exception:            # noqa: BLE001
@@ -4069,8 +4365,9 @@ class App:
     def _at_insert(self):
         path = None
         try:
-            sels = self._at_lb.curselection()
-            path = self._at_cands[sels[0] if sels else 0]
+            sel = self._at_lb.selection()
+            if sel:
+                path = self._at_cands[_tv_index(self._at_lb)]
         except Exception:            # noqa: BLE001
             pass
         self._at_hide()
@@ -4105,49 +4402,51 @@ class App:
             return p if os.path.isfile(p) else m.group(0)
         return re.sub(r"@([^\s@]+)", _sub, text)
 
-    def _input_on_keyrelease(self, event):
-        # 若命令弹窗在 → 处理导航/确认
-        if getattr(self, "_cmd_pop", None) and self._cmd_pop.winfo_exists():
-            k = event.keysym
-            if k == "Down":
-                self._cmd_idx = min(len(self._cmd_cands) - 1, self._cmd_idx + 1)
-            elif k == "Up":
-                self._cmd_idx = max(0, self._cmd_idx - 1)
-            elif k in ("Return", "Tab"):
-                self._cmd_insert()
-                return "break"
-            elif k == "Escape":
-                self._cmd_hide()
-                return "break"
-            else:
-                self._cmd_hide()
-                return None
-            self._cmd_lb.selection_clear(0, "end")
-            self._cmd_lb.select_set(self._cmd_idx)
+    def _on_input_keypress(self, event):
+        """弹窗打开时在 KeyPress 阶段拦截导航/确认键并 return "break"。
+
+        必须在 KeyPress 处理：否则 Text 的默认类绑定会先把回车变成换行、
+        把方向键变成移动光标，KeyRelease 阶段再做选择就已经晚了。
+        其它字符键放行插入，随后异步重扫描过滤候选。
+        """
+        cmd_open = getattr(self, "_cmd_pop", None) and self._cmd_pop.winfo_exists()
+        at_open = getattr(self, "_at_pop", None) and self._at_pop.winfo_exists()
+        if not (cmd_open or at_open):
             return None
-        # 若 @ 文件弹窗在 → 处理导航/确认；其它键落入下方重扫描（随输入过滤）
-        if getattr(self, "_at_pop", None) and self._at_pop.winfo_exists():
-            k = event.keysym
-            if k == "Down":
-                self._at_idx = min(len(self._at_cands) - 1, self._at_idx + 1)
-            elif k == "Up":
-                self._at_idx = max(0, self._at_idx - 1)
-            elif k in ("Return", "Tab"):
-                self._at_insert()
-                return "break"
-            elif k == "Escape":
-                self._at_hide()
-                return "break"
-            self._at_lb.selection_clear(0, "end")
-            self._at_lb.select_set(self._at_idx)
-        import re
         k = event.keysym
-        if k in ("Return", "KP_Enter", "Tab", "Escape", "Up", "Down", "Left", "Right"):
-            return
-        if k == "BackSpace":
-            self._cmd_hide()
-            self._at_hide()
-            return
+        if k in ("Return", "KP_Enter", "Tab"):
+            if cmd_open:
+                self._cmd_insert()
+            else:
+                self._at_insert()
+            return "break"
+        if k == "Escape":
+            if cmd_open:
+                self._cmd_hide()
+            else:
+                self._at_hide()
+            return "break"
+        if k in ("Up", "Down"):
+            d = 1 if k == "Down" else -1
+            if cmd_open:
+                self._cmd_idx = _tv_select(self._cmd_lb, self._cmd_idx + d)
+            else:
+                self._at_idx = _tv_select(self._at_lb, self._at_idx + d)
+            return "break"
+        # 字符键/退格：放行默认行为，之后按新内容重过滤候选
+        if len(k) == 1 or k in ("BackSpace", "Delete"):
+            self.root.after(0, self._popup_rescan)
+        return None
+
+    def _popup_rescan(self):
+        """按当前光标前的 token 重建候选弹窗（输入过滤用）。"""
+        self._cmd_hide()
+        self._at_hide()
+        self._popup_open_scan()
+
+    def _popup_open_scan(self):
+        """检测光标前的 /命令 或 @文件 token，打开对应候选弹窗。"""
+        import re
         idx = self.input.index("insert")
         line_start = self.input.index(f"{idx} linestart")
         prefix = self.input.get(line_start, idx)
@@ -4165,20 +4464,11 @@ class App:
             self._cmd_cands = cands
             self._cmd_idx = 0
             try:
-                pop = tk.Toplevel(self.root)
-                pop.overrideredirect(True)
-                lb = tk.Listbox(pop, font=(FONT_MONO, 9), height=min(len(cands), 10),
-                                borderwidth=0, highlightthickness=0)
-                for c in cands:
-                    lb.insert("end", c)
-                lb.select_set(0)
-                lb.pack()
-                lb.bind("<MouseWheel>", lambda e: lb.yview_scroll(
-                    -1 * (e.delta // 120 or 1), "units"))
-                bbox = self.input.bbox("insert")
-                x = self.input.winfo_rootx() + (bbox[0] if bbox else 0)
-                y = self.input.winfo_rooty() + (bbox[1] + bbox[3] if bbox else 0) + 18
-                pop.geometry(f"+{x}+{y}")
+                def _pick_cmd(i):
+                    self._cmd_idx = i
+                    self._cmd_insert()
+                rows = [(c, _emoji_icon("26a1")) for c in cands]
+                pop, lb = self._show_token_popup(rows, _pick_cmd)
                 self._cmd_pop = pop
                 self._cmd_lb = lb
             except Exception:        # noqa: BLE001
@@ -4192,7 +4482,26 @@ class App:
             return
         self._at_cands = cands
         self._at_idx = 0
-        self._at_show(cands)
+        try:
+            rows = [(p, self._at_icon(p)) for p in cands]
+            pop, lb = self._show_token_popup(rows, lambda _i: self._at_insert())
+            self._at_pop = pop
+            self._at_lb = lb
+        except Exception:            # noqa: BLE001
+            pass
+
+    def _input_on_keyrelease(self, event):
+        # 弹窗打开时：导航/确认/重扫描全部已在 KeyPress 阶段处理
+        cmd_open = getattr(self, "_cmd_pop", None) and self._cmd_pop.winfo_exists()
+        at_open = getattr(self, "_at_pop", None) and self._at_pop.winfo_exists()
+        if cmd_open or at_open:
+            return None
+        k = event.keysym
+        if k in ("Return", "KP_Enter", "Tab", "Escape", "Up", "Down", "Left", "Right"):
+            return
+        if k == "BackSpace":
+            return
+        self._popup_open_scan()
 
     def show_mode_help(self, arg):
         # 占位：permission 提示可选项
@@ -5287,6 +5596,9 @@ class App:
             self._set_status(_t("evt.tool_run", name=name))
         elif etype == "tool_result":
             self._todo_done(event.get("name"))
+            # 写文件/执行命令可能新增或删除工作区文件 → 去抖刷新文件树
+            if event.get("name") in ("write_file", "run_shell"):
+                self._schedule_fs_refresh()
             self._render_tool_result(event.get("name") or _t("evt.tool"),
                                      event["result"])
             # write_file 完成：刷新已打开的文件标签（path 在 tool_start 记录）
