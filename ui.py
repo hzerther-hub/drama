@@ -4082,7 +4082,7 @@ class App:
     # ---- /command 斜杠命令 ----
     _COMMANDS = [
         ("/help", "cmd.help", "help"),
-        ("/init", "cmd.init", "init"),
+        ("/novel", "cmd.novel", "novel"),
         ("/brainstorm", "cmd.brainstorm", "brainstorm"),
         ("/plan", "cmd.plan", "plan"),
         ("/work", "cmd.work", "work"),
@@ -4102,7 +4102,6 @@ class App:
         ("/delete", "cmd.delete", "delete"),
         ("/refresh", "cmd.refresh", "refresh"),
         ("/undo", "cmd.undo", "undo"),
-        ("/novel", "cmd.novel", "novel"),
     ]
 
     def _run_command(self, text):
