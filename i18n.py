@@ -43,10 +43,10 @@ STRINGS: dict = {
     "input.placeholder": {
         "en": "Type a message… (Enter to send, Shift+Enter for newline)\n"
               "· paste an image/file path (C:\\ or file://) to auto-attach\n"
-              "· 🎤 hold to talk / auto transcribe · 📎 attach · ❓ full usage",
+              "· 🎤 hold to talk / auto transcribe · 📎 attach · ❓ full usage · build 0906-2",
         "zh": "输入消息…（回车发送，Shift+回车换行）\n"
               "· 粘贴图片/文件路径（C:\\ 或 file://）自动转附件\n"
-              "· 🎤 按住说话 / 自动识别 · 📎 附件识图 · ❓ 查看完整使用方式",
+              "· 🎤 按住说话 / 自动识别 · 📎 附件识图 · ❓ 查看完整使用方式 · build 0906-2",
     },
     "status.idle":     {"en": "○ Idle", "zh": "○ 空闲"},
     "status.thinking": {"en": "Thinking", "zh": "思考"},

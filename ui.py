@@ -4487,9 +4487,15 @@ class App:
         cmd_open = getattr(self, "_cmd_pop", None) and self._cmd_pop.winfo_exists()
         at_open = getattr(self, "_at_pop", None) and self._at_pop.winfo_exists()
         k = event.keysym
+        char = getattr(event, "char", "") or ""
+        # 回车识别兼容 IME：部分输入法会把回车的 keysym 变成别的值（如 Left），
+        is_enter = k in ("Return", "KP_Enter") or char in ("\r", "\n")
+        is_tab = k == "Tab"
+        shift_held = bool(event.state & 0x0001)
+        ctrl_held = bool(event.state & 0x0004)
 
         if cmd_open or at_open:
-            if k in ("Return", "KP_Enter", "Tab"):
+            if is_enter or is_tab:
                 if cmd_open:
                     self._cmd_insert()
                 else:
@@ -4509,15 +4515,12 @@ class App:
                     self._at_idx = _tv_select(self._at_lb, self._at_idx + d)
                 return "break"
             # 字符键/退格：放行默认行为，之后按新内容重过滤候选
-            if len(k) == 1 or k in ("BackSpace", "Delete"):
+            if (len(k) == 1 or k in ("BackSpace", "Delete")) and not is_enter:
                 self.root.after(0, self._popup_rescan)
             return None
 
-        # ---- 无弹窗：回车直接发送 ----
-        shift_held = bool(event.state & 0x0001)
-        ctrl_held = bool(event.state & 0x0004)
-        if (k in ("Return", "KP_Enter")
-                and not shift_held and not ctrl_held):
+        # ---- 无弹窗：回车直接发送（Shift+回车=换行走默认）----
+        if is_enter and not shift_held and not ctrl_held:
             self._on_return(event)
             return "break"
         return None
