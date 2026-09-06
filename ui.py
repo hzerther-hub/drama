@@ -1205,18 +1205,14 @@ class App:
                              font=(FONT_MONO, self._font_chat + 1), wrap="word",
                              relief="flat", padx=12, pady=10, highlightthickness=0)
         self.input.pack(side="left", fill="both", expand=True)
-        # Enter 换行；Shift+Enter 发送；Ctrl+Enter 排队。
-        # 三个绑定都加上 return "break"，避免 Shift 状态识别漏掉时退化成"回车换行"
-        self.input.bind("<Shift-Return>", self._on_shift_return)
-        self.input.bind("<Shift-KP_Enter>", self._on_shift_return)
+        # 回车发送；Shift+回车换行；Ctrl+回车排队（聊天软件标准行为）
+        # 弹窗（@ 文件、/ 命令）打开时，回车优先确认候选——全部在
+        # _on_input_keypress（KeyPress 阶段）统一处理，见下方绑定与处理器
         self.input.bind("<Control-Return>", lambda e: self._send_queued())
         self.input.bind("<Control-space>", lambda e: self._queue_current())
         self.input.bind("<Command-Return>", lambda e: self._send_queued())
-        # 保险栓：<KeyRelease> 阶段若发现 Shift+Return 走漏了（变成换行），
-        # 由这里清掉插入的换行并补发。
-        self.input.bind("<KeyRelease-Return>", self._on_keyrelease_return)
         self._setup_placeholder()
-        # 弹窗（/命令、@文件）的导航/确认必须在 KeyPress 拦截，
+        # 弹窗导航/确认 + 无弹窗时的回车发送，都在 KeyPress 阶段拦截，
         # 否则回车先被 Text 插入换行、方向键先移动光标
         self.input.bind("<KeyPress>", self._on_input_keypress)
         self.input.bind("<KeyRelease>", self._input_on_keyrelease)
@@ -4481,40 +4477,63 @@ class App:
         return re.sub(r"@([^\s@]+)", _sub, text)
 
     def _on_input_keypress(self, event):
-        """弹窗打开时在 KeyPress 阶段拦截导航/确认键并 return "break"。
+        """统一 KeyPress 处理（弹窗确认/导航 + 无弹窗时回车发送）。
 
-        必须在 KeyPress 处理：否则 Text 的默认类绑定会先把回车变成换行、
-        把方向键变成移动光标，KeyRelease 阶段再做选择就已经晚了。
-        其它字符键放行插入，随后异步重扫描过滤候选。
+        全部在 KeyPress 阶段 return "break"：否则 Text 的默认类绑定会先把
+        回车变成换行、把方向键变成移动光标。
+        优先级：弹窗打开 → 回车/Tab 确认候选、↑↓ 选择、Esc 关闭；
+        无弹窗 → 回车发送（Shift=换行走默认；Ctrl/Alt 组合放行专用绑定）。
         """
         cmd_open = getattr(self, "_cmd_pop", None) and self._cmd_pop.winfo_exists()
         at_open = getattr(self, "_at_pop", None) and self._at_pop.winfo_exists()
-        if not (cmd_open or at_open):
-            return None
         k = event.keysym
-        if k in ("Return", "KP_Enter", "Tab"):
-            if cmd_open:
-                self._cmd_insert()
-            else:
-                self._at_insert()
+
+        if cmd_open or at_open:
+            if k in ("Return", "KP_Enter", "Tab"):
+                if cmd_open:
+                    self._cmd_insert()
+                else:
+                    self._at_insert()
+                return "break"
+            if k == "Escape":
+                if cmd_open:
+                    self._cmd_hide()
+                else:
+                    self._at_hide()
+                return "break"
+            if k in ("Up", "Down"):
+                d = 1 if k == "Down" else -1
+                if cmd_open:
+                    self._cmd_idx = _tv_select(self._cmd_lb, self._cmd_idx + d)
+                else:
+                    self._at_idx = _tv_select(self._at_lb, self._at_idx + d)
+                return "break"
+            # 字符键/退格：放行默认行为，之后按新内容重过滤候选
+            if len(k) == 1 or k in ("BackSpace", "Delete"):
+                self.root.after(0, self._popup_rescan)
+            return None
+
+        # ---- 无弹窗：回车直接发送 ----
+        shift_held = bool(event.state & 0x0001)
+        ctrl_held = bool(event.state & 0x0004)
+        if (k in ("Return", "KP_Enter")
+                and not shift_held and not ctrl_held):
+            self._on_return(event)
             return "break"
-        if k == "Escape":
-            if cmd_open:
-                self._cmd_hide()
-            else:
-                self._at_hide()
-            return "break"
-        if k in ("Up", "Down"):
-            d = 1 if k == "Down" else -1
-            if cmd_open:
-                self._cmd_idx = _tv_select(self._cmd_lb, self._cmd_idx + d)
-            else:
-                self._at_idx = _tv_select(self._at_lb, self._at_idx + d)
-            return "break"
-        # 字符键/退格：放行默认行为，之后按新内容重过滤候选
-        if len(k) == 1 or k in ("BackSpace", "Delete"):
-            self.root.after(0, self._popup_rescan)
         return None
+
+    def _input_on_keyrelease(self, event):
+        """KeyRelease：弹窗未开时检测 / 或 @ token，打开候选弹窗。"""
+        cmd_open = getattr(self, "_cmd_pop", None) and self._cmd_pop.winfo_exists()
+        at_open = getattr(self, "_at_pop", None) and self._at_pop.winfo_exists()
+        if cmd_open or at_open:
+            return None          # 弹窗逻辑在 KeyPress 阶段处理
+        k = event.keysym
+        if k in ("Return", "KP_Enter", "Tab", "Escape", "Up", "Down", "Left", "Right"):
+            return
+        if k == "BackSpace":
+            return
+        self._popup_open_scan()
 
     def _popup_rescan(self):
         """按当前光标前的 token 重建候选弹窗（输入过滤用）。"""
@@ -4567,19 +4586,6 @@ class App:
             self._at_lb = lb
         except Exception as e:       # noqa: BLE001
             self._set_status(f"弹窗错误: {e}")
-
-    def _input_on_keyrelease(self, event):
-        # 弹窗打开时：导航/确认/重扫描全部已在 KeyPress 阶段处理
-        cmd_open = getattr(self, "_cmd_pop", None) and self._cmd_pop.winfo_exists()
-        at_open = getattr(self, "_at_pop", None) and self._at_pop.winfo_exists()
-        if cmd_open or at_open:
-            return None
-        k = event.keysym
-        if k in ("Return", "KP_Enter", "Tab", "Escape", "Up", "Down", "Left", "Right"):
-            return
-        if k == "BackSpace":
-            return
-        self._popup_open_scan()
 
     def show_mode_help(self, arg):
         # 占位：permission 提示可选项
@@ -4711,24 +4717,6 @@ class App:
             self.input.config(fg="black")
         self.send()
         return "break"
-
-    def _on_shift_return(self, event):
-        """Shift+回车 → 发送。"""
-        self._set_status("⇧⏎ 发送中…")
-        return self._on_return(event)
-
-    def _on_keyrelease_return(self, event):
-        """兜底：KeyRelease-Return 阶段，如果输入框末尾多了一个换行
-        （说明 Shift+Return 漏发、走成了普通回车换行），删掉换行并补发。"""
-        # 仅在按住 Shift 时才补救，避免误删用户按 Enter 插入的真实换行
-        if not (event.state & 0x0001):    # 0x0001 = ShiftMask
-            return None
-        content = self.input.get("1.0", "end")
-        if content.endswith("\n") and not content.endswith("\n\n"):
-            self.input.delete("end-2c", "end-1c")
-            self.send()
-            return "break"
-        return None
 
     def send(self):
         if self._placeholder_active and not self._pending_attachments:

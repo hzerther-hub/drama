@@ -41,10 +41,10 @@ STRINGS: dict = {
 
     # —— 输入占位 / 状态 ——
     "input.placeholder": {
-        "en": "Type a message… (Shift+Enter to send, Enter for newline)\n"
+        "en": "Type a message… (Enter to send, Shift+Enter for newline)\n"
               "· paste an image/file path (C:\\ or file://) to auto-attach\n"
               "· 🎤 hold to talk / auto transcribe · 📎 attach · ❓ full usage",
-        "zh": "输入消息…（Shift+回车发送，回车换行）\n"
+        "zh": "输入消息…（回车发送，Shift+回车换行）\n"
               "· 粘贴图片/文件路径（C:\\ 或 file://）自动转附件\n"
               "· 🎤 按住说话 / 自动识别 · 📎 附件识图 · ❓ 查看完整使用方式",
     },
@@ -197,7 +197,7 @@ STRINGS: dict = {
     "chat.welcome": {
         "en": """👋 Welcome to Local AI Studio
 
-· Type below, Shift+Enter to send, Enter for newline
+· Type below, Enter to send, Shift+Enter for newline
 · 📎 Attach/Vision (status bar): send images for recognition, plus audio/video;
   pasting a file path (C:\\... or file:///) into the message auto-attaches it
 · 🎤 Voice input: hold to talk, release to finish; a quick tap switches to
@@ -210,7 +210,7 @@ STRINGS: dict = {
 """,
         "zh": """👋 欢迎使用 Local AI Studio
 
-· 下方输入消息，Shift+回车发送，回车换行
+· 下方输入消息，回车发送，Shift+回车换行
 · 📎 附件/识图（状态行）：发图片可识图，也支持音频/视频；
   消息里粘贴文件路径（C:\\... 或 file:///）会自动转为附件
 · 🎤 语音输入：长按说话、松手结束；轻点一下则静音 1.5 秒自动结束
@@ -224,7 +224,7 @@ STRINGS: dict = {
         "en": """Local AI Studio — Help
 
 [Basics]
-· Type in the box, press Shift+Enter to send; Enter for newline
+· Type in the box, press Enter to send; Shift+Enter for newline
 · "Clear" only clears the view, does not delete the session; sessions are managed in the top "＋ New session" menu
 · Context toggle (top bar): "🔗 Keep context" continues the session history by default;
   "⚡ Standalone" sends each message without history — saves tokens and keeps questions
@@ -288,7 +288,7 @@ External MCP servers add more tools (model menu → 🔌 Manage MCP servers)
         "zh": """Local AI Studio — 使用帮助
 
 【基本操作】
-· 输入框 Shift+回车发送；回车换行
+· 输入框回车发送；Shift+回车换行
 · 「清空」只清屏，不删会话；会话在顶部「＋ 新会话」菜单管理
 · 上下文开关（顶部工具栏）：默认「🔗 续上下文」延续会话历史；
   切为「⚡ 独立提问」后每条消息不带历史单独发送——省 token、问题互不干扰，
