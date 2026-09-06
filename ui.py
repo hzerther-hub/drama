@@ -4329,6 +4329,29 @@ class App:
                     self.root.after(0, lambda: setattr(
                         self, "_novel_busy", False))
             threading.Thread(target=drama_work, daemon=True).start()
+        elif head == "rewrite":
+            p = getattr(self, "_novel_pipe", None)
+            m = re.match(r"^(\d+)(?:\s+(.*))?$", rest.strip())
+            if not (p and p.state.get("chapters")) or not m:
+                self._set_status(_t("novel.no_chapters"))
+                self._append("⚠ " + _t("novel.no_chapters") + "\n", "denied")
+                return
+            self._novel_busy = True
+            ridx, fb = int(m.group(1)), (m.group(2) or "").strip()
+
+            def rw_work():
+                try:
+                    chap = novel_chain.rewrite_chapter(p.state, ridx, fb)
+                    self.root.after(0, lambda: self._append(
+                        _t("novel.chapter", n=chap["idx"], t=chap["title"],
+                           w=len(chap["text"])) + "\n", "toolresult"))
+                except Exception as e:          # noqa: BLE001
+                    self.root.after(0, lambda: self._append(
+                        "❌ " + str(e) + "\n", "denied"))
+                finally:
+                    self.root.after(0, lambda: setattr(
+                        self, "_novel_busy", False))
+            threading.Thread(target=rw_work, daemon=True).start()
         elif head == "deconstruct":
             path = rest.strip().strip('"')
             model_key = self.current_model.key if self.current_model else ""

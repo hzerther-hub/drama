@@ -89,7 +89,7 @@ class Pipeline:
         """从 cursor 起跑完剩余阶段；until=阶段名时跑完该阶段即暂停。
 
         返回终态 running/paused/done/failed。"""
-        on_event = on_event or (lambda e: None)
+        on_event = self._make_sink(on_event)
         on_stop = on_stop or (lambda: False)
         self.stop_requested = False
         self.pipeline_status = "running"
@@ -136,6 +136,29 @@ class Pipeline:
         self.pipeline_status = "done"
         self.save()
         on_event({"type": "pipeline_done", "pid": self.pid})
+        return "done"
+
+    def _make_sink(self, on_event):
+        """包装事件回调：转发 UI 之外，append-only 写入事件溯源日志。"""
+        def sink(e):
+            try:
+                on_event(e)
+            except Exception:          # noqa: BLE001  UI 异常不阻断流水线
+                pass
+            self._log_event(e)
+        return sink
+
+    def _log_event(self, e: dict):
+        """SSOT-lite：append-only 事件日志（CONFIG_DIR/pipelines/<pid>.events.jsonl）。"""
+        try:
+            d = _root()
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, self.pid + ".events.jsonl"), "a",
+                      encoding="utf-8") as f:
+                f.write(json.dumps({"t": time.time(), **e},
+                                   ensure_ascii=False) + "\n")
+        except OSError:
+            pass
         return "done"
 
     def _pause(self, on_event) -> str:

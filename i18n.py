@@ -765,6 +765,8 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
                            "status | drama 起-止 | deconstruct <txt路径>"},
     "novel.need_idea": {"en": "Usage: /novel start <idea> [chapters≤12]",
                         "zh": "用法：/novel start <一句灵感> [章数≤12]"},
+    "novel.rewrite_hint": {"en": "Rewrite: /novel rewrite <ch> [feedback]",
+                           "zh": "重写：/novel rewrite <章号> [反馈]"},
     "novel.need_model": {"en": "No model configured", "zh": "未配置模型，请先在模型菜单选择"},
     "novel.none":   {"en": "No pipelines yet", "zh": "还没有流水线记录"},
     "novel.no_book": {"en": "Manuscript not found", "zh": "书稿文件不存在"},

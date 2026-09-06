@@ -14,6 +14,7 @@ class FakeLLM:
         self.calls = []
         self.review = "PASS"
         self.review_once_issues = None   # 只出一次问题（之后恢复 review）
+        self.rewrite_text = "第1章 重写版\n" + "全新正文内容。" * 30
 
     def stream_chat(self, model, msgs, tools=None):
         user = msgs[-1]["content"]
@@ -23,12 +24,18 @@ class FakeLLM:
             yield {"type": "text", "delta": text[i:i + 20]}
 
     def _reply(self, user):
+        if "MASTER_SETTING" in user:
+            return "1. 称谓固定\n2. 禁止现代词汇"
+        if "请重写本章" in user:
+            return self.rewrite_text
         if "题材灵感" in user:
             return "书名：测试之书\n题材：都市\n卖点：逆袭"
         if "故事引擎" in user:
             return "引擎：小人物逆袭\n三幕：开局受挫/中段崛起/终局翻盘"
         if "时代与地理背景" in user:
             return "背景：平行都市\n规则：钱即权\n势力：三大家族"
+        if "故事合约" in user or "编号列出" in user:
+            return "1. 称谓固定\n2. 禁止现代词汇"
         if "成长弧线" in user:
             return "张三：外卖员，想翻身，从谷底到巅峰\n李四：对手"
         if "请划分卷" in user:
@@ -73,10 +80,26 @@ def test_full_run_two_chapters(fake, tmp_path):
     assert p.run() == "done"
     assert len(p.state["chapters"]) == 2
     assert all(len(c["text"]) >= 50 for c in p.state["chapters"])
+    assert p.state["contract"].startswith("1.")           # 故事合约已生成
     md = tmp_path / "novels" / (p.pid + ".md")
     assert md.exists() and "## " in md.read_text(encoding="utf-8")
-    # RAG 内存降级：每章 chunk 已入桶
-    assert len(vecstore._MEM.get(p.pid, [])) >= 2
+    assert len(vecstore._MEM.get(p.pid, [])) >= 2         # RAG 内存降级入桶
+
+
+def test_contract_injected_into_chapter_prompt(fake, tmp_path):
+    p = _start(total=1)
+    assert p.run() == "done"
+    prompt = novel_chain._chapter_prompt(p.state, 2)
+    assert "【硬约束·违反即失败】" in prompt
+    assert "1. 称谓固定" in prompt
+
+
+def test_foreshadow_tracker_lifecycle():
+    state = {"foreshadows": [], "ledger": []}
+    novel_chain._apply_ledger(state, 1, [], ["伏笔：神秘U盘的来历"], [])
+    assert state["foreshadows"][0]["closed_ch"] is None
+    novel_chain._apply_ledger(state, 3, [], [], ["偿还：神秘U盘"])
+    assert state["foreshadows"][0]["closed_ch"] == 3
 
 
 def test_review_repair_and_ledger(fake, tmp_path):
@@ -85,10 +108,10 @@ def test_review_repair_and_ledger(fake, tmp_path):
     p = _start(total=1)
     assert p.run() == "done"
     chap = p.state["chapters"][0]
-    assert "节奏拖沓" in chap["issues"][0]          # 首轮问题留档
-    assert "U盘" in "".join(p.state["ledger"])      # 事实入台账
+    assert chap["issues"] == []                      # 复审 PASS → 残余问题清空
+    assert "U盘" in "".join(p.state["ledger"])       # 首轮事实不丢失，入台账
     assert "修订" in chap["text"]                    # 正文已被修复替换
-    assert p.state["debts"] == []                    # 复审 PASS → 无残余债
+    assert p.state["debts"] == []                    # 无残余债
 
 
 def test_residual_issues_become_debts(fake, tmp_path):
@@ -114,6 +137,16 @@ def test_pause_mid_chapters_and_resume_without_rewrite(fake, tmp_path):
     assert len(p.state["chapters"]) == 2
     assert p.state["chapters"][0] == before[0]        # 第一章未重写
     assert not any("请写第 1 章" in c for c in fake.calls[calls_before:])
+
+
+def test_rewrite_updates_chapter_and_md(fake, tmp_path):
+    p = _start(total=1)
+    p.run()
+    fake.rewrite_text = "第1章 重写版\n" + "全新正文内容。" * 30
+    chap = novel_chain.rewrite_chapter(p.state, 1, "节奏太慢")
+    assert "重写" in chap["text"]
+    md = open(p.state["file"], encoding="utf-8").read()
+    assert "重写版" in md
 
 
 def test_drama_adapt_writes_script(fake, tmp_path):
