@@ -59,6 +59,18 @@ def show(app):
     box.insert("end", "\n\n" + _t("help.cmds_title") + "\n")
     for cmd, dkey, _k in getattr(app, "_COMMANDS", []):
         box.insert("end", "  %s   %s\n" % (cmd, _t(dkey)))
+    # 版权 / 开发者信息（GitHub 链接可点击）
+    box.insert("end", "\n" + _t("help.copyright_title") + "\n")
+    box.insert("end", _t("help.copyright") + "\n")
+    repo_url = "https://github.com/hzerther-hub/drama"
+    ltag = "cprlink"
+    box.tag_config(ltag, foreground="#2563eb", underline=True)
+    box.insert("end", repo_url + "\n", ltag)
+    box.tag_bind(ltag, "<Button-1>", lambda _e: ui._open_url(repo_url))
+    box.tag_bind(ltag, "<Enter>",
+                 lambda e: box.config(cursor="hand2"))
+    box.tag_bind(ltag, "<Leave>",
+                 lambda e: box.config(cursor=""))
     box.config(state="disabled")
     ui._enable_text_copy(box)
     box.pack(fill="both", expand=True, padx=12, pady=(12, 0))

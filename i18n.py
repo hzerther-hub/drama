@@ -789,6 +789,15 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
                         "zh": "好的，我已根据摘要恢复上下文，请继续。"},
     "help.cmds_title": {"en": "Slash commands (type / in the input box):",
                         "zh": "斜杠命令（在输入框输入 / 触发）："},
+    "help.copyright_title": {"en": "© Developer / Copyright", "zh": "© 开发者 / 版权"},
+    "help.copyright": {"en": "Developer: 王海滨 (Wang Haibin)\n"
+                             "Email: tbz@qq.com\n"
+                             "QQ: 574574\n"
+                             "WeChat: ningboyihao",
+                       "zh": "开发者：王海滨（Wang Haibin）\n"
+                             "邮箱：tbz@qq.com\n"
+                             "QQ：574574\n"
+                             "微信：ningboyihao"},
     "file.rename":     {"en": "Rename", "zh": "重命名"},
     "file.rename_to":  {"en": "Rename \"old\" to:", "zh": "把「old」重命名为："},
     "file.exists":     {"en": "Target name already exists", "zh": "目标名称已存在"},
