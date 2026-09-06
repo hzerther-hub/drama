@@ -1209,12 +1209,12 @@ class App:
                              font=(FONT_MONO, self._font_chat + 1), wrap="word",
                              relief="flat", padx=12, pady=10, highlightthickness=0)
         self.input.pack(side="left", fill="both", expand=True)
-        # 回车发送；Shift+回车换行；Ctrl+回车排队（聊天软件标准行为）
-        # 弹窗（@ 文件、/ 命令）打开时，回车优先确认候选——全部在
-        # _on_input_keypress（KeyPress 阶段）统一处理，见下方绑定与处理器
-        self.input.bind("<Control-Return>", lambda e: self._send_queued())
+        # 回车发送；Shift+回车换行；Ctrl/⌘+回车=运行中排队、空闲直接发送。
+        # 绑定处理器必须 return "break"：裸 lambda 返回 None 时，
+        # Text 类绑定会在输入框补插一个换行（"Ctrl+回车变插入行"的根源）
+        self.input.bind("<Control-Return>", self._on_ctrl_return)
         self.input.bind("<Control-space>", lambda e: self._queue_current())
-        self.input.bind("<Command-Return>", lambda e: self._send_queued())
+        self.input.bind("<Command-Return>", self._on_ctrl_return)
         self._setup_placeholder()
         # 弹窗导航/确认 + 无弹窗时的回车发送，都在 KeyPress 阶段拦截，
         # 否则回车先被 Text 插入换行、方向键先移动光标
@@ -4603,6 +4603,20 @@ class App:
         if self._running or not self._msg_queue:
             return
         self._send_with(self._msg_queue.pop(0), [])
+
+    def _on_ctrl_return(self, _event=None):
+        """Ctrl/⌘+回车：运行中=当前输入排队；空闲=直接发送当前输入。
+
+        排队非空且空闲时优先消化队列。必须 return "break"，
+        否则 Text 类绑定补插换行。
+        """
+        if self._running:
+            self._queue_current()
+        elif self._msg_queue:
+            self._send_queued()
+        else:
+            self.send()
+        return "break"
 
     def _refresh_all(self):
         """刷新右侧文件树 + 左侧会话列表 + 模型列表。"""
