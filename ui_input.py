@@ -13,6 +13,7 @@ import tkinter as tk
 from tkinter import ttk
 
 import tools
+import dircache
 from i18n import t
 
 
@@ -238,32 +239,19 @@ class InputController:
         self._at_lb = None
 
     def at_candidates(self, frag: str) -> list:
-        """工作区文件/目录候选：@ 后的片段做子串过滤（忽略大小写）。"""
+        """工作区文件/目录候选：@ 后的片段做子串过滤（忽略大小写）。
+
+        清单来自 dircache 的目录快照（TTL 30s，切目录/手动刷新时失效），
+        每次按键只做内存子串过滤，大仓库不再全盘 os.walk。
+        """
         import os
         try:
             ws = tools.get_workspace() or os.getcwd()
         except Exception:             # noqa: BLE001
             ws = os.getcwd()
-        skip = {".git", "__pycache__", "node_modules", ".venv", "venv",
-                "dist", "build", ".idea", ".vscode", "__MACOSX"}
         frag_l = (frag or "").lower()
-        out = []
-        for root, dirs, files in os.walk(ws):
-            rel_root = os.path.relpath(root, ws).replace("\\", "/")
-            if rel_root == ".":
-                rel_root = ""
-            dirs[:] = sorted(d for d in dirs if d not in skip)
-            for name in dirs:
-                rel = f"{rel_root}/{name}" if rel_root else name
-                if frag_l in rel.lower():
-                    out.append(rel + "/")
-            for name in sorted(files):
-                rel = f"{rel_root}/{name}" if rel_root else name
-                if frag_l in rel.lower():
-                    out.append(rel)
-            if len(out) >= 300:
-                break
-        return out[:80]
+        files = dircache.list_files(ws)
+        return [p for p in files if frag_l in p.lower()][:80]
 
     def at_icon(self, path: str):
         """@ 候选行的彩色图标：目录 📁，文件按扩展名映射。"""

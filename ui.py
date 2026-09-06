@@ -22,6 +22,7 @@ import agent as agent_mod
 import attach
 import config
 import errlog
+import dircache
 import media
 import mcp
 import theme
@@ -3875,6 +3876,7 @@ class App:
         if path:
             tools.set_workspace(path)
             config.save_last_workspace(path)   # 记住，下次启动恢复
+            dircache.invalidate()              # @ 候选清单随目录重建
             self._close_all_file_views()       # 切目录：旧目录打开的文件标签一并关掉
             self._update_workspace_label()
             branch = tools.git_branch(path)
@@ -4259,6 +4261,7 @@ class App:
 
     def _refresh_all(self):
         """刷新右侧文件树 + 左侧会话列表 + 模型列表。"""
+        dircache.invalidate()
         try: self._refresh_file_panel()
         except Exception: pass
         try: self._refresh_sidebar()
