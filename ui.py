@@ -4091,6 +4091,7 @@ class App:
         ("/sessions", "cmd.sessions", "sessions"),
         ("/delete", "cmd.delete", "delete"),
         ("/refresh", "cmd.refresh", "refresh"),
+        ("/undo", "cmd.undo", "undo"),
     ]
 
     def _show_command_menu(self, anchor=None):
@@ -4159,6 +4160,11 @@ class App:
                 self._delete_current_session()
             elif cmd == "/refresh":
                 self._refresh_all()
+            elif cmd == "/undo":
+                import checkpoints
+                ok, msg = checkpoints.restore_latest()
+                self._append(("✅ " if ok else "⚠️ ") + msg + "\n", "meta")
+                self._set_status(msg)
             elif cmd in ("/compress", "/compact"):
                 self._compress_session()
             elif cmd == "/init":

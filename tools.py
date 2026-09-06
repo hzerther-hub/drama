@@ -328,6 +328,8 @@ def _write_file(args):
     parent = os.path.dirname(p)
     if parent:  # 裸文件名时 dirname 为空，makedirs("") 会抛异常
         os.makedirs(parent, exist_ok=True)
+    import checkpoints
+    checkpoints.snapshot(p)   # 覆盖前快照（供 /undo 回滚；失败不阻断写入）
     with open(p, "w", encoding="utf-8") as f:
         f.write(args["content"])
     return f"已写入 {p}（{len(args['content'])} 字符）"

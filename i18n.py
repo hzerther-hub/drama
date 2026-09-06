@@ -757,6 +757,7 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "cmd.delete":   {"en": "Delete current session", "zh": "删除当前会话"},
     "cmd.refresh":  {"en": "Refresh files/sessions/models", "zh": "刷新文件/会话/模型"},
     "cmd.compact":  {"en": "Compact context", "zh": "压缩上下文"},
+    "cmd.undo":     {"en": "Undo last file overwrite (checkpoint)", "zh": "回滚最近一次文件覆盖（检查点）"},
     "cmd.init":     {"en": "Analyze workspace & create AGENTS.md", "zh": "分析项目并生成 AGENTS.md"},
     "cmd.brainstorm": {"en": "Brainstorm ideas for a topic (/brainstorm 主题)",
                        "zh": "头脑风暴（/brainstorm 主题）"},
