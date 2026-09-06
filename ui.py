@@ -42,20 +42,20 @@ def _feature(key: str, default: bool = True) -> bool:
         return default
 
 
+_BUILD_TAG = "0906-3"       # 多实例混用时一眼可辨窗口新旧
 def _app_title() -> str:
     """主窗口标题：跟随激活产品 profile 的 title；缺失时回退 i18n 默认。
 
     标题追加 build 标记：多实例混用时一眼可辨窗口新旧。
     """
-    build = "0906-3"
     if products is not None:
         try:
             t = products.active().title
             if t:
-                return f"{t} - build {build}"
+                return f"{t} - build {_BUILD_TAG}"
         except Exception:             # noqa: BLE001
             pass
-    return _t("app.title") + f" - build {build}"
+    return _t("app.title") + f" - build {_BUILD_TAG}"
 
 
 try:

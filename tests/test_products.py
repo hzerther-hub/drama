@@ -86,7 +86,8 @@ def test_app_title_follows_profile(name, monkeypatch):
     products._reset_for_test()
     try:
         import ui
-        assert ui._app_title() == products.load_profile(name).title
+        assert ui._app_title() == \
+            f"{products.load_profile(name).title} - build {ui._BUILD_TAG}"
     finally:
         monkeypatch.delenv(products.ENV_KEY)
         products._reset_for_test()
