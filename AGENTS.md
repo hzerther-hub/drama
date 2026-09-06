@@ -31,6 +31,14 @@ agent.Agent.run()   # synchronous function-calling loop
 | `tools.py` | Built-in tool executor, `is_write_tool` guard |
 | `mcp.py` | MCP manager, stdio + HTTP transport |
 | `config.py` | `ModelConfig`, `CONFIG_DIR` singleton |
+| `pipeline.py` | Stage-machine engine: checkpoints, resume, quality-debt policy |
+| `novel_chain.py` | Novel production chain (outline→…→chapters, review/repair/feedback) |
+| `vecstore.py` | Qdrant REST client + embedding + in-memory fallback |
+| `imggen.py` | Image generation client (OpenAI-compatible images API) |
+| `ui_panel_novel.py` | Novel workbench (pure Tkinter, 3 tabs) |
+| `errlog.py` `checkpoints.py` `dircache.py` | Error log / write checkpoints / dir snapshot |
+| `ui_input.py` | Input-box interaction (enter/@ // popups), extracted from ui.py |
+| `docs/novel-setup.md` | novelwriter 外接工具安装与使用说明 |
 | `codeindex.py` | Workspace TF-IDF index (`index_search` tool) |
 | `codera.py` | Corporate KB RAG (`kb_search` tool) |
 | `products/` | Product profiles; `quant/` has strategy IR |

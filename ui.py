@@ -4102,6 +4102,7 @@ class App:
         ("/delete", "cmd.delete", "delete"),
         ("/refresh", "cmd.refresh", "refresh"),
         ("/undo", "cmd.undo", "undo"),
+        ("/novel", "cmd.novel", "novel"),
     ]
 
     def _run_command(self, text):
@@ -4147,6 +4148,9 @@ class App:
                 ok, msg = checkpoints.restore_latest()
                 self._append(("✅ " if ok else "⚠️ ") + msg + "\n", "meta")
                 self._set_status(msg)
+            elif cmd == "/novel":
+                import ui_panel_novel
+                ui_panel_novel.show(self)
             elif cmd in ("/compress", "/compact"):
                 self._compress_session()
             elif cmd == "/init":
