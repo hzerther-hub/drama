@@ -4354,7 +4354,7 @@ class App:
         else:                                  # status
             rows = _pl.list_pipelines()
             if not rows:
-                self._append(_t("novel.none") + "\n", "meta")
+                self._append(_t("novel.none") + "\n💡 " + _t("novel.usage") + "\n", "meta")
                 return
             for r in rows:
                 self._append(f"· {r['pid']} [{r['pipeline_status']}] "
