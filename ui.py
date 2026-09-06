@@ -4255,8 +4255,9 @@ class App:
     # ---- /novel 写小说生产线（进度像工具提示一样渲染进聊天区）----
 
     def _novel_command(self, arg: str):
-        """/novel 子命令：start <灵感> [章数] | stop | resume [pid] | status |
-        drama 起-止 | deconstruct <txt路径>。进度实时渲染进聊天区。"""
+        """/novel 子命令：start <灵感> [章数] [auto] | ok | adjust <意见> | stop |
+        resume [pid] | status | drama 起-止 | rewrite N [反馈] | deconstruct <txt>。
+        默认逐阶段暂停供调定；进度实时渲染进聊天区。"""
         import novel_chain
         import pipeline as _pl
         sub = (arg or "").split(None, 1)
@@ -4267,6 +4268,8 @@ class App:
                 self._set_status(_t("novel.need_idea"))
                 self._append("⚠ " + _t("novel.need_idea") + "\n", "denied")
                 return
+            auto = bool(re.search(r"\s+(?:auto|自动)\s*$", rest, re.I))
+            rest = re.sub(r"\s+(?:auto|自动)\s*$", "", rest)
             m = re.search(r"\s+(\d{1,2})$", rest)
             total = int(m.group(1)) if m else 3
             idea = rest[:m.start()].strip() if m else rest.strip()
@@ -4280,8 +4283,13 @@ class App:
                 return
             p = novel_chain.new_pipeline(idea, total, model_key)
             self._novel_pipe = p
+            self._novel_stepwise = not auto
             self._novel_busy = True
-            self._novel_run(p)
+            self._novel_run(p, until=("setup" if self._novel_stepwise else None))
+        elif head == "ok":
+            self._novel_ok()
+        elif head == "adjust":
+            self._novel_adjust(rest.strip())
         elif head == "stop":
             if getattr(self, "_novel_pipe", None):
                 self._novel_pipe.request_stop()
@@ -4352,6 +4360,72 @@ class App:
                     self.root.after(0, lambda: setattr(
                         self, "_novel_busy", False))
             threading.Thread(target=rw_work, daemon=True).start()
+        elif head == "cover":
+            import imggen
+            import publisher
+            p = getattr(self, "_novel_pipe", None)
+            if not p:
+                self._set_status(_t("novel.none"))
+                return
+            if not imggen.available():
+                self._set_status(_t("novel.img_need"))
+                self._append("⚠ " + _t("novel.img_need") + "\n", "denied")
+                return
+            self._novel_busy = True
+
+            def cover_work():
+                try:
+                    out = publisher.cover(p.state)
+                    self.root.after(0, lambda: self._append(
+                        "✅ " + _t("novel.cover_done", file=out) + "\n", "meta"))
+                except Exception as e:          # noqa: BLE001
+                    self.root.after(0, lambda: self._append(
+                        "❌ " + str(e) + "\n", "denied"))
+                finally:
+                    self.root.after(0, lambda: setattr(
+                        self, "_novel_busy", False))
+            threading.Thread(target=cover_work, daemon=True).start()
+        elif head == "publish":
+            import publisher
+            p = getattr(self, "_novel_pipe", None)
+            sub = rest.split(None, 1)
+            fmt = (sub[0].lower() if sub else "txt")
+            rng = sub[1] if len(sub) > 1 else ""
+            m = re.match(r"^(\d+)\s*-\s*(\d+)$", rng.strip())
+            a, b = (int(m.group(1)), int(m.group(2))) if m else (1, 10 ** 9)
+            if not (p and p.state.get("chapters")):
+                self._set_status(_t("novel.no_chapters"))
+                self._append("⚠ " + _t("novel.no_chapters") + "\n", "denied")
+                return
+            self._novel_busy = True
+
+            def pub_work():
+                try:
+                    if fmt == "wattpad":
+                        msg = publisher.publish_wattpad(p.state, a, b)
+                        self.root.after(0, lambda: self._append(
+                            "✅ " + _t("novel.wattpad_done", msg=msg)
+                            + "\n", "meta"))
+                    elif fmt == "webhook":
+                        msg = publisher.publish_webhook(p.state, a, b)
+                        self.root.after(0, lambda: self._append(
+                            "✅ " + _t("novel.webhook_done", msg=msg)
+                            + "\n", "meta"))
+                    elif fmt in ("txt", "md", "epub", "html"):
+                        out = getattr(publisher, "export_" + fmt)(p.state)
+                        self.root.after(0, lambda: self._append(
+                            "✅ " + _t("novel.export_done", file=out)
+                            + "\n", "meta"))
+                    else:
+                        self.root.after(0, lambda: self._append(
+                            "⚠ " + _t("novel.publish_usage") + "\n", "denied"))
+                except Exception as e:          # noqa: BLE001
+                    self.root.after(0, lambda: self._append(
+                        "❌ " + str(e) + "\n", "denied"))
+                finally:
+                    self.root.after(0, lambda: setattr(
+                        self, "_novel_busy", False))
+            threading.Thread(target=pub_work, daemon=True).start()
         elif head == "deconstruct":
             path = rest.strip().strip('"')
             model_key = self.current_model.key if self.current_model else ""
@@ -4383,25 +4457,75 @@ class App:
                 self._append(f"· {r['pid']} [{r['pipeline_status']}] "
                              f"{r['title']}（债 {r['debts']}）\n", "meta")
 
-    def _novel_run(self, p):
-        """在 daemon 线程跑流水线；事件回主线程渲染进聊天区。"""
-        def on_event(e):
-            self.root.after(0, lambda: self._novel_event(e))
+    def _novel_ok(self):
+        """继续：逐阶段模式下只推进一个阶段，随后再次暂停供调定。"""
+        p = getattr(self, "_novel_pipe", None)
+        if not p or p.pipeline_status != "paused":
+            self._set_status(_t("novel.none"))
+            return
+        if getattr(self, "_novel_busy", False):
+            return
+        self._novel_busy = True
+        until = None
+        if getattr(self, "_novel_stepwise", False) and p.cursor \
+                and p.cursor != p.stages[-1].name:
+            until = p.cursor
+        self._novel_run(p, until=until)
 
-        def work():
+    def _novel_adjust(self, feedback: str):
+        """按作者意见调整刚完成的规划阶段产出，之后可 /novel ok 继续。"""
+        import novel_chain
+        p = getattr(self, "_novel_pipe", None)
+        last = getattr(self, "_novel_last_done", None)
+        key = novel_chain.STAGE_STATE_KEYS.get(last, "")
+        if not (p and feedback and last and key and p.state.get(key)
+                and p.pipeline_status == "paused"):
+            self._set_status(_t("novel.usage"))
+            self._append("💡 " + _t("novel.usage") + "\n", "meta")
+            return
+        if getattr(self, "_novel_busy", False):
+            return
+        self._novel_busy = True
+
+        def adj_work():
             try:
-                p.run(on_event=on_event)
+                novel_chain.revise_stage(p.state, last, key, feedback)
+                self.root.after(0, lambda: self._append(
+                    "✅ 已按意见调整「" + novel_chain.STAGE_LABELS.get(
+                        last, last) + "」，/novel ok 继续\n", "meta"))
             except Exception as e:          # noqa: BLE001
                 self.root.after(0, lambda: self._append(
                     "❌ " + str(e) + "\n", "denied"))
             finally:
                 self.root.after(0, lambda: setattr(self, "_novel_busy", False))
+        threading.Thread(target=adj_work, daemon=True).start()
+
+    def _novel_run(self, p, until=None):
+        """在 daemon 线程跑流水线；徽标转「进行中」，事件回主线程。"""
+        def on_event(e):
+            self.root.after(0, lambda: self._novel_event(e))
+
+        def work():
+            self.root.after(0, lambda: (self.badge_busy(_t("novel.badge_running")),
+                                        self._set_status(_t("novel.status_running"))))
+            try:
+                p.run(on_event=on_event, until=until)
+            except Exception as e:          # noqa: BLE001
+                self.root.after(0, lambda: self._append(
+                    "❌ " + str(e) + "\n", "denied"))
+            finally:
+                ok = p.pipeline_status != "failed"
+                self.root.after(0, lambda: (self.badge_done(ok=ok),
+                                            self._set_status(_t("top.ready")),
+                                            setattr(self, "_novel_busy", False)))
         threading.Thread(target=work, daemon=True).start()
 
     def _novel_event(self, e):
         """流水线事件 → 聊天区（工具提示同款样式）。"""
         t = e.get("type")
         labels = novel_chain.STAGE_LABELS
+        if t == "stage_done":
+            self._novel_last_done = e.get("name")
         if t == "pipeline_started":
             self._append("🛠 " + _t("novel.started",
                                     pid=e["pid"]) + "\n", "toolhead")
@@ -4420,7 +4544,17 @@ class App:
             self._append("✅ " + _t("novel.done_msg",
                                     file=file) + "\n", "meta")
         elif t == "pipeline_paused":
-            self._append("⏸ " + _t("novel.paused_msg") + "\n", "meta")
+            last = getattr(self, "_novel_last_done", None)
+            key = novel_chain.STAGE_STATE_KEYS.get(last, "")
+            p = getattr(self, "_novel_pipe", None)
+            if last and key and p and getattr(self, "_novel_stepwise", False):
+                self._append("⏸ " + _t("novel.pause_review", stage=labels.get(
+                    last, last)) + "\n", "meta")
+                self._append((p.state.get(key) or "")[:1200] + "\n", "meta")
+                self._append("💡 /novel ok 继续 ｜ /novel adjust <修改意见> 调定\n",
+                             "meta")
+            else:
+                self._append("⏸ " + _t("novel.paused_msg") + "\n", "meta")
         elif t == "pipeline_failed":
             self._append("❌ " + _t("novel.failed_msg",
                                     e=e.get("detail", "")) + "\n", "denied")

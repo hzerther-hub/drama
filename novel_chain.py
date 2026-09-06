@@ -36,7 +36,17 @@ STAGE_LABELS = {
     "contract": "故事合约",
     "characters": "角色",
     "volume": "卷战略",
-    "chapter_plan": "节奏拆章",
+    "chapters": "章节执行",
+}
+
+# 阶段名 → 产出在 state 中的键（adjust 调定用）
+STAGE_STATE_KEYS = {
+    "setup": "framing", "outline": "outline", "world": "world",
+    "contract": "contract", "characters": "characters",
+    "volume": "volume", "chapter_plan": "chapter_plan",
+}
+
+_DEAD = {
     "chapters": "章节执行",
 }
 
@@ -298,7 +308,26 @@ def deconstruct(txt_path: str, model_key: str) -> str:
     return out
 
 
-# ---------------- RAG（Qdrant 或降级） ----------------
+def _ask(state: dict, system: str, user: str) -> str:
+    """一次流式调用，收集完整文本；空回复自动重试一次；LLMError 冒泡分级。"""
+    model = _resolve_model(state.get("model_key"))
+    msgs = [{"role": "system", "content": system},
+            {"role": "user", "content": user}]
+    out = ""
+    for attempt in (1, 2):
+        out = ""
+        try:
+            for ev in llm.stream_chat(model, msgs):
+                if ev.get("type") == "text":
+                    out += ev.get("delta") or ""
+        except llm.LLMError:
+            if attempt == 2:
+                raise
+            continue
+        if out.strip():
+            break
+    return out.strip()
+
 
 def rag_recall(state: dict, query: str, k: int = 3) -> str:
     """按语义召回本书已有片段；任何失败返回空（回退到摘要回灌）。"""
