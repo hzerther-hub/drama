@@ -26,6 +26,7 @@ import media
 import mcp
 import theme
 import tools
+import ui_input
 
 try:
     import products                   # 产品 profile / 功能开关（缺失时全开）
@@ -365,23 +366,6 @@ def _emoji_icon(key: str):
         return _icon_image(chr(int(key, 16)))
     except Exception:                # noqa: BLE001
         return None
-
-
-def _tv_select(lb, i) -> int:
-    """Treeview 候选框：选中第 i 行（夹紧范围）并滚动可见，返回实际 i。"""
-    kids = lb.get_children("")
-    if not kids:
-        return 0
-    i = max(0, min(i, len(kids) - 1))
-    lb.selection_set(kids[i])
-    lb.see(kids[i])
-    return i
-
-
-def _tv_index(lb) -> int:
-    """Treeview 候选框：当前选中行索引（无选中返回 0）。"""
-    sel = lb.selection()
-    return lb.index(sel[0]) if sel else 0
 
 
 def _fmt_size(n) -> str:
@@ -1178,7 +1162,7 @@ class App:
         ctrlbar = tk.Frame(bottom)
         ctrlbar.pack(fill="x", pady=(0, 4))
         self.cmd_plus = _flat_button(ctrlbar, text="＋",
-                                     command=lambda: self._show_command_menu(anchor=self.cmd_plus),
+                                     command=lambda: self.input_ctl.show_command_menu(anchor=self.cmd_plus),
                                      font=(FONT_MONO, theme.FS_ICON))
         self.cmd_plus.config(width=1, padx=8)
         self.cmd_plus.pack(side="left")
@@ -1219,8 +1203,9 @@ class App:
         self._setup_placeholder()
         # 弹窗导航/确认 + 无弹窗时的回车发送，都在 KeyPress 阶段拦截，
         # 否则回车先被 Text 插入换行、方向键先移动光标
-        self.input.bind("<KeyPress>", self._on_input_keypress)
-        self.input.bind("<KeyRelease>", self._input_on_keyrelease)
+        self.input_ctl = ui_input.InputController(self, _emoji_icon, _TREE_ICON_MAP)
+        self.input.bind("<KeyPress>", self.input_ctl.on_keypress)
+        self.input.bind("<KeyRelease>", self.input_ctl.on_keyrelease)
 
         btn_col = tk.Frame(bottom)
         btn_col.pack(side="right", fill="y", padx=(10, 0))
@@ -4094,34 +4079,6 @@ class App:
         ("/undo", "cmd.undo", "undo"),
     ]
 
-    def _show_command_menu(self, anchor=None):
-        """➕ 按钮：斜杠命令速查菜单。
-
-        用统一的候选弹窗（原生气泡菜单在窗口底部会向下展开到屏幕外，
-        看起来像"点了没反应"）。点选命令 → 插入输入框（可补参数后发送）。
-        """
-        cmds = [c for c, _d, _k in self._COMMANDS]
-        rows = [(f"{c}   {_t(d)}", _emoji_icon("26a1"))
-                for c, d, _k in self._COMMANDS]
-        self._command_menu_cmds = [c for c, _d, _k in self._COMMANDS]
-        try:
-            pop, lb = self._show_token_popup(rows, self._on_command_menu_pick)
-            self._command_menu_pop = pop
-            self._command_menu_lb = lb
-        except Exception as e:        # noqa: BLE001
-            self._set_status(str(e))
-
-    def _on_command_menu_pick(self, i):
-        cmd = getattr(self, "_command_menu_cmds", [None] * (i + 1))[i]
-        if cmd:
-            self._insert_command(cmd)
-
-    def _insert_command(self, cmd):
-        if self._placeholder_active:
-            self.input.delete("1.0", "end"); self._placeholder_active = False
-        self.input.insert("insert", cmd + " ")
-        self.input.focus_set()
-
     def _run_command(self, text):
         """本地执行以 / 开头的命令；返回 True 表示已处理（不发给模型）。"""
         import re as _re
@@ -4260,217 +4217,6 @@ class App:
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    # ---- 输入框 /命令 联想 ----
-    def _cmd_hide(self):
-        if getattr(self, "_cmd_pop", None) and self._cmd_pop.winfo_exists():
-            try: self._cmd_pop.destroy()
-            except Exception: pass
-        self._cmd_pop = None
-
-    def _cmd_insert(self):
-        try:
-            idx = self.input.index("insert")
-            line_start = self.input.index(f"{idx} linestart")
-            prefix = self.input.get(line_start, idx)
-            import re
-            m = re.search(r"/[a-z]*$", prefix)
-            word = m.group(0) if m else "/"
-            start = f"{line_start}+{max(0, len(prefix) - len(word))}c"
-            self.input.delete(start, idx)
-            # 优先取弹窗列表的实际选中项（键盘选择/鼠标点选都一致）
-            i = self._cmd_idx
-            try:
-                sel = self._cmd_lb.selection()
-                if sel:
-                    i = _tv_index(self._cmd_lb)
-            except Exception:        # noqa: BLE001
-                pass
-            self.input.insert(start, self._cmd_cands[i] + " ")
-        except Exception:            # noqa: BLE001
-            pass
-        self._cmd_hide()
-
-    # ---- @ 文件/目录选择（参考 Cursor）----
-    def _show_token_popup(self, rows, on_pick):
-        """输入光标处的候选弹窗（/命令 与 @文件 共用）。
-
-        rows: [(label, icon_photo_or_None)]。
-        定位：优先光标下方；下方放不下改到光标上方；最后夹紧屏幕内。
-        交互：滚轮滚动；单击 = 选中并回调 on_pick(索引)；图标走彩色 PNG。
-        """
-        pop = tk.Toplevel(self.root)
-        pop.overrideredirect(True)
-        lb = ttk.Treeview(pop, columns=("label",), show="tree",
-                          selectmode="browse", height=min(len(rows), 10))
-        for label, img in rows:
-            kw = {"text": label}
-            if img is not None:
-                kw["image"] = img
-            lb.insert("", "end", **kw)
-        if rows:
-            lb.selection_set(lb.get_children("")[0])
-        lb.pack(fill="both", expand=True)
-
-        def _wheel(e):
-            lb.yview_scroll(-1 * ((e.delta // 120) or 1), "units")
-
-        def _pick(e):
-            sel = lb.selection()
-            if sel:
-                on_pick(lb.index(sel[0]))
-
-        lb.bind("<MouseWheel>", _wheel)
-        lb.bind("<Button-1>", _pick)
-
-        # ---- 键盘：弹窗接管全部按键（焦点显式给列表）----
-        # 设计：lb.focus_set() 让键盘事件确定性地进入弹窗；回车/Tab 确认、
-        # ↑↓ 选择、Esc 关闭、字符/退格转发回输入框后重过滤。
-        # （输入框自己的 KeyPress 处理器仍保留，覆盖点击输入框后的场景。）
-        def _popup_key(e):
-            k = e.keysym
-            if k in ("Return", "KP_Enter", "Tab"):
-                on_pick(_tv_index(lb))
-                return "break"
-            if k == "Escape":
-                self._cmd_hide()
-                self._at_hide()
-                return "break"
-            if k in ("Up", "Down"):
-                _tv_select(lb, _tv_index(lb) + (1 if k == "Down" else -1))
-                return "break"
-            if k == "BackSpace":
-                self.input.delete("insert-1c", "insert")
-                self.root.after(0, self._popup_rescan)
-                return "break"
-            if e.char and e.char.isprintable():
-                self.input.insert("insert", e.char)
-                self.root.after(0, self._popup_rescan)
-                return "break"
-            return None
-
-        for _w in (pop, lb):
-            _w.bind("<Key>", _popup_key)
-        lb.focus_set()
-
-        # ---- 定位：先算可用空间，再决定上/下 ----
-        pop.update_idletasks()
-        bbox = self.input.bbox("insert")
-        x = self.input.winfo_rootx() + (bbox[0] if bbox else 0)
-        caret_y = self.input.winfo_rooty() + (bbox[1] if bbox else 0)
-        line_h = (bbox[3] - bbox[1]) if bbox else 20
-        h = lb.winfo_reqheight() + 4
-        w = max(pop.winfo_reqwidth(), 240)
-        sh, sw = pop.winfo_screenheight(), pop.winfo_screenwidth()
-        below_y = caret_y + line_h + 6
-        if below_y + h <= sh - 8:
-            y = below_y                    # 下方放得下 → 光标下方
-        else:
-            y = max(8, caret_y - h - 6)    # 放不下 → 改到光标上方
-        x = max(8, min(x, sw - w - 8))
-        pop.geometry("%dx%d+%d+%d" % (w, h, x, y))
-        # Windows 上新弹出的 Toplevel 会抢走键盘焦点——必须立刻把焦点还给
-        # 输入框，否则回车/方向键事件进不了输入框的绑定
-        # （Treeview 原生只响应方向键，这就是"回车选不中"的根源）
-        try:
-            self.input.focus_set()
-        except Exception:            # noqa: BLE001
-            pass
-        # 焦点持续校正：与窗口管理器抢焦点的过程有竞态，弹窗存活期间
-        # 每 80ms 把焦点拉回输入框一次（弹窗销毁后循环自然停止）
-        def _reassert_focus():
-            if pop.winfo_exists():
-                try:
-                    if root.focus_displayof() is not self.input:
-                        self.input.focus_set()
-                except Exception:    # noqa: BLE001
-                    pass
-                pop.after(80, _reassert_focus)
-        _reassert_focus()
-        # 双保险：即便焦点被抢到列表上，回车也直接确认
-        lb.bind("<Return>", lambda _e: (on_pick(_tv_index(lb)), "break")[1])
-        lb.bind("<KP_Enter>", lambda _e: (on_pick(_tv_index(lb)), "break")[1])
-        return pop, lb
-
-    def _at_hide(self):
-        if getattr(self, "_at_pop", None) and self._at_pop.winfo_exists():
-            try: self._at_pop.destroy()
-            except Exception: pass
-        self._at_pop = None
-        self._at_lb = None
-
-    def _at_candidates(self, frag: str) -> list:
-        """工作区文件/目录候选：@ 后的片段做子串过滤（忽略大小写）。"""
-        import os
-        try:
-            ws = tools.get_workspace() or os.getcwd()
-        except Exception:            # noqa: BLE001
-            ws = os.getcwd()
-        skip = {".git", "__pycache__", "node_modules", ".venv", "venv",
-                "dist", "build", ".idea", ".vscode", "__MACOSX"}
-        frag_l = (frag or "").lower()
-        out = []
-        for root, dirs, files in os.walk(ws):
-            rel_root = os.path.relpath(root, ws).replace("\\", "/")
-            if rel_root == ".":
-                rel_root = ""
-            dirs[:] = sorted(d for d in dirs if d not in skip)
-            for name in dirs:
-                rel = f"{rel_root}/{name}" if rel_root else name
-                if frag_l in rel.lower():
-                    out.append(rel + "/")
-            for name in sorted(files):
-                rel = f"{rel_root}/{name}" if rel_root else name
-                if frag_l in rel.lower():
-                    out.append(rel)
-            if len(out) >= 300:
-                break
-        return out[:80]
-
-    def _at_icon(self, path: str):
-        """@ 候选行的彩色图标：目录 📁，文件按扩展名映射。"""
-        key = "1f4c1" if path.endswith("/") else _TREE_ICON_MAP.get(
-            path.rsplit(".", 1)[-1].lower() if "." in path else "", "1f4c4")
-        return _emoji_icon(key)
-
-    def _at_show(self, cands):
-        try:
-            rows = [(p, self._at_icon(p)) for p in cands]
-            pop, lb = self._show_token_popup(rows, lambda _i: self._at_insert())
-            self._at_pop = pop
-            self._at_lb = lb
-        except Exception:            # noqa: BLE001
-            pass
-
-    def _at_insert(self):
-        path = None
-        try:
-            sel = self._at_lb.selection()
-            if sel:
-                path = self._at_cands[_tv_index(self._at_lb)]
-        except Exception as e:       # noqa: BLE001
-            self._set_status(f"@ 确认异常(读取选中): {e}")
-            return
-        self._at_hide()
-        if not path:
-            self._set_status("@ 确认异常: 未取到选中项")
-            return
-        try:
-            idx = self.input.index("insert")
-            line_start = self.input.index(f"{idx} linestart")
-            prefix = self.input.get(line_start, idx)
-            import re
-            m = re.search(r"@[^\s@]*$", prefix)
-            if m:
-                start = f"{line_start}+{m.start(0)}c"
-                self.input.delete(start, idx)
-                self.input.insert(start, "@" + path + " ")
-                self._set_status(f"已插入 @{path}")
-            else:
-                self.input.insert("insert", "@" + path + " ")
-                self._set_status(f"已插入 @{path}（光标处未找到 @token，已追加）")
-        except Exception as e:       # noqa: BLE001
-            self._set_status(f"@ 确认异常(插入): {e}")
-
     def _expand_at_refs(self, text: str) -> str:
         """发送前把 @相对路径 展开为绝对路径（仅存在的文件才替换），
         交给 attach.extract_file_refs 自动转附件；目录/未知引用原样保留。"""
@@ -4486,120 +4232,6 @@ class App:
             p = os.path.join(ws, rel)
             return p if os.path.isfile(p) else m.group(0)
         return re.sub(r"@([^\s@]+)", _sub, text)
-
-    def _on_input_keypress(self, event):
-        """统一 KeyPress 处理（弹窗确认/导航 + 无弹窗时回车发送）。
-
-        全部在 KeyPress 阶段 return "break"：否则 Text 的默认类绑定会先把
-        回车变成换行、把方向键变成移动光标。
-        优先级：弹窗打开 → 回车/Tab 确认候选、↑↓ 选择、Esc 关闭；
-        无弹窗 → 回车发送（Shift=换行走默认；Ctrl/Alt 组合放行专用绑定）。
-        """
-        cmd_open = getattr(self, "_cmd_pop", None) and self._cmd_pop.winfo_exists()
-        at_open = getattr(self, "_at_pop", None) and self._at_pop.winfo_exists()
-        k = event.keysym
-        char = getattr(event, "char", "") or ""
-        # 回车识别兼容 IME：部分输入法会把回车的 keysym 变成别的值（如 Left），
-        is_enter = k in ("Return", "KP_Enter") or char in ("\r", "\n")
-        is_tab = k == "Tab"
-        shift_held = bool(event.state & 0x0001)
-        ctrl_held = bool(event.state & 0x0004)
-
-        if cmd_open or at_open:
-            if is_enter or is_tab:
-                if cmd_open:
-                    self._cmd_insert()
-                else:
-                    self._at_insert()
-                return "break"
-            if k == "Escape":
-                if cmd_open:
-                    self._cmd_hide()
-                else:
-                    self._at_hide()
-                return "break"
-            if k in ("Up", "Down"):
-                d = 1 if k == "Down" else -1
-                if cmd_open:
-                    self._cmd_idx = _tv_select(self._cmd_lb, self._cmd_idx + d)
-                else:
-                    self._at_idx = _tv_select(self._at_lb, self._at_idx + d)
-                return "break"
-            # 字符键/退格：放行默认行为，之后按新内容重过滤候选
-            if (len(k) == 1 or k in ("BackSpace", "Delete")) and not is_enter:
-                self.root.after(0, self._popup_rescan)
-            return None
-
-        # ---- 无弹窗：回车直接发送（Shift+回车=换行走默认）----
-        if is_enter and not shift_held and not ctrl_held:
-            self._on_return(event)
-            return "break"
-        return None
-
-    def _input_on_keyrelease(self, event):
-        """KeyRelease：弹窗未开时检测 / 或 @ token，打开候选弹窗。"""
-        cmd_open = getattr(self, "_cmd_pop", None) and self._cmd_pop.winfo_exists()
-        at_open = getattr(self, "_at_pop", None) and self._at_pop.winfo_exists()
-        if cmd_open or at_open:
-            return None          # 弹窗逻辑在 KeyPress 阶段处理
-        k = event.keysym
-        if k in ("Return", "KP_Enter", "Tab", "Escape", "Up", "Down", "Left", "Right"):
-            return
-        if k == "BackSpace":
-            return
-        self._popup_open_scan()
-
-    def _popup_rescan(self):
-        """按当前光标前的 token 重建候选弹窗（输入过滤用）。"""
-        self._cmd_hide()
-        self._at_hide()
-        self._popup_open_scan()
-
-    def _popup_open_scan(self):
-        """检测光标前的 /命令 或 @文件 token，打开对应候选弹窗。"""
-        import re
-        idx = self.input.index("insert")
-        line_start = self.input.index(f"{idx} linestart")
-        prefix = self.input.get(line_start, idx)
-        m_cmd = re.search(r"/[a-z]*$", prefix)
-        m_at = re.search(r"@([^\s@]*)$", prefix)
-        self._cmd_hide()
-        if m_cmd:
-            self._at_hide()
-            word = m_cmd.group(0)
-            # 前缀匹配 + 容错（多打的字母不算错：/brainstorme 也能命中 /brainstorm）
-            cands = [c for c, _d, _key in self._COMMANDS
-                     if c.startswith(word) or word.startswith(c)]
-            if not cands:
-                return
-            self._cmd_cands = cands
-            self._cmd_idx = 0
-            try:
-                def _pick_cmd(i):
-                    self._cmd_idx = i
-                    self._cmd_insert()
-                rows = [(c, _emoji_icon("26a1")) for c in cands]
-                pop, lb = self._show_token_popup(rows, _pick_cmd)
-                self._cmd_pop = pop
-                self._cmd_lb = lb
-            except Exception as e:       # noqa: BLE001
-                self._set_status(f"命令弹窗错误: {e}")
-            return
-        self._at_hide()
-        if not m_at:
-            return
-        cands = self._at_candidates(m_at.group(1))
-        if not cands:
-            return
-        self._at_cands = cands
-        self._at_idx = 0
-        try:
-            rows = [(p, self._at_icon(p)) for p in cands]
-            pop, lb = self._show_token_popup(rows, lambda _i: self._at_insert())
-            self._at_pop = pop
-            self._at_lb = lb
-        except Exception as e:       # noqa: BLE001
-            self._set_status(f"弹窗错误: {e}")
 
     def show_mode_help(self, arg):
         # 占位：permission 提示可选项
