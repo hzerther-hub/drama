@@ -202,7 +202,8 @@ def st_chapters(state: dict, ctx) -> dict:
                 facts = facts2 + [f for f in facts if f not in facts2]
                 fsh = fsh2 + [f for f in fsh if f not in fsh2]
                 closes = closes + closes2
-        chap = {"idx": idx, "title": _chapter_title(text, idx),
+        title = _planned_title(state, idx) or _chapter_title(text, idx)
+        chap = {"idx": idx, "title": title,
                 "text": text, "summary": text[:_MAX_WORDS].replace("\n", " "),
                 "issues": issues}
         chapters.append(chap)
@@ -416,12 +417,25 @@ def _arc_block(state: dict) -> str:
     return "\n更早卷段摘要：\n" + arcs[-1]["text"] + "\n"
 
 
-def _chapter_prompt(state: dict, idx: int) -> str:
+def _task_line(state: dict, idx: int) -> str:
+    """从节奏拆章任务单里取本章那一行。"""
     plan = state.get("chapter_plan", "")
-    task_line = ""
     m = re.search(rf"第{idx}章.*", plan)
-    if m:
-        task_line = f"本章任务单：{m.group(0)}\n"
+    return m.group(0) if m else ""
+
+
+def _planned_title(state: dict, idx: int) -> str:
+    """拆章阶段预定的本章标题（《》内），未规划返回空。"""
+    m = re.search(r"《(.+?)》", _task_line(state, idx))
+    return m.group(1) if m else ""
+
+
+def _chapter_prompt(state: dict, idx: int) -> str:
+    task = _task_line(state, idx)
+    task_line = f"本章任务单：{task}\n" if task else ""
+    planned = _planned_title(state, idx)
+    title_line = (f"本章标题（第一行必须一字不差使用）：{planned}\n"
+                  if planned else "")
     prev = [f"第{c['idx']}章《{c['title']}》：{c['summary']}"
             for c in state["chapters"][-3:]]
     prev_text = "\n".join(prev) if prev else "（本章为第一章）"
@@ -435,7 +449,8 @@ def _chapter_prompt(state: dict, idx: int) -> str:
             f"卷战略：\n{state['volume']}\n{_style_block(state)}"
             f"{_arc_block(state)}"
             f"前情提要：\n{prev_text}\n事实台账：\n{led_text}\n"
-            f"{_open_foreshadow_block(state)}{recall_text}{task_line}\n"
+            f"{_open_foreshadow_block(state)}{recall_text}{task_line}"
+            f"{title_line}"
             f"请写第 {idx} 章，1500-2500 字：承接前情与台账，"
             "遵守硬约束，不得与事实矛盾，结尾留钩子。")
 

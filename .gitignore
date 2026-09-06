@@ -34,3 +34,4 @@ products/quant/data/cache/
 gui_err*.log
 send_debug.log
 popup_debug.log
+novels/
