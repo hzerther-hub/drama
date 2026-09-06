@@ -226,6 +226,17 @@ class TestSandbox:
         "reboot",
         "format C: /y",
         "rd /s /q C:\\",
+        "rm -rf .",
+        "rm -fr *",
+        "rm -rf ~",
+        "Remove-Item -Recurse -Force .",
+        "Remove-Item *.log -Recurse",
+        "git reset --hard",
+        "git clean -fdx",
+        "git clean -df",
+        "git checkout .",
+        "git restore -- .",
+        "rd /s /q .",
     ])
     def test_dangerous_commands_blocked(self, workspace, cmd):
         out = tools.execute_tool("run_shell", {"command": cmd})
@@ -236,6 +247,11 @@ class TestSandbox:
         "rm -rf ./build",            # 删工作区内的构建目录是正常开发操作
         "python setup.py install",
         "ls -la /tmp",
+        "Remove-Item build -Recurse",
+        "git clean -n",
+        "git checkout ./src",
+        "git reset --soft HEAD~1",
+        "rd /s /q build",
     ])
     def test_normal_commands_not_blocked(self, workspace, cmd):
         assert tools.shell_command_blocked(cmd) is None

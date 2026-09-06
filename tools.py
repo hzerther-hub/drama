@@ -117,6 +117,13 @@ _BLOCKED_SHELL_PATTERNS = [
     r"\bformat\s+[a-zA-Z]:",                            # Windows 格式化盘符
     r"\b(?:rd|rmdir)\s+/s\s+/q\s+[a-zA-Z]:[\\/]?\s*$",  # rd /s /q C:\
     r"\bdel\s+/[sqfSQF/]+\s+[a-zA-Z]:[\\/]\*",          # del /s /q C:\*
+    # --- 以下为护栏扩充（原 8 条只拦"删根目录"级操作）---
+    r"\brm\s+(?:-\w+\s+)*-\w*[rf]\w*\s+(?:\.{1,2}|~|\*)(?:\s|$)",  # rm -rf . .. ~ *
+    r"\b(?:rd|rmdir)\s+(?:/[a-z]+\s+)*\.{1,2}\s*$",     # rd /s /q .
+    r"\bRemove-Item\b(?=[^|;&]*-recurse\b|-r\b)(?=[^|;&]*(?:-force\b|-fo\b|~|\*))",  # PS 递归强删
+    r"\bgit\s+reset\s+--hard\b",                        # 丢弃全部未提交修改
+    r"\bgit\s+clean\s+(?:-\w+\s+)*-\w*f\w*d\w*|\bgit\s+clean\s+(?:-\w+\s+)*-\w*d\w*f\w*",  # git clean -fd[x]
+    r"\bgit\s+(?:checkout|restore)\s+(?:--\s+)?\.(?:\s|$)",  # 整仓丢弃式还原
 ]
 # 预编译一次，避免每次 run_shell 都重复 re.compile
 _COMPILED_BLOCKED_PATTERNS = [(p, re.compile(p, re.I))
