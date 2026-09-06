@@ -1623,9 +1623,29 @@ class App:
                 return
             try:
                 self.paned.sash_place(1, self.paned.winfo_width() - target, 0)
+                self._editor_auto_expanded = True   # 宽度是自动扩的，关闭编辑时可还原
             except Exception:             # noqa: BLE001  sash 未就绪则跳过
                 pass
         self.root.after(60, _w)           # 等本次布局稳定再动分栏
+
+    def _editor_auto_restore(self):
+        """关闭全部编辑标签：面板恢复到启动宽度（与 _editor_auto_expand 对称）。
+
+        只在面板是被自动扩宽时收窄；用户手动拉大过则尊重现状不动。
+        """
+        def _w():
+            startup = getattr(self, "_editor_startup_w", 0)
+            cur = self.file_frame.winfo_width()
+            if not startup or not cur or cur <= startup + 4:
+                return                    # 本来就是窄的
+            if not getattr(self, "_editor_auto_expanded", False):
+                return                    # 用户手动拉大过 → 不动
+            try:
+                self.paned.sash_place(1, self.paned.winfo_width() - startup, 0)
+            except Exception:             # noqa: BLE001  sash 未就绪则跳过
+                pass
+            self._editor_auto_expanded = False
+        self.root.after(60, _w)
 
     # ---- 侧栏会话项：DEL 删除 / 右键重命名·删除 ----
     def _sidebar_session_info(self, iid=None):
@@ -1774,6 +1794,7 @@ class App:
 
         # 记录启动宽度基准（点开编辑自动扩到半屏的比较用，见 _editor_auto_expand）
         self._editor_startup_w = 0
+        self._editor_auto_expanded = False   # 面板当前宽度是自动扩的（非手动）
         self.file_frame.bind("<Configure>", self._editor_record_startup, add="+")
         self._file_add_tab("__files__", _t("panel.files"), closable=False)
         self._file_select_view("__files__")
@@ -2017,6 +2038,8 @@ class App:
             self._file_tab_by_view.pop(path, None)
         if self._file_active_view == view_id:
             self._file_select_view("__files__")
+        if not any(v != "__files__" for v in self._file_views):
+            self._editor_auto_restore()   # 最后一个编辑标签关闭 → 面板还原启动宽度
 
     def _close_all_file_views(self):
         """关闭全部已打开的文件标签（保留文件树视图）。
