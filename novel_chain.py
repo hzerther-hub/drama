@@ -36,6 +36,7 @@ STAGE_LABELS = {
     "contract": "故事合约",
     "characters": "角色",
     "volume": "卷战略",
+    "chapter_plan": "节奏拆章",
     "chapters": "章节执行",
 }
 
@@ -234,6 +235,27 @@ STAGES = [
 ]
 
 
+def parse_start_args(rest: str) -> dict:
+    """解析 /novel start 的参数串（纯函数，UI 层调用）。
+
+    支持「灵感 [章数] [auto|自动]」，尾部标志位与章数顺序不限：
+      "重生逆袭 12"        → {idea, total:12, auto:False}
+      "重生逆袭 12 auto"   → {idea, total:12, auto:True}
+      "重生逆袭"           → {idea, total:3,  auto:False}
+    idea 为空返回 {"error": "need_idea"}；章数夹紧到 [1, _MAX_CHAPTERS]。
+    """
+    rest = (rest or "").strip()
+    auto = bool(re.search(r"\s+(?:auto|自动)\s*$", rest, re.I))
+    rest = re.sub(r"\s+(?:auto|自动)\s*$", "", rest).strip()
+    m = re.search(r"\s+(\d{1,3})$", rest)
+    total = int(m.group(1)) if m else 3
+    idea = (rest[:m.start()] if m else rest).strip()
+    if not idea:
+        return {"error": "need_idea"}
+    return {"idea": idea, "total": max(1, min(total, _MAX_CHAPTERS)),
+            "auto": auto}
+
+
 def new_pipeline(idea: str, total: int, model_key: str,
                  style: str = "") -> Pipeline:
     """开一条新书流水线；书稿落在工作区 novels/<pid>.md。"""
@@ -260,7 +282,47 @@ def extend_total(p: Pipeline, n: int):
     p.save()
 
 
-# ---------------- 衍生：重写 / 短剧 / 拆书 ----------------
+# ---------------- 衍生：调定 / 重写 / 短剧 / 拆书 ----------------
+
+_REVISE_SYS = {
+    "setup": "你是资深网文主编。按作者意见修订项目设定，只输出修订后的完整设定，"
+             "不解释、不写正文。第一行保留「题材：xxx」格式。",
+    "outline": "你是资深网文主编。按作者意见修订宏观规划，只输出修订后的完整规划，不解释。",
+    "world": "你是资深网文主编。按作者意见修订世界设定，只输出修订后的完整设定，不解释。",
+    "contract": "你是资深网文主编。按作者意见修订故事合约，编号列出全部硬约束条款，"
+                "不要解释、只列条款。",
+    "characters": "你是资深网文主编。按作者意见修订角色设定，只输出修订后的完整角色表，不解释。",
+    "volume": "你是资深网文主编。按作者意见修订卷战略，只输出修订后的完整分卷方案，不解释。",
+    "chapter_plan": "你是资深网文主编。按作者意见修订节奏拆章任务单，每章一行"
+                    "「第N章《标题》目标：…钩子：…」，只输出任务单，不解释。",
+}
+
+
+def revise_stage(state: dict, stage: str, key: str, feedback: str) -> str:
+    """按作者意见重做某个规划阶段的产出（/novel adjust 用）。
+
+    保留已完成章节不动，只重写该阶段 state[key] 与书稿 md 对应段落；
+    返回修订后的文本。stage 不支持调整（如 chapters）时抛 StageStopError。
+    """
+    old = (state.get(key) or "").strip()
+    if not old:
+        raise StageStopError(f"阶段「{stage}」尚无产出可调整")
+    sys_prompt = _REVISE_SYS.get(stage)
+    if not sys_prompt:
+        raise StageStopError(f"阶段「{stage}」不支持调定（章节请用 /novel rewrite）")
+    new = _ask(state, sys_prompt,
+               f"现有产出：\n{old}\n\n作者意见（必须落实）：\n{feedback}\n"
+               "请输出修订后的完整产出。")
+    if len(new) < 20:
+        raise StageStopError("修订产出过短，已保留原产出")
+    state[key] = new
+    if stage == "setup":
+        m = re.search(r"题材[:：]\s*(.+)", new)
+        if m:
+            state["genre"] = m.group(1).strip()[:24]
+    _rebuild_md(state)
+    return new
+
 
 def rewrite_chapter(state: dict, idx: int, feedback: str = "") -> dict:
     """重写指定章节（保留编号），全书 md 同步重建；返回更新后的章。"""
@@ -379,18 +441,6 @@ def _rag_index_chapter(state: dict, chap: dict):
 
 def _resolve_model(key: str):
     return config.find_model(key) if key else None
-
-
-def _ask(state: dict, system: str, user: str) -> str:
-    """一次流式调用，收集完整文本；LLMError 冒泡由引擎按策略分级。"""
-    model = _resolve_model(state.get("model_key"))
-    msgs = [{"role": "system", "content": system},
-            {"role": "user", "content": user}]
-    out = []
-    for ev in llm.stream_chat(model, msgs):
-        if ev.get("type") == "text":
-            out.append(ev.get("delta") or "")
-    return "".join(out).strip()
 
 
 def _style_block(state: dict) -> str:

@@ -4319,15 +4319,14 @@ class App:
         head = sub[0] if sub else "status"
         rest = sub[1] if len(sub) > 1 else ""
         if head == "start":
-            if not rest:
+            parsed = novel_chain.parse_start_args(rest)
+            if parsed.get("error"):
                 self._set_status(_t("novel.need_idea"))
                 self._append("⚠ " + _t("novel.need_idea") + "\n", "denied")
                 return
-            auto = bool(re.search(r"\s+(?:auto|自动)\s*$", rest, re.I))
-            rest = re.sub(r"\s+(?:auto|自动)\s*$", "", rest)
-            m = re.search(r"\s+(\d{1,3})$", rest)
-            total = int(m.group(1)) if m else 3
-            idea = rest[:m.start()].strip() if m else rest.strip()
+            idea = parsed["idea"]
+            total = parsed["total"]
+            auto = parsed["auto"]
             if self._running or getattr(self, "_novel_busy", False):
                 self._set_status(_t("novel.busy"))
                 return
@@ -4526,8 +4525,11 @@ class App:
                 self._append(_t("novel.none") + "\n💡 " + _t("novel.usage") + "\n", "meta")
                 return
             for r in rows:
+                warn = ""
+                if r.get("save_errors"):
+                    warn = f" ⚠检查点落盘失败×{r['save_errors']}"
                 self._append(f"· {r['pid']} [{r['pipeline_status']}] "
-                             f"{r['title']}（债 {r['debts']}）\n", "meta")
+                             f"{r['title']}（债 {r['debts']}）{warn}\n", "meta")
 
     def _novel_ok(self):
         """继续：逐阶段模式下只推进一个阶段，随后再次暂停供调定。"""

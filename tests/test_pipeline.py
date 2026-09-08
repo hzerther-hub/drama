@@ -116,3 +116,31 @@ def test_list_pipelines_sorted(tmp_path, monkeypatch):
     make([Stage("a", st_add)], pid="p2").run()
     rows = pipeline.list_pipelines()
     assert [r["pid"] for r in rows] == ["p2", "p1"]
+
+
+def test_save_failure_is_recorded_not_silent(tmp_path, monkeypatch):
+    """检查点落盘失败要留下健康信号（断点恢复的根基，不能静默吞掉）。"""
+    monkeypatch.setattr(pipeline, "_root", lambda: str(tmp_path))
+
+    def boom(*_a, **_kw):
+        raise TypeError("state 不可序列化")
+
+    monkeypatch.setattr(pipeline.json, "dump", boom)
+    p = make([Stage("a", st_add)], pid="bad")
+    p.run()                            # 落盘全失败也不阻断执行
+    assert p.state["v"] == 1
+    assert p.save_errors > 0
+    assert "TypeError" in p.save_error
+
+
+def test_save_health_survives_restore(tmp_path, monkeypatch):
+    """健康信号随状态持久化：恢复后仍能读到落盘失败计数。"""
+    monkeypatch.setattr(pipeline, "_root", lambda: str(tmp_path))
+    p = make([Stage("a", st_add)], pid="p1")
+    p.run()
+    p.save_errors = 3
+    p.save_error = "OSError: 磁盘满"
+    p.save()
+    p2 = pipeline.load("p1", [Stage("a", st_add)])
+    assert p2.save_errors == 3 and "磁盘满" in p2.save_error
+    assert pipeline.list_pipelines()[0]["save_errors"] == 3

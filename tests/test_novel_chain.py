@@ -24,6 +24,9 @@ class FakeLLM:
             yield {"type": "text", "delta": text[i:i + 20]}
 
     def _reply(self, user):
+        if "作者意见（必须落实）" in user:                # revise_stage 调定
+            return ("修订后设定：题材：悬疑\n卖点：反转再反转\n"
+                    "目标读者：爱烧脑的推理读者")
         if "MASTER_SETTING" in user:
             return "1. 称谓固定\n2. 禁止现代词汇"
         if "请重写本章" in user:
@@ -73,6 +76,71 @@ def fake(monkeypatch, tmp_path):
 
 def _start(idea="重生都市逆袭", total=2):
     return novel_chain.new_pipeline(idea, total, model_key="fake-model")
+
+
+def test_ask_retries_once_on_empty_reply(monkeypatch):
+    """空回复自动重试一次（曾被重复定义静默遮蔽，此处锁住行为）。"""
+    replies = ["", "第二次才有内容"]
+    calls = []
+
+    def stream_chat(model, msgs, tools=None):
+        calls.append(msgs)
+        out = replies[len(calls) - 1]
+        for i in range(0, len(out), 20):
+            yield {"type": "text", "delta": out[i:i + 20]}
+
+    monkeypatch.setattr(novel_chain.llm, "stream_chat", stream_chat)
+    assert novel_chain._ask({"model_key": "fake-model"}, "sys", "user") == "第二次才有内容"
+    assert len(calls) == 2                              # 确实重试了一次
+
+
+def test_ask_retries_once_on_llm_error(monkeypatch):
+    """首次 LLMError 重试，第二次成功即返回（不冒泡）。"""
+    calls = []
+
+    def stream_chat(model, msgs, tools=None):
+        calls.append(msgs)
+        if len(calls) == 1:
+            raise novel_chain.llm.LLMError("首次失败")
+        yield {"type": "text", "delta": "重试成功"}
+
+    monkeypatch.setattr(novel_chain.llm, "stream_chat", stream_chat)
+    assert novel_chain._ask({"model_key": "fake-model"}, "sys", "user") == "重试成功"
+    assert len(calls) == 2
+
+
+def test_ask_raises_after_second_llm_error(monkeypatch):
+    """两次都失败则 LLMError 冒泡，交由引擎按阶段策略分级。"""
+    calls = []
+
+    def stream_chat(model, msgs, tools=None):
+        calls.append(msgs)
+        raise novel_chain.llm.LLMError("一直失败")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(novel_chain.llm, "stream_chat", stream_chat)
+    with pytest.raises(novel_chain.llm.LLMError):
+        novel_chain._ask({"model_key": "fake-model"}, "sys", "user")
+    assert len(calls) == 2
+
+
+def test_parse_start_args_variants():
+    """/novel start 参数解析（自 ui 抽出的纯函数）。"""
+    assert novel_chain.parse_start_args("重生逆袭 12") == {
+        "idea": "重生逆袭", "total": 12, "auto": False}
+    assert novel_chain.parse_start_args("重生逆袭 12 auto")["auto"] is True
+    assert novel_chain.parse_start_args("重生逆袭 12 自动")["auto"] is True
+    assert novel_chain.parse_start_args("重生逆袭") == {
+        "idea": "重生逆袭", "total": 3, "auto": False}
+    assert novel_chain.parse_start_args("重生逆袭 999")["total"] == 999
+    # 章数解析只认 1-3 位数；4 位不匹配 → 整串当灵感、章数回落默认 3
+    four = novel_chain.parse_start_args("重生逆袭 1234")
+    assert four["total"] == 3 and four["idea"] == "重生逆袭 1234"
+    assert novel_chain.parse_start_args("  重生逆袭  7  ")["idea"] == "重生逆袭"
+    assert novel_chain.parse_start_args("") == {"error": "need_idea"}
+    assert novel_chain.parse_start_args("   ") == {"error": "need_idea"}
+    # 单独的 auto 无前置空白，不视为标志位 → 当作灵感（与原 UI 行为一致）
+    assert novel_chain.parse_start_args("auto")["idea"] == "auto"
 
 
 def test_full_run_two_chapters(fake, tmp_path):
@@ -137,6 +205,36 @@ def test_pause_mid_chapters_and_resume_without_rewrite(fake, tmp_path):
     assert len(p.state["chapters"]) == 2
     assert p.state["chapters"][0] == before[0]        # 第一章未重写
     assert not any("请写第 1 章" in c for c in fake.calls[calls_before:])
+
+
+def test_revise_stage_updates_state_and_md(fake, tmp_path):
+    """/novel adjust：按意见重做规划阶段产出（此前 revise_stage 缺失必崩）。"""
+    p = _start(total=1)
+    assert p.run(until="setup") == "paused"
+    old = p.state["framing"]
+    novel_chain.revise_stage(p.state, "setup", "framing", "改成悬疑题材")
+    assert p.state["framing"] != old
+    assert "悬疑" in p.state["framing"]
+    assert p.state["genre"] == "悬疑"                  # setup 同步刷新 genre
+    assert "悬疑" in open(p.state["file"], encoding="utf-8").read()
+
+
+def test_revise_stage_rejects_unknown_stage(fake, tmp_path):
+    p = _start(total=1)
+    p.run(until="setup")
+    with pytest.raises(novel_chain.StageStopError):
+        novel_chain.revise_stage(p.state, "chapters", "chapters", "改一下")
+
+
+def test_revise_stage_requires_existing_output(fake, tmp_path):
+    p = _start(total=1)
+    with pytest.raises(novel_chain.StageStopError):
+        novel_chain.revise_stage(p.state, "setup", "framing", "随便改")
+
+
+def test_stage_labels_cover_all_stages():
+    """每个阶段都要有中文标签，否则进度/暂停提示会露出英文键名。"""
+    assert all(s.name in novel_chain.STAGE_LABELS for s in novel_chain.STAGES)
 
 
 def test_rewrite_updates_chapter_and_md(fake, tmp_path):

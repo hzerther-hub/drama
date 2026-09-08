@@ -82,6 +82,10 @@ class Pipeline:
         self.error = ""
         self.stop_requested = False
         self.updated = time.time()
+        # 检查点健康信号：落盘失败次数与最近一次原因。断点恢复的根基，
+        # 静默吞掉会让「已保存」成为假象，故随状态一起持久化供排查。
+        self.save_errors = 0
+        self.save_error = ""
 
     # ---------------- 执行 ----------------
 
@@ -199,7 +203,9 @@ class Pipeline:
                 "state": self.state, "status": self.status,
                 "debts": self.debts, "cursor": self.cursor,
                 "pipeline_status": self.pipeline_status,
-                "error": self.error, "updated": self.updated}
+                "error": self.error, "updated": self.updated,
+                "save_errors": self.save_errors,
+                "save_error": self.save_error}
 
     def save(self):
         try:
@@ -209,8 +215,11 @@ class Pipeline:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self.to_dict(), f, ensure_ascii=False, indent=1)
             os.replace(tmp, _path(self.pid))
-        except OSError:
-            pass                       # 落盘失败不阻断执行（下个阶段再试）
+        except Exception as e:         # noqa: BLE001  落盘失败不阻断执行（下个阶段再试）
+            # 记录健康信号：断点恢复依赖落盘，静默失败必须可查。
+            # 下次 save 成功时会连同计数一起持久化。
+            self.save_errors += 1
+            self.save_error = f"{type(e).__name__}: {e}"[:200]
 
     @classmethod
     def restore(cls, data: dict, stages: list) -> "Pipeline":
@@ -223,6 +232,8 @@ class Pipeline:
         p.pipeline_status = data.get("pipeline_status", "pending")
         p.error = data.get("error", "")
         p.updated = data.get("updated", 0.0)
+        p.save_errors = int(data.get("save_errors", 0) or 0)
+        p.save_error = data.get("save_error", "") or ""
         for s in stages:               # 阶段定义新增的 → 补 pending
             p.status.setdefault(s.name, "pending")
         if p.pipeline_status == "running":   # 进程中断时正在跑 → 回退待恢复
@@ -264,6 +275,7 @@ def list_pipelines() -> list[dict]:
                         "pipeline_status": d.get("pipeline_status"),
                         "cursor": d.get("cursor"),
                         "debts": len(d.get("debts") or []),
+                        "save_errors": int(d.get("save_errors", 0) or 0),
                         "updated": d.get("updated", 0)})
         except Exception:              # noqa: BLE001  损坏文件跳过
             continue
