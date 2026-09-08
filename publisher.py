@@ -68,13 +68,17 @@ def export_txt(state: dict, path: str = "") -> str:
 
 
 def export_md(state: dict, path: str = "") -> str:
-    """Markdown 即书稿文件本身；导出=复制到指定路径。"""
-    src = state.get("file") or "novel.md"
+    """完整 Markdown 书稿：规划 + 全部章节合并成单文件（便于分发）。"""
     out = path or _book_sibling(state, "-完整.md")
-    with open(src, encoding="utf-8") as f:
-        text = f.read()
+    parts = []
+    plan = state.get("file")
+    if plan and os.path.exists(plan):
+        with open(plan, encoding="utf-8") as f:
+            parts.append(f.read().rstrip())
+    for c in state.get("chapters", []):
+        parts.append(f"\n\n## {c['title']}\n\n{c['text']}")
     with open(out, "w", encoding="utf-8") as f:
-        f.write(text)
+        f.write("".join(parts) + "\n")
     return out
 
 
@@ -189,14 +193,32 @@ def _req(method: str, url: str, body: dict) -> dict:
 # ---------------- 小工具 ----------------
 
 def _book_sibling(state: dict, suffix: str) -> str:
-    file = state.get("file") or "novel.md"
-    return file.rsplit(".", 1)[0] + suffix
+    """导出物放在本书目录下，用书名命名（书稿已改为目录布局）。"""
+    d = state.get("dir")
+    if not d:
+        f = state.get("file") or "novel.md"
+        d = os.path.dirname(f) or "."
+    base = _book_title(state) or state.get("pid") or "novel"
+    return os.path.join(d, _safe_filename(base) + suffix)
+
+
+def _safe_filename(name: str) -> str:
+    """清洗为合法文件名（去 Windows 非法字符）。"""
+    import re
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", (name or "").strip())
+    return name.strip(" .")[:40] or "novel"
 
 
 def _book_title(state: dict) -> str:
+    """书名：优先取大纲首行里的《书名》，否则用灵感句前 40 字。"""
+    import re
+    first = ""
     if state.get("outline"):
-        return state["outline"].splitlines()[0].strip()[:40]
-    return state["idea"][:40]
+        first = state["outline"].splitlines()[0].strip()
+    m = re.search(r"《(.+?)》", first)
+    if m:
+        return m.group(1)[:40]
+    return (first or state.get("idea", ""))[:40]
 
 
 def _first_line(text: str) -> str:

@@ -58,6 +58,15 @@ _MAX_OPEN_FORESHADOW = 8
 _ARC_EVERY = 4                   # 每 4 章压缩一段卷段记忆
 _MAX_DECONSTRUCT = 60000
 
+# 书稿目录布局（对齐 webnovel-writer 生态惯例：按内容类型分目录）：
+#   novels/<pid>/大纲/总纲.md          ← 全书规划（framing→chapter_plan）
+#   novels/<pid>/设定集/世界观.md       ← 世界/角色/硬约束
+#   novels/<pid>/正文/第0001章-标题.md  ← 每章独立 md，章号补零便于排序
+_DIR_OUTLINE = "大纲"
+_DIR_SETTING = "设定集"
+_DIR_TEXT = "正文"
+_OUTLINE_FILE = "总纲.md"
+
 _SYS_PLANNER = "你是资深网文主编，只输出规划本身，不写正文，不解释。"
 _SYS_WRITER = "你是网文作者，直接输出章节正文，正文前第一行是章节标题。硬约束条款不得违反。"
 
@@ -132,7 +141,7 @@ def st_world(state: dict, ctx) -> dict:
                 "请输出本书世界：时代与地理背景、力量或社会规则、主要势力 3-5 个。")
     if not text:
         raise StageFail("世界设定生成为空")
-    _append_md(state, "\n\n## 本书世界\n\n" + text)
+    _append_setting(state, "世界观", f"# 本书世界\n\n{text}")
     return {"world": text}
 
 
@@ -147,7 +156,7 @@ def st_contract(state: dict, ctx) -> dict:
                 "不要解释，只列条款。")
     if not text:
         raise StageFail("故事合约生成为空")
-    _append_md(state, "\n\n## 故事合约（硬约束）\n\n" + text)
+    _append_setting(state, "故事合约", f"# 故事合约（硬约束）\n\n{text}")
     return {"contract": text}
 
 
@@ -160,7 +169,7 @@ def st_characters(state: dict, ctx) -> dict:
                 "请给出 3-6 名主要角色：姓名、身份、核心动机、成长弧线，每人 2-3 行。")
     if not text:
         raise StageFail("角色生成为空")
-    _append_md(state, "\n\n## 角色\n\n" + text)
+    _append_setting(state, "角色", f"# 角色\n\n{text}")
     return {"characters": text}
 
 
@@ -271,14 +280,16 @@ def parse_start_args(rest: str) -> dict:
 
 def new_pipeline(idea: str, total: int, model_key: str,
                  style: str = "") -> Pipeline:
-    """开一条新书流水线；书稿落在工作区 novels/<pid>.md。"""
+    """开一条新书流水线；书稿落在工作区 novels/<pid>/ 目录（每章一个 md）。"""
     total = max(1, min(int(total or 3), _MAX_CHAPTERS))
     pid = "novel-" + time.strftime("%Y%m%d-%H%M%S")
     ws = tools.get_workspace() or os.getcwd()
+    book_dir = os.path.join(ws, "novels", pid)
     state = {"idea": idea, "total_chapters": total, "model_key": model_key,
              "style": (style or "").strip(), "chapters": [], "debts": [],
              "ledger": [], "foreshadows": [], "arc_summaries": [],
-             "pid": pid, "file": os.path.join(ws, "novels", pid + ".md")}
+             "pid": pid, "dir": book_dir,
+             "file": os.path.join(book_dir, _DIR_OUTLINE, _OUTLINE_FILE)}
     return Pipeline(pid, idea[:20], STAGES, state)
 
 
@@ -369,7 +380,7 @@ def drama_adapt(state: dict, ch_start: int, ch_end: int,
                 if ch_start <= c["idx"] <= ch_end]
     if not chapters:
         raise StageStopError("所选范围没有已完成章节")
-    out_path = _book_path(state).replace(".md", "-短剧.md")
+    out_path = os.path.join(_book_dir(state), "短剧改编.md")
     with open(out_path, "a", encoding="utf-8") as f:
         for c in chapters:
             script = _ask(state, _SYS_DRAMA,
@@ -580,14 +591,51 @@ def _chapter_title(text: str, idx: int) -> str:
     return f"第{idx}章"
 
 
+def _book_dir(state: dict) -> str:
+    """本书目录（novels/<pid>/）。旧布局（单 md）自动升级为目录布局。"""
+    d = state.get("dir")
+    if not d:
+        # 兼容旧检查点：state 里只有 file（<ws>/novels/<pid>.md）→ 推出目录
+        old = state.get("file") or ""
+        base = os.path.splitext(old)[0] if old else ""
+        if base and os.path.basename(base).startswith("novel-"):
+            d = base
+        else:
+            ws = tools.get_workspace() or os.getcwd()
+            d = os.path.join(ws, "novels", state.get("pid") or "untitled")
+        state["dir"] = d
+    return d
+
+
+def _plan_path(state: dict) -> str:
+    """全书规划文档：大纲/总纲.md。"""
+    return os.path.join(_book_dir(state), _DIR_OUTLINE, _OUTLINE_FILE)
+
+
 def _book_path(state: dict) -> str:
-    return state.get("file") or os.path.join(
-        tools.get_workspace() or os.getcwd(), "novels", "untitled.md")
+    """兼容旧接口：返回规划文档路径（publisher 等按「本书文件」派生路径）。"""
+    return state.get("file") or _plan_path(state)
+
+
+def _chapter_path(state: dict, idx: int, title: str) -> str:
+    """章节文件路径：正文/第0001章-标题.md（章号补零，便于排序与批量导入）。"""
+    name = re.sub(r"^第[0-9一二三四五六七八九十百千]+章[·\-\s]*", "", title or "")
+    name = _safe_name(name) or "未命名"
+    return os.path.join(_book_dir(state), _DIR_TEXT, f"第{idx:04d}章-{name}.md")
+
+
+def _safe_name(name: str) -> str:
+    """清洗为合法文件名/目录名（去 Windows 非法字符与控制符）。"""
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", (name or "").strip())
+    name = name.strip(" .")
+    return name[:60] or "未命名"
 
 
 def _ensure_book(state: dict, title: str):
-    path = _book_path(state)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    """建立本书目录骨架与总纲头（幂等）。"""
+    for sub in (_DIR_OUTLINE, _DIR_SETTING, _DIR_TEXT):
+        os.makedirs(os.path.join(_book_dir(state), sub), exist_ok=True)
+    path = _plan_path(state)
     if not os.path.exists(path):
         with open(path, "w", encoding="utf-8") as f:
             f.write(f"# {title}\n\n> 灵感：{state['idea']}\n")
@@ -595,9 +643,10 @@ def _ensure_book(state: dict, title: str):
 
 
 def _append_md(state: dict, text: str):
-    path = _book_path(state)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    if not os.path.exists(path):       # 恢复场景：书稿丢失则重建头
+    """规划阶段产出追加进「大纲/总纲.md」。"""
+    os.makedirs(os.path.join(_book_dir(state), _DIR_OUTLINE), exist_ok=True)
+    path = _plan_path(state)
+    if not os.path.exists(path):       # 恢复场景：规划文档丢失则重建头
         head = state.get("outline", "未命名").splitlines()[0][:24]
         _ensure_book(state, head)
     with open(path, "a", encoding="utf-8") as f:
@@ -605,22 +654,40 @@ def _append_md(state: dict, text: str):
 
 
 def _append_chapter(state: dict, chap: dict):
-    _append_md(state, f"\n\n## {chap['title']}\n\n{chap['text']}")
+    """每章写成独立 md（正文/第NNNN章-标题.md）。"""
+    path = _chapter_path(state, chap["idx"], chap["title"])
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"# {chap['title']}\n\n{chap['text']}\n")
+    chap["path"] = path
+
+
+def _append_setting(state: dict, name: str, text: str):
+    """设定类产出单独成文（设定集/xxx.md）。"""
+    path = os.path.join(_book_dir(state), _DIR_SETTING, _safe_name(name) + ".md")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text + "\n")
+    return path
 
 
 def _rebuild_md(state: dict):
-    """重写章节后从 state 全量重建书稿 md。"""
-    path = _book_path(state)
+    """重写章节/调定规划后，重建总纲、设定集与全部章节文件。"""
+    path = _plan_path(state)
     parts = [f"# {state.get('genre', '')}{state['idea'][:24]}",
              f"> 灵感：{state['idea']}"]
     for key, title in (("framing", "项目设定"), ("outline", "宏观规划"),
-                       ("world", "本书世界"), ("contract", "故事合约（硬约束）"),
-                       ("characters", "角色"), ("volume", "卷战略"),
-                       ("chapter_plan", "节奏拆章")):
+                       ("volume", "卷战略"), ("chapter_plan", "节奏拆章")):
         if state.get(key):
             parts.append(f"\n\n## {title}\n\n{state[key]}")
-    for c in state.get("chapters", []):
-        parts.append(f"\n\n## {c['title']}\n\n{c['text']}")
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write("".join(parts) + "\n")
+    state["file"] = path
+    for key, name, title in (("world", "世界观", "本书世界"),
+                             ("contract", "故事合约", "故事合约（硬约束）"),
+                             ("characters", "角色", "角色")):
+        if state.get(key):
+            _append_setting(state, name, f"# {title}\n\n{state[key]}")
+    for c in state.get("chapters", []):
+        _append_chapter(state, c)

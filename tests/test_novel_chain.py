@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """novel_chain：整本生产链（fake LLM 全流程，不依赖真实模型/网络）。"""
 
+import os
+
 import pytest
 
 import novel_chain
@@ -149,9 +151,33 @@ def test_full_run_two_chapters(fake, tmp_path):
     assert len(p.state["chapters"]) == 2
     assert all(len(c["text"]) >= 50 for c in p.state["chapters"])
     assert p.state["contract"].startswith("1.")           # 故事合约已生成
-    md = tmp_path / "novels" / (p.pid + ".md")
-    assert md.exists() and "## " in md.read_text(encoding="utf-8")
+    # 新目录布局：大纲/总纲.md + 正文/第NNNN章-标题.md + 设定集/
+    book = tmp_path / "novels" / p.pid
+    plan = book / "大纲" / "总纲.md"
+    assert plan.exists() and "## " in plan.read_text(encoding="utf-8")
+    chapters = sorted((book / "正文").glob("第*章-*.md"))
+    assert len(chapters) == 2
+    assert chapters[0].name.startswith("第0001章-")
+    assert (book / "设定集" / "世界观.md").exists()
     assert len(vecstore._MEM.get(p.pid, [])) >= 2         # RAG 内存降级入桶
+
+
+def test_chapter_files_are_independent_and_numbered(fake, tmp_path):
+    """每章独立 md，章号补零便于排序，标题（拆章预定优先）在文件名里。"""
+    p = _start(total=2)
+    p.run()
+    files = sorted((tmp_path / "novels" / p.pid / "正文").glob("*.md"))
+    # FakeLLM 的拆章任务单预定了《开局》《接触》两个标题
+    assert [f.name for f in files] == [
+        "第0001章-开局.md", "第0002章-接触.md"]
+    for f in files:
+        text = f.read_text(encoding="utf-8")
+        assert text.startswith("# ")              # 首行是章节标题（md 一级标题）
+        assert len(text) > 100                    # 含正文，不是空壳
+    # state 里记录了每章的落盘路径，且路径与文件名一致
+    assert all(c.get("path") for c in p.state["chapters"])
+    assert all(os.path.basename(c["path"]) in
+               {f.name for f in files} for c in p.state["chapters"])
 
 
 def test_contract_injected_into_chapter_prompt(fake, tmp_path):
@@ -261,7 +287,9 @@ def test_revise_stage_updates_state_and_md(fake, tmp_path):
     assert p.state["framing"] != old
     assert "悬疑" in p.state["framing"]
     assert p.state["genre"] == "悬疑"                  # setup 同步刷新 genre
-    assert "悬疑" in open(p.state["file"], encoding="utf-8").read()
+    # 调定后总纲同步重建（大纲/总纲.md）
+    plan = tmp_path / "novels" / p.pid / "大纲" / "总纲.md"
+    assert "悬疑" in plan.read_text(encoding="utf-8")
 
 
 def test_revise_stage_rejects_unknown_stage(fake, tmp_path):
@@ -288,8 +316,10 @@ def test_rewrite_updates_chapter_and_md(fake, tmp_path):
     fake.rewrite_text = "第1章 重写版\n" + "全新正文内容。" * 30
     chap = novel_chain.rewrite_chapter(p.state, 1, "节奏太慢")
     assert "重写" in chap["text"]
-    md = open(p.state["file"], encoding="utf-8").read()
-    assert "重写版" in md
+    # 重写后章节文件同步更新（正文目录下）
+    files = list((tmp_path / "novels" / p.pid / "正文").glob("*.md"))
+    assert len(files) == 1
+    assert "重写版" in files[0].read_text(encoding="utf-8")
 
 
 def test_drama_adapt_writes_script(fake, tmp_path):
