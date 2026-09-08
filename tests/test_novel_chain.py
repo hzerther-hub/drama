@@ -2,6 +2,7 @@
 """novel_chain：整本生产链（fake LLM 全流程，不依赖真实模型/网络）。"""
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -151,22 +152,34 @@ def test_full_run_two_chapters(fake, tmp_path):
     assert len(p.state["chapters"]) == 2
     assert all(len(c["text"]) >= 50 for c in p.state["chapters"])
     assert p.state["contract"].startswith("1.")           # 故事合约已生成
-    # 新目录布局：大纲/总纲.md + 正文/第NNNN章-标题.md + 设定集/
-    book = tmp_path / "novels" / p.pid
+    # 目录布局：大纲/总纲.md + 正文/第NNNN章-标题.md + 设定集/ + 审查报告/
+    book = Path(p.state["dir"])
     plan = book / "大纲" / "总纲.md"
     assert plan.exists() and "## " in plan.read_text(encoding="utf-8")
     chapters = sorted((book / "正文").glob("第*章-*.md"))
     assert len(chapters) == 2
     assert chapters[0].name.startswith("第0001章-")
     assert (book / "设定集" / "世界观.md").exists()
+    assert (book / "审查报告").is_dir()
+    assert (book / "说明.md").exists()
     assert len(vecstore._MEM.get(p.pid, [])) >= 2         # RAG 内存降级入桶
+
+
+def test_book_dir_named_after_title(fake, tmp_path):
+    """目录名用书名（大纲里的《书名》），不是 pid。"""
+    p = _start()
+    p.run()
+    assert p.state.get("title")                       # 已提取到书名
+    assert Path(p.state["dir"]).name == p.state["title"]
+    assert Path(p.state["dir"]).name != p.pid
+    assert Path(p.state["dir"]).parent.name == "novels"
 
 
 def test_chapter_files_are_independent_and_numbered(fake, tmp_path):
     """每章独立 md，章号补零便于排序，标题（拆章预定优先）在文件名里。"""
     p = _start(total=2)
     p.run()
-    files = sorted((tmp_path / "novels" / p.pid / "正文").glob("*.md"))
+    files = sorted((Path(p.state["dir"]) / "正文").glob("*.md"))
     # FakeLLM 的拆章任务单预定了《开局》《接触》两个标题
     assert [f.name for f in files] == [
         "第0001章-开局.md", "第0002章-接触.md"]
@@ -288,7 +301,7 @@ def test_revise_stage_updates_state_and_md(fake, tmp_path):
     assert "悬疑" in p.state["framing"]
     assert p.state["genre"] == "悬疑"                  # setup 同步刷新 genre
     # 调定后总纲同步重建（大纲/总纲.md）
-    plan = tmp_path / "novels" / p.pid / "大纲" / "总纲.md"
+    plan = Path(p.state["dir"]) / "大纲" / "总纲.md"
     assert "悬疑" in plan.read_text(encoding="utf-8")
 
 
@@ -317,7 +330,7 @@ def test_rewrite_updates_chapter_and_md(fake, tmp_path):
     chap = novel_chain.rewrite_chapter(p.state, 1, "节奏太慢")
     assert "重写" in chap["text"]
     # 重写后章节文件同步更新（正文目录下）
-    files = list((tmp_path / "novels" / p.pid / "正文").glob("*.md"))
+    files = list((Path(p.state["dir"]) / "正文").glob("*.md"))
     assert len(files) == 1
     assert "重写版" in files[0].read_text(encoding="utf-8")
 
@@ -404,7 +417,7 @@ def test_plan_sections_ordered_and_no_duplication(fake, tmp_path):
     """总纲按固定顺序排版，且各段落内容不串味、不重复。"""
     p = _start(total=1)
     p.run()
-    plan = (tmp_path / "novels" / p.pid / "大纲" / "总纲.md").read_text(
+    plan = (Path(p.state["dir"]) / "大纲" / "总纲.md").read_text(
         encoding="utf-8")
     order = [plan.index(f"## {t}") for t in
              ("项目设定", "宏观规划", "卷战略", "节奏拆章")]
