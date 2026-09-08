@@ -170,6 +170,51 @@ def test_foreshadow_tracker_lifecycle():
     assert state["foreshadows"][0]["closed_ch"] == 3
 
 
+def test_review_prompt_parser_contract():
+    """提示词必须逐条声明 _review 解析器期待的每个前缀。
+
+    回归护栏：commit 45805a8 曾单方面从提示词删掉「事实/伏笔」两行，
+    导致模型不再输出、台账与伏笔追踪静默失效——而旧测试因硬编码
+    「事实：…」字符串绕过提示词，完全没发现。
+    """
+    for name, prefix in novel_chain._REVIEW_PREFIX.items():
+        assert f"{prefix}：" in novel_chain._SYS_REVIEWER, \
+            f"审校提示词缺少「{prefix}：」声明，解析器分支 {name} 将永远收不到输入"
+
+
+def test_review_parses_what_prompt_asks_for(monkeypatch):
+    """端到端契约：模型严格照「提示词」格式输出 → 四类信息都被解析出来。
+
+    回复由 _SYS_REVIEWER 里**实际声明的**前缀拼成（而非直接读常量），
+    因此提示词一旦丢掉某个前缀，模型就不会输出它、断言随即失败——
+    这正是 45805a8 那次退化的形态。
+    """
+    pfx = novel_chain._REVIEW_PREFIX
+    declared = {name: p for name, p in pfx.items()
+                if f"{p}：" in novel_chain._SYS_REVIEWER}
+    lines = [f"{declared['issue']}：第2章称呼不一致"]
+    if "fact" in declared:
+        lines.append(f"{declared['fact']}：主角拿到神秘U盘")
+    if "foreshadow" in declared:
+        lines.append(f"{declared['foreshadow']}：U盘来历未解")
+    if "close" in declared:
+        lines.append(f"{declared['close']}：神秘U盘")
+    reply = "\n".join(lines)
+
+    def stream_chat(model, msgs, tools=None):
+        for i in range(0, len(reply), 20):
+            yield {"type": "text", "delta": reply[i:i + 20]}
+
+    monkeypatch.setattr(novel_chain.llm, "stream_chat", stream_chat)
+    issues, facts, fsh, closes = novel_chain._review(
+        {"model_key": "fake-model"}, "章节正文" * 30, 2)
+    assert issues, "问题行未解析"
+    assert facts, "提示词未要求「事实：」→ 台账将永远为空"
+    assert fsh, "提示词未要求「伏笔：」→ 伏笔追踪将永远为空"
+    assert closes, "偿还行未解析"
+    assert "U盘" in facts[0] and "U盘" in fsh[0] and "U盘" in closes[0]
+
+
 def test_review_repair_and_ledger(fake, tmp_path):
     fake.review_once_issues = "问题：节奏拖沓\n事实：主角拿到神秘U盘"
     fake.fixed_text = "第1章 修订后\n" + "修订后的正文内容。" * 30

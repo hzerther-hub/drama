@@ -60,10 +60,23 @@ _MAX_DECONSTRUCT = 60000
 
 _SYS_PLANNER = "你是资深网文主编，只输出规划本身，不写正文，不解释。"
 _SYS_WRITER = "你是网文作者，直接输出章节正文，正文前第一行是章节标题。硬约束条款不得违反。"
+
+# 审校输出的行前缀契约：提示词与 _review() 解析器共用同一份定义，
+# 改一处即两处同时生效（曾因提示词单方面删掉「事实/伏笔」而静默废掉台账）。
+_REVIEW_PREFIX = {
+    "issue": "问题",
+    "fact": "事实",
+    "foreshadow": "伏笔",
+    "close": "偿还",
+}
 _SYS_REVIEWER = (
     "你是网文审校，按五个维度逐项检查：连贯性、角色OOC、设定冲突、"
-    "风格漂移、节奏。输出规则：问题行以「问题：」开头（可多条）；"
-    "回收了旧伏笔以「偿还：」开头（写伏笔关键词）；全部通过则第一行输出 PASS。")
+    "风格漂移、节奏。输出规则："
+    f"问题行以「{_REVIEW_PREFIX['issue']}：」开头（可多条）；"
+    f"新事实以「{_REVIEW_PREFIX['fact']}：」开头；"
+    f"新埋伏笔以「{_REVIEW_PREFIX['foreshadow']}：」开头；"
+    f"回收了旧伏笔以「{_REVIEW_PREFIX['close']}：」开头（写伏笔关键词）；"
+    "全部通过则第一行输出 PASS。")
 _SYS_DRAMA = ("你是短剧编剧。把小说章节改编为竖屏短剧：输出「场景」行、"
               "人物对白（角色名：台词）、每场结尾「镜头：」行给出景别与时长。")
 _SYS_DECONSTRUCT = ("你是网文拆书分析师。对给定文本输出：1) 题材定位 2) 剧情结构 "
@@ -516,13 +529,13 @@ def _review(state: dict, text: str, idx: int):
         return [], [], [], []
     for ln in out.splitlines():
         ln = ln.strip()
-        if ln.startswith("问题"):
+        if ln.startswith(_REVIEW_PREFIX["issue"]):
             issues.append(ln[:120])
-        elif ln.startswith("事实"):
+        elif ln.startswith(_REVIEW_PREFIX["fact"]):
             facts.append(ln[:120])
-        elif ln.startswith("伏笔"):
+        elif ln.startswith(_REVIEW_PREFIX["foreshadow"]):
             fsh.append(ln[:120])
-        elif ln.startswith("偿还"):
+        elif ln.startswith(_REVIEW_PREFIX["close"]):
             closes.append(ln[:120])
     return issues[:5], facts[:5], fsh[:5], closes[:5]
 
