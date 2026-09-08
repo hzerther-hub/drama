@@ -4600,6 +4600,8 @@ class App:
         labels = novel_chain.STAGE_LABELS
         if t == "stage_done":
             self._novel_last_done = e.get("name")
+            # 规划阶段也会追加书稿 md（不经 write_file 工具）→ 同步文件树
+            self._schedule_fs_refresh()
         if t == "pipeline_started":
             self._append("🛠 " + _t("novel.started",
                                     pid=e["pid"]) + "\n", "toolhead")
@@ -4609,6 +4611,9 @@ class App:
         elif t == "chapter_done":
             self._append(_t("novel.chapter", n=e["idx"], t=e["title"],
                             w=e["words"]) + "\n", "toolresult")
+            # 流水线直接写磁盘（不经过 write_file 工具），文件树不会自己感知
+            # → 每章落盘后刷新，否则书稿在文件面板里看不到
+            self._schedule_fs_refresh()
         elif t == "stage_debt":
             self._append("⚠ " + _t("novel.debt",
                                     e=e.get("detail", "")) + "\n", "denied")
@@ -4617,6 +4622,7 @@ class App:
             file = p.state.get("file", "") if p else ""
             self._append("✅ " + _t("novel.done_msg",
                                     file=file) + "\n", "meta")
+            self._schedule_fs_refresh()
         elif t == "pipeline_paused":
             last = getattr(self, "_novel_last_done", None)
             key = novel_chain.STAGE_STATE_KEYS.get(last, "")
