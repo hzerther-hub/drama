@@ -62,6 +62,7 @@ class CmdStub:
 
     _novel_command = ui.App._novel_command
     _novel_pick = ui.App._novel_pick
+    _novel_adjust = ui.App._novel_adjust
 
     def __init__(self):
         self.lines = []
@@ -202,3 +203,31 @@ def test_status_marks_current_book(monkeypatch):
     app._novel_command("status")
     marked = [l for l in app.lines if l.startswith("▶")]
     assert len(marked) == 1 and "novel-b-0002" in marked[0]
+
+
+def test_adjust_recovers_stage_after_restart(monkeypatch):
+    """重启后 adjust 应自动取书 + 从 cursor 反推要调的阶段。"""
+    import novel_chain
+    import pipeline as pl
+
+    class P:
+        pid = "novel-x"
+        title = "t"
+        pipeline_status = "paused"
+        cursor = "world"                      # outline 已完成
+        state = {"framing": "题材：都市",
+                 "outline": "# 《书》\n## 故事一句话\n测试"}
+
+    monkeypatch.setattr(pl, "list_pipelines", lambda: [{"pid": "novel-x"}])
+    monkeypatch.setattr(pl, "load", lambda pid, stages: P())
+    captured = {}
+    monkeypatch.setattr(novel_chain, "revise_stage",
+                        lambda s, stage, key, fb: captured.update(
+                            stage=stage, key=key, fb=fb))
+
+    app = CmdStub()
+    app._novel_adjust("加入太阳能面板")
+    assert captured.get("stage") == "outline"     # 反推出 outline
+    assert captured.get("key") == "outline"
+    assert "太阳能" in captured.get("fb", "")
+    assert app._novel_last_done == "outline"      # 记录已恢复

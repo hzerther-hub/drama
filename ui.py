@@ -4415,7 +4415,7 @@ class App:
         elif head == "ok":
             self._novel_ok()
         elif head == "adjust":
-            self._novel_adjust(rest.strip())
+            self._novel_adjust(rest.strip())   # 内部自取当前书（重启后可用）
         elif head == "stop":
             if getattr(self, "_novel_pipe", None):
                 self._novel_pipe.request_stop()
@@ -4624,13 +4624,34 @@ class App:
             until = p.cursor
         self._novel_run(p, until=until)
 
-    def _novel_adjust(self, feedback: str):
-        """按作者意见调整刚完成的规划阶段产出，之后可 /novel ok 继续。"""
+    def _novel_adjust(self, feedback: str, p=None):
+        """按作者意见调整刚完成的规划阶段产出，之后可 /novel ok 继续。
+
+        p 为空时自动取当前书（重启后内存态丢失也能用）。
+        「刚完成的阶段」优先用暂停时记录的 _novel_last_done；
+        重启后丢失则从 cursor 反推（cursor 的前一个已完成阶段）。
+        """
         import novel_chain
-        p = getattr(self, "_novel_pipe", None)
+        if p is None:
+            p, err = self._novel_pick("")
+            if p is None:
+                self._set_status(_t("novel." + err) if err in
+                                 ("none", "notfound") else _t("novel.none"))
+                return
         last = getattr(self, "_novel_last_done", None)
-        key = novel_chain.STAGE_STATE_KEYS.get(last, "")
-        if not (p and feedback and last and key and p.state.get(key)
+        if not (last and novel_chain.STAGE_STATE_KEYS.get(last)
+                and p.state.get(novel_chain.STAGE_STATE_KEYS[last])):
+            # 反推：cursor 之前最近一个「已完成且有产出」的阶段
+            last = None
+            names = [s.name for s in novel_chain.STAGES]
+            cur = names.index(p.cursor) if p.cursor in names else len(names)
+            for name in reversed(names[:cur]):
+                key = novel_chain.STAGE_STATE_KEYS.get(name, "")
+                if key and p.state.get(key):
+                    last = name
+                    break
+        key = novel_chain.STAGE_STATE_KEYS.get(last, "") if last else ""
+        if not (feedback and last and key and p.state.get(key)
                 and p.pipeline_status == "paused"):
             self._set_status(_t("novel.usage"))
             self._append("💡 " + _t("novel.usage") + "\n", "meta")
@@ -4638,6 +4659,8 @@ class App:
         if getattr(self, "_novel_busy", False):
             return
         self._novel_busy = True
+        self._novel_pipe = p
+        self._novel_last_done = last
 
         def adj_work():
             try:
