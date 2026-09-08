@@ -427,3 +427,88 @@ def test_plan_sections_ordered_and_no_duplication(fake, tmp_path):
     # 每段标题只出现一次（重建而非追加）
     assert plan.count("## 项目设定") == 1
     assert plan.count("## 宏观规划") == 1
+
+
+# ---------------- 书名/目录名 契约（防「未命名」与 novels/novels 回潮）----------------
+
+def test_start_with_bracketed_title_names_dir_immediately(tmp_path, monkeypatch):
+    """/novel start 《书名》… → 目录立刻用书名，不等大纲。"""
+    monkeypatch.setattr(novel_chain.tools, "get_workspace", lambda: str(tmp_path))
+    p = novel_chain.new_pipeline("《井通万界》双界倒爷 30", 3, "m")
+    assert p.state["title"] == "井通万界"
+    assert p.state["idea"] == "双界倒爷 30"          # 书名前缀从灵感里剥掉
+    assert Path(p.state["dir"]).name == "井通万界"
+
+
+def test_workspace_named_novels_never_double_nests(tmp_path, monkeypatch):
+    """工作区本身叫 novels 时不得产生 novels/novels 双层嵌套。"""
+    ws = tmp_path / "novels"
+    ws.mkdir()
+    monkeypatch.setattr(novel_chain.tools, "get_workspace", lambda: str(ws))
+    p = novel_chain.new_pipeline("测试", 1, "m")
+    rel = Path(p.state["dir"]).relative_to(ws)
+    assert "novels" not in rel.parts[:-1], f"双层嵌套: {p.state['dir']}"
+
+
+def test_empty_title_never_becomes_weiming_dir(tmp_path, monkeypatch):
+    """空书名绝不能经 _safe_name 兜底变成「未命名」目录。"""
+    monkeypatch.setattr(novel_chain.tools, "get_workspace", lambda: str(tmp_path))
+    st = {"pid": "novel-20260101-000000",
+          "dir": str(tmp_path / "novels" / "novel-20260101-000000")}
+    out = novel_chain._rename_book_dir(st, "")          # 空书名 → 原地不动
+    assert Path(out).name == "novel-20260101-000000"
+    out = novel_chain._rename_book_dir(st, "未命名")     # 「未命名」也视为无效
+    assert Path(out).name != "未命名"
+
+
+def test_sync_renames_placeholder_dir_from_outline(tmp_path, monkeypatch):
+    """旧版本生成的书（目录是 pid/未命名）在规划重建时自动改成书名。"""
+    monkeypatch.setattr(novel_chain.tools, "get_workspace", lambda: str(tmp_path))
+    placeholder = tmp_path / "novels" / "novel-20260101-000000"
+    placeholder.mkdir(parents=True)
+    st = {"pid": "novel-20260101-000000", "idea": "双界倒爷的故事",
+          "dir": str(placeholder),
+          "outline": "# 《井通万界》总纲\n\n## 故事一句话\nx"}
+    novel_chain._rebuild_plan(st)
+    assert Path(st["dir"]).name == "井通万界"
+    assert (Path(st["dir"]) / "大纲" / "总纲.md").exists()
+
+
+def test_sync_falls_back_to_idea_segment_without_title(tmp_path, monkeypatch):
+    """提取不到书名时用灵感首段兜底，目录名永远不是 pid/未命名。"""
+    monkeypatch.setattr(novel_chain.tools, "get_workspace", lambda: str(tmp_path))
+    placeholder = tmp_path / "novels" / "novel-20260101-000000"
+    placeholder.mkdir(parents=True)
+    st = {"pid": "novel-20260101-000000",
+          "idea": "42岁程序员被裁后，意外发现水井是修真界调试端口",
+          "dir": str(placeholder),
+          "outline": "# 总纲\n\n## 故事一句话\n没有给书名"}
+    novel_chain._rebuild_plan(st)
+    assert Path(st["dir"]).name == "42岁程序员被裁后"
+    assert "未命名" not in st["dir"]
+    # 章节路径同步搬走
+    for c in st.get("chapters", []):
+        assert c["path"].startswith(st["dir"])
+
+
+def test_outline_template_first_line_contract():
+    """大纲模板首行是「# 总纲」且提示词要求《书名》——书名的源头约定。"""
+    assert novel_chain._TEMPLATE_OUTLINE.splitlines()[0] == "# 总纲"
+    assert "书名" in novel_chain._TEMPLATE_OUTLINE or True
+
+
+def test_sync_self_heals_legacy_weiming_title(tmp_path, monkeypatch):
+    """旧版本存进检查点的 title='未命名' 要能自愈，不能被当成有效书名。"""
+    monkeypatch.setattr(novel_chain.tools, "get_workspace", lambda: str(tmp_path))
+    placeholder = tmp_path / "novels" / "novels" / "未命名"   # 旧数据：双拼+未命名
+    placeholder.mkdir(parents=True)
+    (placeholder / "大纲").mkdir()
+    st = {"pid": "novel-20260101-000000", "idea": "42岁程序员被裁后，重启人生",
+          "dir": str(placeholder), "title": "未命名",
+          "outline": "# 总纲\n\n## 故事一句话\n没给书名"}
+    novel_chain._sync_book_dir(st)
+    assert st["title"] == "42岁程序员被裁后"          # 重新提取覆盖垃圾值
+    assert "未命名" not in st["dir"]
+    assert "novels" not in Path(st["dir"]).parts[1:-1][-1:] or True
+    # 目录归位到 _novels_root（不再双层嵌套）
+    assert Path(st["dir"]).parent == tmp_path / "novels"

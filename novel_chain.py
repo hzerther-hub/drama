@@ -69,6 +69,7 @@ _DIR_TEXT = "正文"
 _DIR_REVIEW = "审查报告"
 _OUTLINE_FILE = "总纲.md"
 _README_FILE = "说明.md"
+_NOVELS_DIRNAME = "novels"
 
 _SYS_PLANNER = "你是资深网文主编，只输出规划本身，不写正文，不解释。"
 _SYS_WRITER = "你是网文作者，直接输出章节正文，正文前第一行是章节标题。硬约束条款不得违反。"
@@ -312,24 +313,23 @@ def st_setup(state: dict, ctx) -> dict:
 
 
 def st_outline(state: dict, ctx) -> dict:
-    """宏观规划：按总纲模板逐字段填写。"""
+    """宏观规划：按总纲模板逐字段填写。首行「# 《书名》总纲」提供书名。"""
     if state.get("outline"):
         return {}
     text = _ask(state, _SYS_PLANNER,
                 f"灵感：{state['idea']}\n书级设定：\n{state['framing']}\n"
                 f"全书共 {state['total_chapters']} 章。\n"
-                "请严格按下面的骨架逐字段填写（保留全部标题与字段名，"
+                "输出第一行必须是「# 《书名》总纲」——《》里写这本书的正式书名。\n"
+                "随后严格按下面的骨架逐字段填写（保留全部标题与字段名，"
                 "把每一项都写实，不要留空、不要增删章节）：\n\n"
                 + _TEMPLATE_OUTLINE)
     if not text:
         raise StageFail("宏观规划生成为空")
-    # 书名以大纲里的《书名》为准；拿到后把书稿目录改成书名
     book = _book_title_from(state, text)
     if book:
         state["title"] = book
-        _rename_book_dir(state, book)
-    _ensure_book(state, book or text.splitlines()[0].strip()[:24])
-    _write_plan_section(state, "宏观规划", text)
+    _ensure_book(state, state.get("title") or "总纲")
+    _write_plan_section(state, "宏观规划", text)   # 重建时顺带 _sync_book_dir
     _write_readme(state)
     return {"outline": text, "title": state.get("title", "")}
 
@@ -410,6 +410,7 @@ def st_chapter_plan(state: dict, ctx) -> dict:
 
 def st_chapters(state: dict, ctx) -> dict:
     """逐章执行：草稿 → 分维度审校 → 修复 → 回灌 → RAG 索引。"""
+    _sync_book_dir(state)                # 大纲在旧版本生成的存量书在此补改名
     total = int(state.get("total_chapters") or 3)
     chapters: list = state.setdefault("chapters", [])
     debts: list = state.setdefault("debts", [])
@@ -491,21 +492,39 @@ def parse_start_args(rest: str) -> dict:
 
 def new_pipeline(idea: str, total: int, model_key: str,
                  style: str = "") -> Pipeline:
-    """开一条新书流水线；书稿落在工作区 novels/<书名>/ 目录（每章一个 md）。
+    """开一条新书流水线；书稿落在 novels/<书名>/ 目录（每章一个 md）。
 
-    此刻书名未知，先用 pid 占位；setup 阶段拿到书名后由 _rename_book_dir
-    把目录改成书名（同名则加序号避冲突）。
+    灵感支持《书名》前缀：「/novel start 《井通万界》双界倒爷 30」→
+    目录直接叫 井通万界。没写书名时先用 pid 占位，大纲阶段拿到书名后
+    由 _sync_book_dir 重命名；仍提取不到则用灵感首段兜底——目录名
+    永远不会是「未命名」。
     """
     total = max(1, min(int(total or 3), _MAX_CHAPTERS))
     pid = "novel-" + time.strftime("%Y%m%d-%H%M%S")
-    ws = tools.get_workspace() or os.getcwd()
-    book_dir = os.path.join(ws, "novels", pid)
+    idea = (idea or "").strip()
+    title = ""
+    m = re.match(r"^\s*《(.+?)》", idea)
+    if m:                                # 《书名》前缀 → 目录即刻定名
+        title = _safe_name(m.group(1))[:30]
+        idea = idea[m.end():].strip() or title
+    dirname = title or pid
+    book_dir = _unique_dir(os.path.join(_novels_root(), dirname))
     state = {"idea": idea, "total_chapters": total, "model_key": model_key,
              "style": (style or "").strip(), "chapters": [], "debts": [],
              "ledger": [], "foreshadows": [], "arc_summaries": [],
-             "pid": pid, "dir": book_dir, "book_dir_pid": book_dir,
+             "pid": pid, "dir": book_dir, "title": title,
              "file": os.path.join(book_dir, _DIR_OUTLINE, _OUTLINE_FILE)}
     return Pipeline(pid, idea[:20], STAGES, state)
+
+
+def _unique_dir(path: str) -> str:
+    """目录已存在则加序号（书名、书名-2、书名-3…），避免覆盖别人的书。"""
+    if not os.path.exists(path):
+        return path
+    n = 2
+    while os.path.exists(f"{path}-{n}"):
+        n += 1
+    return f"{path}-{n}"
 
 
 def extend_total(p: Pipeline, n: int):
@@ -807,19 +826,43 @@ def _chapter_title(text: str, idx: int) -> str:
     return f"第{idx}章"
 
 
+def _novels_root() -> str:
+    """书稿根目录：工作区/novels；工作区本身叫 novels 时不再嵌套。
+
+    根因防护：此前无条件拼 ws/novels，用户把工作区设成 D:/novels 时
+    会产生 D:/novels/novels/... 双层嵌套。
+    """
+    ws = tools.get_workspace() or os.getcwd()
+    if os.path.basename(os.path.normpath(ws)) == _NOVELS_DIRNAME:
+        return ws
+    return os.path.join(ws, _NOVELS_DIRNAME)
+
+
 def _book_title_from(state: dict, text: str) -> str:
-    """从大纲文本里提取书名：《书名》优先，其次首行去掉 # 与「总纲」字样。"""
-    m = re.search(r"《(.+?)》", text or "")
+    """从大纲文本提取书名；《书名》或「书名：xxx」行，提取不到返回空。
+
+    不做首行猜测——首行可能是「# 总纲」「引擎：…」任何东西，猜出来的
+    会成为目录名垃圾。空返回交由调用方走 fallback（灵感首段）。
+    """
+    text = text or ""
+    m = re.search(r"《(.+?)》", text)
     if m:
         return _safe_name(m.group(1))[:30]
-    first = (text or "").splitlines()[0].strip() if text else ""
-    first = re.sub(r"^#+\s*", "", first).strip()
-    first = re.sub(r"总纲|大纲|书名[:：]", "", first).strip()
-    return _safe_name(first)[:30]
+    m = re.search(r"^\s*[#\s]*书名[:：]\s*(.+)$", text, re.M)
+    if m:
+        return _safe_name(m.group(1))[:30]
+    return ""
+
+
+def _fallback_title(state: dict) -> str:
+    """无从提取书名时的目录名兜底：灵感第一段（首个标点前，≤16 字）。"""
+    idea = (state.get("idea") or "").strip()
+    seg = re.split(r"[，。；;,.！？\n：:]", idea)[0].strip()
+    return _safe_name(seg)[:16]
 
 
 def _book_dir(state: dict) -> str:
-    """本书目录（novels/<pid>/）。旧布局（单 md）自动升级为目录布局。"""
+    """本书目录。旧布局（单 md 或无 dir 字段）自动升级为目录布局。"""
     d = state.get("dir")
     if not d:
         # 兼容旧检查点：state 里只有 file（<ws>/novels/<pid>.md）→ 推出目录
@@ -828,29 +871,32 @@ def _book_dir(state: dict) -> str:
         if base and os.path.basename(base).startswith("novel-"):
             d = base
         else:
-            ws = tools.get_workspace() or os.getcwd()
-            d = os.path.join(ws, "novels", state.get("pid") or "untitled")
+            d = os.path.join(_novels_root(), state.get("pid") or "untitled")
         state["dir"] = d
     return d
 
 
 def _rename_book_dir(state: dict, title: str) -> str:
-    """把书稿目录改成书名（setup 拿到书名后调用）。
+    """把书稿目录改成书名；书名无效或改不动时保留原目录，绝不让流水线失败。
 
-    目录已存在（重跑 setup）或改不动时保留原目录，绝不让流水线失败。
-    同名冲突自动加序号：科学修仙、科学修仙-2、…
+    根因防护：_safe_name 对空值兜底返回「未命名」，若直接采用会让空书名
+    悄悄变成「未命名」目录——这里在 safe 之前判空，并把「未命名」也视为
+    无效书名。目标父目录一律归位到 _novels_root()，顺带修复旧数据里
+    novels/novels 双层嵌套。同名冲突自动加序号。
     """
-    title = _safe_name(title or "")
-    if not title:
+    raw = (title or "").strip()
+    if not raw:
+        return _book_dir(state)
+    title = _safe_name(raw)
+    if not title or title == "未命名":
         return _book_dir(state)
     cur = _book_dir(state)
-    ws_novels = os.path.dirname(cur)
-    if os.path.basename(cur) == title:
+    if os.path.basename(os.path.normpath(cur)) == title:
         return cur
-    target = os.path.join(ws_novels, title)
+    target = os.path.join(_novels_root(), title)
     n = 2
     while os.path.exists(target) and os.path.abspath(target) != os.path.abspath(cur):
-        target = os.path.join(ws_novels, f"{title}-{n}")
+        target = os.path.join(_novels_root(), f"{title}-{n}")
         n += 1
     try:
         if os.path.isdir(cur):
@@ -978,6 +1024,7 @@ def _write_plan_section(state: dict, title: str, text: str):
 
 def _rebuild_plan(state: dict):
     """从 state 重建「大纲/总纲.md」（按 _PLAN_SECTIONS 顺序）。"""
+    _sync_book_dir(state)                # 先定名，避免写完又搬家
     path = _plan_path(state)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     head = state.get("genre") or state.get("idea", "")[:24]
@@ -988,6 +1035,33 @@ def _rebuild_plan(state: dict):
     with open(path, "w", encoding="utf-8") as f:
         f.write("".join(parts) + "\n")
     state["file"] = path
+
+
+def _sync_book_dir(state: dict):
+    """书名已知而目录仍是占位名（pid / 旧数据「未命名」）时，目录改成书名。
+
+    所有规划写入都经过 _rebuild_plan → 这里，是目录定名的单一收口点；
+    章节阶段开头也会调一次，兜住「大纲在旧版本生成、目录没改名」的存量书。
+    幂等：目录已等于书名时什么都不做。
+    存量自愈：旧版本可能把「未命名」当 title 存进检查点——它不算已知书名，
+    重新提取覆盖（先《书名》后灵感首段）。
+    """
+    title = state.get("title") or ""
+    if title == "未命名":                # 旧版本写入的垃圾值，不算数
+        title = ""
+    if not title and state.get("outline"):
+        title = _book_title_from(state, state["outline"])
+    if not title:
+        title = _fallback_title(state)
+    if not title:
+        return
+    state["title"] = title
+    base = os.path.basename(os.path.normpath(_book_dir(state)))
+    if base == title:
+        return
+    if base == "未命名" or re.match(r"^novel-\d{8}-\d{6}$", base) \
+            or base == _fallback_title(state):
+        _rename_book_dir(state, title)
 
 
 def _append_chapter(state: dict, chap: dict):
