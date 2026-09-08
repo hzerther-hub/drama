@@ -402,7 +402,10 @@ def show_manager(app):
         menu.add_command(label=_t("mm.edit_provider"), command=_edit_provider)
         menu.add_command(label=_t("mm.add"), command=_add_model)
         menu.add_command(label=_t("mm.delete"), command=_del_provider)
-        menu.tk_popup(event.x_root, event.y_root)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
 
     def _model_menu(event):
         iid = model_tree.identify_row(event.y)
@@ -417,7 +420,10 @@ def show_manager(app):
                          state=("disabled" if is_cur else "normal"))
         menu.add_command(label=_t("mm.edit"), command=_edit_model)
         menu.add_command(label=_t("mm.delete"), command=_del_model)
-        menu.tk_popup(event.x_root, event.y_root)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
 
     prov_tree.bind("<Button-3>", _prov_menu)
     model_tree.bind("<Button-3>", _model_menu)

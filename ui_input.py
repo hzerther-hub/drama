@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk
 
 import tools
@@ -98,6 +99,13 @@ class InputController:
         k = event.keysym
         char = getattr(event, "char", "") or ""
         shift = bool(event.state & 0x0001)
+        # ➕ 速查菜单开着时焦点仍在输入框（show_token_popup 抢焦点后归还），
+        # 菜单自己的 <Key> 绑定收不到物理 Esc，必须在输入框路径关它
+        if (popup is None and k == "Escape"
+                and self._menu_pop is not None
+                and self._menu_pop.winfo_exists()):
+            self.menu_hide()
+            return "break"
         ctrl = bool(event.state & 0x0004)
         word = self._cmd_word() if popup == "cmd" else ""
         cand = self._cmd_cands[self._cmd_idx] if (
@@ -171,6 +179,7 @@ class InputController:
         m_cmd = re.search(r"/[a-z]*$", prefix)
         m_at = re.search(r"@([^\s@]*)$", prefix)
         self.cmd_hide()
+        self.menu_hide()   # ➕ 速查菜单与候选弹窗互斥，避免叠着挡视线
         if m_cmd:
             self.at_hide()
             word = m_cmd.group(0)
@@ -199,6 +208,8 @@ class InputController:
             return
         cands = self.at_candidates(m_at.group(1))
         if not cands:
+            # 静默无弹窗会让"@"像坏了一样；至少在状态栏说明原因
+            self.app._set_status("@ 无匹配文件候选")
             return
         self._at_cands = cands
         self._at_idx = 0
@@ -211,6 +222,15 @@ class InputController:
             self.app._set_status(f"弹窗错误: {e}")
 
     # ---------------- / 命令候选 ----------------
+    def menu_hide(self):
+        """销毁 ➕ 速查菜单弹窗并清空引用（与 cmd_hide/at_hide 同型）。"""
+        if self._menu_pop is not None and self._menu_pop.winfo_exists():
+            try:
+                self._menu_pop.destroy()
+            except Exception:         # noqa: BLE001
+                pass
+        self._menu_pop = None
+        self._menu_lb = None
 
     def cmd_hide(self):
         if self._cmd_pop is not None and self._cmd_pop.winfo_exists():
@@ -219,6 +239,7 @@ class InputController:
             except Exception:         # noqa: BLE001
                 pass
         self._cmd_pop = None
+        self._cmd_lb = None
 
     def cmd_insert(self):
         try:
@@ -321,6 +342,7 @@ class InputController:
 
     def on_command_menu_pick(self, i):
         cmd = self._menu_cmds[i] if i < len(self._menu_cmds) else None
+        self.menu_hide()   # 选中即关：点完菜单不应留在屏上
         if cmd:
             self.insert_command(cmd)
 
@@ -344,7 +366,15 @@ class InputController:
         app = self.app
         pop = tk.Toplevel(app.root)
         pop.overrideredirect(True)
-        lb = ttk.Treeview(pop, columns=("label",), show="tree",
+        # Windows：弹窗创建后焦点立刻还给输入框，主窗口被激活时 WM 会把
+        # 自己抬高，把不抢焦点的 overrideredirect 弹窗压在下面——弹窗
+        # 坐标正常却整块不可见。-topmost 压住 z 序（与 ui.py 拖拽预览窗
+        # 同一做法），焦点仍留给输入框，不影响键盘交互。
+        try:
+            pop.attributes("-topmost", True)
+        except Exception:             # noqa: BLE001
+            pass
+        lb = ttk.Treeview(pop, show="tree",
                           selectmode="browse", height=min(len(rows), 10))
         for label, img in rows:
             kw = {"text": label}
@@ -353,15 +383,30 @@ class InputController:
             lb.insert("", "end", **kw)
         if rows:
             lb.selection_set(lb.get_children("")[0])
+        # 树列默认 ~200px，长描述会被截断。按最长行实测像素宽定列宽：
+        # 字体取 ttk 主题里 Treeview 实际用的（跟随 theme.apply），图标 ≤18px
+        try:
+            spec = ttk.Style(pop).lookup("Treeview", "font") or "TkDefaultFont"
+            _f = tkfont.Font(font=spec)
+            text_w = max((_f.measure(s) for s, _img in rows), default=0)
+        except Exception:             # noqa: BLE001  量宽失败退回默认宽
+            text_w = 0
+        col_w = text_w + 18 + 16      # 图标 + 图文间距与列内边距
+        lb.column("#0", width=col_w, minwidth=col_w, stretch=False)
         lb.pack(fill="both", expand=True)
 
         def _wheel(e):
             lb.yview_scroll(-1 * ((e.delta // 120) or 1), "units")
 
         def _pick(e):
-            sel = lb.selection()
-            if sel:
-                on_pick(lb.index(sel[0]))
+            # 控件级 <Button-1> 先于 Treeview 类绑定执行：此刻 selection
+            # 还是上一次点击的行（慢一拍）。直接取指针下的行，选中后
+            # 再回调，保证点哪行插哪行；点空白区不做事、弹窗保留。
+            row = lb.identify_row(e.y)
+            if not row:
+                return
+            tv_select(lb, lb.index(row))
+            on_pick(lb.index(row))
 
         lb.bind("<MouseWheel>", _wheel)
         lb.bind("<Button-1>", _pick)
@@ -377,6 +422,7 @@ class InputController:
                 return "break"
             if k == "Escape":
                 self.cmd_hide()
+                self.menu_hide()
                 self.at_hide()
                 return "break"
             if k in ("Up", "Down"):
@@ -403,8 +449,9 @@ class InputController:
         caret_y = app.input.winfo_rooty() + (bbox[1] if bbox else 0)
         line_h = (bbox[3] - bbox[1]) if bbox else 20
         h = lb.winfo_reqheight() + 4
-        w = max(pop.winfo_reqwidth(), 240)
         sh, sw = pop.winfo_screenheight(), pop.winfo_screenwidth()
+        w = max(pop.winfo_reqwidth(), col_w + 6, 240)
+        w = min(w, sw - 16)           # 兜底：超长内容不顶出屏幕
         below_y = caret_y + line_h + 6
         if below_y + h <= sh - 8:
             y = below_y                    # 下方放得下 → 光标下方

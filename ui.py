@@ -549,6 +549,15 @@ def _set_btn_icon(btn, emoji):
         btn.config(text=emoji)
 
 
+def _post_menu(menu, x, y):
+    """弹出菜单并确保释放 grab——Windows 上 grab 泄漏会静默吞掉
+    全局的鼠标拖选/点击（无任何异常日志，只有重启能恢复）。"""
+    try:
+        menu.tk_popup(x, y)
+    finally:
+        menu.grab_release()
+
+
 def _enable_text_copy(text, block_tags=()):
     """让 disabled 的 Text/ScrolledText 可选中、可复制（含鼠标拖选）。
 
@@ -625,7 +634,7 @@ def _enable_text_copy(text, block_tags=()):
                 text.mark_set("insert", cur)
         except tk.TclError:
             pass
-        menu.tk_popup(_e.x_root, _e.y_root)
+        _post_menu(menu, _e.x_root, _e.y_root)
 
     text.bind("<Button-1>", _activate)
     text.bind("<Button-3>", _on_right)
@@ -1506,7 +1515,7 @@ class App:
         _flat_button(head, text=_t("top.new_session"), command=self._new_session,
                      font=(FONT_MONO, 9)).pack(side="right", padx=(6, 0))
 
-        self.sidebar = ttk.Treeview(self.sidebar_frame, show="tree", selectmode="browse",
+        self.sidebar = ttk.Treeview(self.sidebar_frame, show="tree", selectmode="extended",
                                     height=20, takefocus=1)
         # 树横向填满侧栏（fill=both+expand），否则树右侧会留一条空白竖条
         self.sidebar.pack(side="left", fill="both", expand=True)
@@ -1587,7 +1596,7 @@ class App:
         if getattr(self, "_sidebar_loading", False):
             return
         sel = self.sidebar.selection()
-        if not sel:
+        if len(sel) != 1:      # 多选 = 准备批量操作（如批量删除），不切会话
             return
         iid = sel[0]
         if self.sidebar.get_children(iid):     # 工作区分组 → 展开/收起（显示它下面的会话）
@@ -1660,17 +1669,27 @@ class App:
         return vals[0], vals[2]
 
     def _sidebar_delete_selected(self, _e=None):
-        """删除侧栏选中会话（DEL 键 / 右键菜单）；删的是当前会话则新开一个。"""
+        """删除侧栏选中会话（DEL 键 / 右键菜单；Ctrl/Shift 多选批量删）；
+        删的是当前会话则新开一个。"""
         from tkinter import messagebox
         import sessions as sess_mod
-        info = self._sidebar_session_info()
-        if not info:
+        sids, first_title = [], ""
+        for iid in self.sidebar.selection():
+            info = self._sidebar_session_info(iid)
+            if info:
+                sids.append(info[0])
+                first_title = first_title or info[1]
+        if not sids:
             return "break"
-        sid, title = info
-        if messagebox.askyesno(_t("sess.del_title"),
-                               _t("sess.del_confirm", t=title)):
-            sess_mod.delete(sid)
-            if sid == getattr(self, "session_id", None):
+        if len(sids) == 1:
+            prompt = _t("sess.del_confirm", t=first_title)
+        else:
+            prompt = _t("sess.del_confirm_multi", n=len(sids), t=first_title)
+        if messagebox.askyesno(_t("sess.del_title"), prompt):
+            cur = getattr(self, "session_id", None)
+            for sid in sids:
+                sess_mod.delete(sid)
+            if cur in sids:
                 self._new_session()
             else:
                 self._refresh_sidebar()
@@ -1725,7 +1744,7 @@ class App:
                              command=self._sidebar_rename_selected)
             menu.add_command(label=_t("sess.del_btn"),
                              command=self._sidebar_delete_selected)
-        menu.tk_popup(e.x_root, e.y_root)
+        _post_menu(menu, e.x_root, e.y_root)
 
     def _delete_sessions(self, sids, ws=""):
         """批量删除会话（工作区分组的「删除顶层」）；含当前会话则新开一个。"""
@@ -1782,7 +1801,7 @@ class App:
                            font_size=theme.FS_TOOLBAR).pack(side="left", padx=(6, 0))
 
         # 文件树
-        self.file_tree = ttk.Treeview(tree_view, show="tree", selectmode="browse")
+        self.file_tree = ttk.Treeview(tree_view, show="tree", selectmode="extended")
         self.file_tree.pack(side="left", fill="both", expand=True, padx=(6, 0))
         sb = ttk.Scrollbar(tree_view, orient="vertical", command=self.file_tree.yview)
         self.file_tree.configure(yscrollcommand=sb.set)
@@ -1921,6 +1940,27 @@ class App:
         name_lbl.bind("<B1-Motion>", _motion)
         name_lbl.bind("<ButtonRelease-1>", _release)
 
+    def _multi_drag_items(self, y):
+        """拖拽起点对应的待拖条目列表 [(path, is_dir), ...]。
+
+        按下点在当前多选内且多选 >1 → 返回全部选中项（批量拖拽加对话）；
+        否则只返回按下点条目；空白处返回 []。
+        必须在 Button-1 的 widget 绑定阶段调用：它先于 ttk 类绑定执行，
+        此时旧多选尚未被类绑定重置。
+        """
+        try:
+            iid = self.file_tree.identify_row(y)
+        except Exception:            # noqa: BLE001
+            iid = ""
+        sel = list(self.file_tree.selection())
+        use = sel if (iid and iid in sel and len(sel) > 1) else ([iid] if iid else [])
+        items = []
+        for k in use:
+            vals = self.file_tree.item(k, "values")
+            if vals and len(vals) >= 2 and str(vals[0]).strip():
+                items.append((vals[0], str(vals[1]).strip().lower() == "true"))
+        return items
+
     def _bind_file_tree_drag(self):
         """文件树条目可拖拽：按住拖到聊天输入区/消息区放下 = 加入对话。
 
@@ -1929,7 +1969,7 @@ class App:
         无位移的普通点击仍走 _on_file_click（选中/展开/双击打开），不触发拖拽。
         """
         drag = {"sx": 0, "sy": 0, "moved": False, "ghost": None,
-                "path": None, "isdir": False}
+                "path": None, "isdir": False, "items": []}
 
         def _item_file_path(y):
             """返回鼠标 y 坐标对应条目的 (路径, 是否目录)；空白返回 (None, False)。"""
@@ -1950,6 +1990,7 @@ class App:
             drag["sx"], drag["sy"] = e.x_root, e.y_root
             drag["moved"] = False
             drag["path"], drag["isdir"] = _item_file_path(e.y)
+            drag["items"] = self._multi_drag_items(e.y)
 
         def _motion(e):
             # 未超过阈值视为点击，不弹拖影
@@ -1966,7 +2007,10 @@ class App:
                 except Exception:    # noqa: BLE001
                     pass
                 icon = "📁" if drag["isdir"] else "📄"
-                tk.Label(g, text=icon + " " + os.path.basename(drag["path"].rstrip("/\\")),
+                label = os.path.basename(drag["path"].rstrip("/\\"))
+                if len(drag["items"]) > 1:
+                    label = _t("file.drag_multi", t=label, n=len(drag["items"]))
+                tk.Label(g, text=icon + " " + label,
                          bg=self._TAB_ON, fg=self._TAB_FG_ON,
                          font=(FONT_UI, 9), padx=8, pady=4).pack()
                 drag["ghost"] = g
@@ -1983,14 +2027,18 @@ class App:
                     ghost.destroy()
                 except Exception:    # noqa: BLE001
                     pass
-            if not drag["moved"] or not drag["path"]:
+            if not drag["moved"]:
                 return
             if self._point_over_widget(self.input, e.x_root, e.y_root) or                self._point_over_widget(self.chat, e.x_root, e.y_root):
-                if drag["isdir"]:
-                    self._insert_at_ref(drag["path"])
-                else:
-                    self._add_selected_to_chat(drag["path"])
+                items = drag["items"] or (
+                    [(drag["path"], drag["isdir"])] if drag["path"] else [])
+                for path, isdir in items:
+                    if isdir:
+                        self._insert_at_ref(path)
+                    else:
+                        self._add_selected_to_chat(path)
             drag["path"] = None
+            drag["items"] = []
 
         self.file_tree.bind("<Button-1>", _press, add="+")
         self.file_tree.bind("<B1-Motion>", _motion)
@@ -2074,7 +2122,7 @@ class App:
         is_dir = str(vals[1]).strip().lower() == "true" if len(vals) >= 2 else False
         menu = tk.Menu(self.root, tearoff=0, font=(FONT_UI, 10))
         if not path:
-            menu.tk_popup(event.x_root, event.y_root)
+            _post_menu(menu, event.x_root, event.y_root)
             return
         if is_dir:
             menu.add_command(label=_t("file.open_dir"),
@@ -2096,7 +2144,7 @@ class App:
             menu.add_separator()
             menu.add_command(label=_t("file.delete"),
                              command=lambda p=path: self._delete_file(p))
-        menu.tk_popup(event.x_root, event.y_root)
+        _post_menu(menu, event.x_root, event.y_root)
 
     def _open_in_explorer(self, path):
         """在系统文件管理器中打开目录（Windows 资源管理器 / macOS Finder / xdg-open）。"""
@@ -2245,7 +2293,7 @@ class App:
             state=("normal" if has_sel else "disabled"),
             command=(lambda: self._code_sel_to_chat(path, text_widget))
             if has_sel else (lambda: None))
-        menu.tk_popup(event.x_root, event.y_root)
+        _post_menu(menu, event.x_root, event.y_root)
 
     def _code_sel_to_chat(self, path, text_widget):
         """把编辑器选中区加入聊天：附件携带文件 + 行号范围 + 代码内容。"""
@@ -2444,6 +2492,8 @@ class App:
         """
         import time as _time
         now = _time.time()
+        if event.state & 0x0005:      # Ctrl(0x4)/Shift(0x1) 多选：交给 ttk 原生处理，
+            return                    # 不折叠目录、不触发双击打开
         try:
             iid = self.file_tree.identify_row(event.y)
         except Exception:            # noqa: BLE001
@@ -2850,6 +2900,9 @@ class App:
         try:
             pop = tk.Toplevel(self.root)
             pop.overrideredirect(True)
+            # 同 ui_input.show_token_popup：不抢焦点的 overrideredirect
+            # 弹窗会被激活的主窗口压在下面，必须 -topmost 才稳定可见
+            pop.attributes("-topmost", True)
             lb = tk.Listbox(pop, font=(FONT_MONO, 10), height=min(len(cands), 8),
                             borderwidth=0, highlightthickness=0)
             for c in cands:
@@ -3179,7 +3232,7 @@ class App:
         tgt = anchor or self.think_btn
         x = tgt.winfo_rootx()
         y = tgt.winfo_rooty() + tgt.winfo_height()
-        menu.tk_popup(x, y)
+        _post_menu(menu, x, y)
 
     def _apply_reasoning(self, val: str):
         """把等级写入当前模型并联动按钮/状态。val 空串 = 关（清掉等级）。"""
@@ -3468,7 +3521,7 @@ class App:
         tgt = anchor or self.model_btn
         x = tgt.winfo_rootx()
         y = tgt.winfo_rooty() + tgt.winfo_height()
-        menu.tk_popup(x, y)
+        _post_menu(menu, x, y)
 
     def _populate_model_submenu(self, sub, items):
         """把一组模型塞进子菜单；按字母排序、当前模型置顶。"""
@@ -3517,7 +3570,7 @@ class App:
         tgt = anchor or self.settings_btn
         x = tgt.winfo_rootx()
         y = tgt.winfo_rooty() + tgt.winfo_height()
-        menu.tk_popup(x, y)
+        _post_menu(menu, x, y)
 
     def _rebuild_codeindex(self):
         """后台重建当前工作目录的代码索引（模型工具 index_search 使用）。"""
@@ -3613,7 +3666,7 @@ class App:
         tgt = anchor or getattr(self, 'mode_btn', None)
         x = tgt.winfo_rootx()
         y = tgt.winfo_rooty() + tgt.winfo_height()
-        menu.tk_popup(x, y)
+        _post_menu(menu, x, y)
 
     def _select_mode(self, mode):
         self.mode = mode
@@ -4055,6 +4108,8 @@ class App:
         """把当前输入文字加入排队；清空输入框。"""
         text = self.input.get("1.0", "end").strip()
         if not text:
+            # 空输入静默返回会让 ⏱ 看起来"没反应/没这个功能"
+            self._set_status(_t("q.empty_input"))
             return
         if self._placeholder_active:
             self.input.delete("1.0", "end")
@@ -5254,7 +5309,7 @@ class App:
         target = anchor or self.sess_btn
         x = target.winfo_rootx()
         y = target.winfo_rooty() + target.winfo_height()
-        menu.tk_popup(x, y)
+        _post_menu(menu, x, y)
 
     def _search_sessions(self):
         """全局会话搜索（实现在 ui_panel_sessions.py）。"""
