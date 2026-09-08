@@ -70,6 +70,198 @@ _OUTLINE_FILE = "总纲.md"
 _SYS_PLANNER = "你是资深网文主编，只输出规划本身，不写正文，不解释。"
 _SYS_WRITER = "你是网文作者，直接输出章节正文，正文前第一行是章节标题。硬约束条款不得违反。"
 
+# 结构化产出模板（对齐 webnovel-writer 生态的固定字段约定）。
+# 用法：把模板原文作为「骨架」塞进提示词，要求模型逐字段填写；
+# 模型输出的文档天然结构化，可直接落盘、可被后续阶段稳定解析。
+_TEMPLATE_OUTLINE = """# 总纲
+
+## 故事一句话
+（一句话概括主线矛盾与成长方向）
+
+## 创意约束
+- 反套路规则：
+- 硬约束（世界/能力/行为）：
+- 主角缺陷：
+- 反派镜像：
+
+## 核心主线
+- 主线目标：
+- 主要阻力：
+
+## 核心暗线
+- 暗线主题：
+- 回收节点：
+
+## 反派分层（概要）
+- 小反派（前期）：
+- 中反派（中期）：
+- 大反派（后期）：
+
+## 世界观/力量体系简介
+- 世界观要点：
+- 力量体系要点：
+
+## 卷划分
+| 卷号 | 卷名 | 章节范围 | 核心冲突 | 卷末高潮 |
+|------|------|----------|----------|----------|
+| 1 | | | | |
+
+## 主角成长线
+- 起点状态：
+- 关键跃迁节点：
+- 终局定位：
+
+## 关键爽点里程碑
+- 第X章：
+
+## 伏笔表
+| 伏笔内容 | 埋设章 | 回收章 | 层级 |
+|----------|--------|--------|------|
+| | | | |
+"""
+
+_TEMPLATE_WORLD = """# 世界观设定
+
+## 世界一句话
+（一句话概括世界的规则与核心矛盾）
+
+## 世界结构
+- 大陆/位面数量：
+- 核心区域：
+- 边缘区域：
+
+## 势力格局
+- 核心势力：
+- 次级势力：
+- 敌对/中立关系：
+- 宗门/组织层级：
+
+## 社会结构
+- 社会阶层：
+- 资源分配规则：
+- 信仰/意识形态：
+
+## 核心规则
+- 资源稀缺性：
+- 政治/宗门规则：
+- 社会常识/禁忌：
+- 硬约束（不可违背）：
+
+## 世界运转机制
+- 能量/资源循环：
+- 技术/法术基础：
+- 公平性与代价规则：
+
+## 货币与经济
+- 货币体系：
+- 兑换规则：
+- 主要流通形态：
+"""
+
+_TEMPLATE_CHARACTER = """# 主角卡
+
+## 基本信息
+- 姓名：
+- 年龄：
+- 身份：
+- 起点状态：
+
+## 核心标签
+- 3个关键词：
+- 读者第一印象：
+
+## 性格与底色
+- 核心性格：
+- 行为底线：
+- 情绪触发点：
+- 易激怒点：
+- 容易心软点：
+
+## 动机与目标
+- 短期目标：
+- 中期目标：
+- 长期目标：
+- 真正渴望（可能不自知）：
+
+## 缺陷与代价
+- 性格缺陷：
+- 能力限制：
+- 心理阴影：
+- 代价承受底线：
+
+## 关键关系
+- 重要盟友：
+- 主要对手：
+- 情感关系：
+- 关键债务/牵绊：
+
+## 当前能力
+- 境界/等级：
+- 代表技能：
+- 资源/装备：
+
+## 金手指
+- 类型：
+- 代价/限制：
+- 核心卖点：
+
+## 行为模式
+- 常用解决方式（战斗/谈判/计谋）：
+- 失败时的本能反应：
+- 破局特长：
+
+## 成长弧线（阶段）
+- 阶段1（起点）：
+- 阶段2（变化）：
+- 阶段3（蜕变）：
+
+## OOC 警戒
+- 绝不该做的事：
+- 需要提前铺垫的事：
+"""
+
+_TEMPLATE_CONTRACT = """# 故事合约（硬约束）
+
+## 必须始终一致的条款
+1. 
+2. 
+3. 
+
+## 禁写内容
+- 
+
+## 称谓与地名约定
+- 主角称谓：
+- 关键地名：
+- 力量体系称谓：
+"""
+
+_TEMPLATE_VOLUME = """# 卷战略
+
+## 卷总览
+| 卷号 | 卷名 | 章节范围 | 核心冲突 | 卷末高潮 |
+|------|------|----------|----------|----------|
+| 1 | | | | |
+
+## 各卷节拍
+### 第 1 卷：（第X-Y章）
+- 开卷承诺：
+- 催化事件：
+- 升级危机链：1) … 2) … 3) …
+- 中段反转：
+- 卷末最低谷：
+- 卷末兑现与新钩子：
+"""
+
+# 阶段 → (提示词模板, 产出落盘文件名)；None 表示沿用默认落盘逻辑
+_STAGE_TEMPLATE = {
+    "outline": _TEMPLATE_OUTLINE,
+    "world": _TEMPLATE_WORLD,
+    "characters": _TEMPLATE_CHARACTER,
+    "contract": _TEMPLATE_CONTRACT,
+    "volume": _TEMPLATE_VOLUME,
+}
+
 # 审校输出的行前缀契约：提示词与 _review() 解析器共用同一份定义，
 # 改一处即两处同时生效（曾因提示词单方面删掉「事实/伏笔」而静默废掉台账）。
 _REVIEW_PREFIX = {
@@ -109,80 +301,87 @@ def st_setup(state: dict, ctx) -> dict:
     if not text:
         raise StageFail("项目设定生成为空")
     m = re.search(r"题材[:：]\s*(.+)", text)
-    updates = {"framing": text}
     if m:
-        updates["genre"] = m.group(1).strip()[:24]
+        state["genre"] = m.group(1).strip()[:24]
     _ensure_book(state, text.splitlines()[0].strip()[:24])
-    _append_md(state, "\n\n## 项目设定\n\n" + text)
-    return updates
+    _write_plan_section(state, "项目设定", text)
+    return {"framing": text, "genre": state.get("genre", "")}
 
 
 def st_outline(state: dict, ctx) -> dict:
-    """宏观规划：故事引擎 + 三幕大纲 + 长期对立。"""
+    """宏观规划：按总纲模板逐字段填写。"""
     if state.get("outline"):
         return {}
     text = _ask(state, _SYS_PLANNER,
                 f"灵感：{state['idea']}\n书级设定：\n{state['framing']}\n"
-                f"全书共 {state['total_chapters']} 章。请输出：故事引擎、"
-                "推进与兑现主线、长期对立力量、开局/中段/终局三幕大纲（每幕 3-5 条）。")
+                f"全书共 {state['total_chapters']} 章。\n"
+                "请严格按下面的骨架逐字段填写（保留全部标题与字段名，"
+                "把每一项都写实，不要留空、不要增删章节）：\n\n"
+                + _TEMPLATE_OUTLINE)
     if not text:
         raise StageFail("宏观规划生成为空")
     _ensure_book(state, text.splitlines()[0].strip()[:24])
-    _append_md(state, "\n\n## 宏观规划\n\n" + text)
+    _write_plan_section(state, "宏观规划", text)
     return {"outline": text}
 
 
 def st_world(state: dict, ctx) -> dict:
-    """本书世界：背景/规则/势力。"""
+    """本书世界：按世界观模板逐字段填写。"""
     if state.get("world"):
         return {}
     text = _ask(state, _SYS_PLANNER,
                 f"大纲：\n{state['outline']}\n"
-                "请输出本书世界：时代与地理背景、力量或社会规则、主要势力 3-5 个。")
+                "请严格按下面的骨架逐字段填写世界观（保留全部标题与字段名，"
+                "把每一项都写实，不要留空）：\n\n"
+                + _TEMPLATE_WORLD)
     if not text:
         raise StageFail("世界设定生成为空")
-    _append_setting(state, "世界观", f"# 本书世界\n\n{text}")
+    _append_setting(state, "世界观", text)
     return {"world": text}
 
 
 def st_contract(state: dict, ctx) -> dict:
-    """故事合约（MASTER_SETTING）：从设定中提炼硬约束，每章强制注入。"""
+    """故事合约（MASTER_SETTING）：按合约模板提炼硬约束，每章强制注入。"""
     if state.get("contract"):
         return {}
     text = _ask(state, _SYS_PLANNER,
                 f"大纲：\n{state['outline']}\n世界：\n{state['world']}\n"
-                "请提炼本书的故事合约（MASTER_SETTING）：必须始终一致的硬约束，"
-                "编号列出 ≤15 条（力量/规则边界、称谓、地名、禁写内容等），"
-                "不要解释，只列条款。")
+                "请严格按下面的骨架提炼故事合约（保留标题与字段名，条款要具体可判定）：\n\n"
+                + _TEMPLATE_CONTRACT)
     if not text:
         raise StageFail("故事合约生成为空")
-    _append_setting(state, "故事合约", f"# 故事合约（硬约束）\n\n{text}")
+    _append_setting(state, "故事合约", text)
     return {"contract": text}
 
 
 def st_characters(state: dict, ctx) -> dict:
-    """角色：主角+主要配角的身份/动机/弧线。"""
+    """角色：主角按主角卡模板填写，配角各按精简卡片。"""
     if state.get("characters"):
         return {}
     text = _ask(state, _SYS_PLANNER,
                 f"大纲：\n{state['outline']}\n世界：\n{state['world']}\n"
-                "请给出 3-6 名主要角色：姓名、身份、核心动机、成长弧线，每人 2-3 行。")
+                "请先按下面的「主角卡」骨架逐字段填写主角（保留全部标题与字段名，"
+                "把每一项都写实），随后用同样的字段结构补充 2-5 名主要配角"
+                "（每人一个二级标题「## 配角：姓名」）。\n\n"
+                + _TEMPLATE_CHARACTER)
     if not text:
         raise StageFail("角色生成为空")
-    _append_setting(state, "角色", f"# 角色\n\n{text}")
+    _append_setting(state, "角色", text)
     return {"characters": text}
 
 
 def st_volume(state: dict, ctx) -> dict:
-    """卷战略：分卷 + 每卷章节范围与阶段目标。"""
+    """卷战略：按卷战略模板逐卷填写节拍。"""
     if state.get("volume"):
         return {}
     text = _ask(state, _SYS_PLANNER,
-                f"大纲：\n{state['outline']}\n全书共 {state['total_chapters']} 章。"
-                "请划分卷：每卷给出章节范围（如 第1-3章）、卷名、阶段目标与结尾钩子。")
+                f"大纲：\n{state['outline']}\n全书共 {state['total_chapters']} 章。\n"
+                "请严格按下面的骨架逐字段填写（保留全部标题与字段名；"
+                "「卷总览」表按实际卷数逐行填全，各卷节拍逐卷展开）：\n\n"
+                + _TEMPLATE_VOLUME)
     if not text:
         raise StageFail("卷战略生成为空")
-    _append_md(state, "\n\n## 卷战略\n\n" + text)
+    _write_plan_section(state, "卷战略", text)
     return {"volume": text}
 
 
@@ -196,7 +395,7 @@ def st_chapter_plan(state: dict, ctx) -> dict:
                 "每章一行「第N章《标题》目标：…钩子：…」。")
     if not text:
         raise StageFail("节奏拆章生成为空")
-    _append_md(state, "\n\n## 节奏拆章\n\n" + text)
+    _write_plan_section(state, "节奏拆章", text)
     return {"chapter_plan": text}
 
 
@@ -644,15 +843,38 @@ def _ensure_book(state: dict, title: str):
     state["file"] = path
 
 
-def _append_md(state: dict, text: str):
-    """规划阶段产出追加进「大纲/总纲.md」。"""
-    os.makedirs(os.path.join(_book_dir(state), _DIR_OUTLINE), exist_ok=True)
+# 总纲里各规划段落的顺序（决定 md 中的排版）
+_PLAN_SECTIONS = (
+    ("framing", "项目设定"),
+    ("outline", "宏观规划"),
+    ("volume", "卷战略"),
+    ("chapter_plan", "节奏拆章"),
+)
+
+
+def _write_plan_section(state: dict, title: str, text: str):
+    """把规划产出并入总纲：先更新 state，再按固定顺序整体重建。
+
+    重建（而非追加）保证调定/重跑后不会留下旧版本的重复段落。
+    """
+    key = next((k for k, t in _PLAN_SECTIONS if t == title), "")
+    if key:
+        state[key] = text
+    _rebuild_plan(state)
+
+
+def _rebuild_plan(state: dict):
+    """从 state 重建「大纲/总纲.md」（按 _PLAN_SECTIONS 顺序）。"""
     path = _plan_path(state)
-    if not os.path.exists(path):       # 恢复场景：规划文档丢失则重建头
-        head = state.get("outline", "未命名").splitlines()[0][:24]
-        _ensure_book(state, head)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(text + "\n")
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    head = state.get("genre") or state.get("idea", "")[:24]
+    parts = [f"# {head}", f"\n\n> 灵感：{state.get('idea', '')}"]
+    for key, title in _PLAN_SECTIONS:
+        if state.get(key):
+            parts.append(f"\n\n## {title}\n\n{state[key]}")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("".join(parts) + "\n")
+    state["file"] = path
 
 
 def _append_chapter(state: dict, chap: dict):
@@ -695,21 +917,10 @@ def _append_setting(state: dict, name: str, text: str):
 
 def _rebuild_md(state: dict):
     """重写章节/调定规划后，重建总纲、设定集与全部章节文件。"""
-    path = _plan_path(state)
-    parts = [f"# {state.get('genre', '')}{state['idea'][:24]}",
-             f"> 灵感：{state['idea']}"]
-    for key, title in (("framing", "项目设定"), ("outline", "宏观规划"),
-                       ("volume", "卷战略"), ("chapter_plan", "节奏拆章")):
+    _rebuild_plan(state)
+    for key, name in (("world", "世界观"), ("contract", "故事合约"),
+                      ("characters", "角色")):
         if state.get(key):
-            parts.append(f"\n\n## {title}\n\n{state[key]}")
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("".join(parts) + "\n")
-    state["file"] = path
-    for key, name, title in (("world", "世界观", "本书世界"),
-                             ("contract", "故事合约", "故事合约（硬约束）"),
-                             ("characters", "角色", "角色")):
-        if state.get(key):
-            _append_setting(state, name, f"# {title}\n\n{state[key]}")
+            _append_setting(state, name, state[key])
     for c in state.get("chapters", []):
         _append_chapter(state, c)

@@ -5339,6 +5339,17 @@ class App:
     def _on_close(self):
         """关窗清理：任务进行中先请求停止、等工作线程落盘半程结果，
         再停掉 MCP 子进程。模态本地面板未关时锁定主窗口。"""
+        # 关窗审计：exit 0 却找不到原因时，靠这行区分"有人点了 ✕"
+        # 还是进程被外部杀掉（后者不会留下这行）
+        try:
+            log_dir = os.path.join(config.CONFIG_DIR, "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            with open(os.path.join(log_dir, "ui_errors.log"), "a",
+                      encoding="utf-8") as f:
+                f.write("=== [%s] window closed via WM_DELETE_WINDOW\n"
+                        % time.strftime("%Y-%m-%d %H:%M:%S"))
+        except Exception:                 # noqa: BLE001  审计失败不影响关窗
+            pass
         # 模态面板（本地模型管理）还开着 → 不关闭主窗口，聚焦面板
         if getattr(self, "_modal_open", False):
             panel = getattr(self, "_gp_panel", None)

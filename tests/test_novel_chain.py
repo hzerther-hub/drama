@@ -372,3 +372,45 @@ def test_strip_title_keeps_unrelated_first_line():
     assert novel_chain._strip_title("# 某章标题\n\n正文", "某章标题") == "正文"
     assert novel_chain._strip_title("某章标题\n\n正文", "某章标题") == "正文"
     assert novel_chain._strip_title("", "标题") == ""
+
+
+def test_templates_injected_into_prompts(monkeypatch):
+    """各规划阶段的提示词必须注入对应模板骨架（固定字段）。"""
+    prompts = []
+
+    def stream_chat(model, msgs, tools=None):
+        prompts.append(msgs[-1]["content"])
+        out = "内容" * 30
+        for i in range(0, len(out), 20):
+            yield {"type": "text", "delta": out[i:i + 20]}
+
+    monkeypatch.setattr(novel_chain.llm, "stream_chat", stream_chat)
+    p = _start(total=1)
+    # 模拟 pipeline 的阶段合并语义：把返回值并回 state，供下游阶段读取
+    p.state["framing"] = "题材：都市"
+    for fn in (novel_chain.st_outline, novel_chain.st_world,
+               novel_chain.st_contract, novel_chain.st_characters,
+               novel_chain.st_volume):
+        p.state.update(fn(p.state, None) or {})
+
+    joined = "\n".join(prompts)
+    for marker in ("故事一句话", "伏笔表", "世界一句话", "OOC 警戒",
+                   "禁写内容", "卷总览"):
+        assert marker in joined, f"提示词缺少模板字段「{marker}」"
+    assert "逐字段填写" in joined            # 明确要求按骨架填写
+
+
+def test_plan_sections_ordered_and_no_duplication(fake, tmp_path):
+    """总纲按固定顺序排版，且各段落内容不串味、不重复。"""
+    p = _start(total=1)
+    p.run()
+    plan = (tmp_path / "novels" / p.pid / "大纲" / "总纲.md").read_text(
+        encoding="utf-8")
+    order = [plan.index(f"## {t}") for t in
+             ("项目设定", "宏观规划", "卷战略", "节奏拆章")]
+    assert order == sorted(order), "总纲段落顺序不符"
+    assert plan.startswith("# "), "总纲缺少一级标题"
+    assert "\n\n> 灵感：" in plan, "一级标题与灵感行之间缺空行"
+    # 每段标题只出现一次（重建而非追加）
+    assert plan.count("## 项目设定") == 1
+    assert plan.count("## 宏观规划") == 1
