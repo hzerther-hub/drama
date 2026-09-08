@@ -1,0 +1,2 @@
+[permissions]
+allow = ["Bash=cd \"D:\\drama\" && python -m py_compile *.py && python -m py_compile products/*.py && echo \"SYNTAX OK\""]
