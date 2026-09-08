@@ -352,3 +352,23 @@ def test_extend_total_then_continue(fake, tmp_path):
     assert p.pipeline_status == "paused" and p.cursor == "chapters"
     assert p.run() == "done"
     assert len(p.state["chapters"]) == 3
+
+
+def test_chapter_text_has_no_duplicate_title(fake, tmp_path):
+    """正文首行与章节标题重复时要剥离（文件已有一级标题，否则显示两遍）。"""
+    p = _start(total=1)
+    p.run()
+    c = p.state["chapters"][0]
+    assert not c["text"].lstrip().startswith("#")
+    assert not c["text"].splitlines()[0].strip().startswith(c["title"])
+    body = open(c["path"], encoding="utf-8").read()
+    # 文件里标题只出现一次
+    assert body.count(c["title"]) == 1
+
+
+def test_strip_title_keeps_unrelated_first_line():
+    """首行不是标题时不能误删正文。"""
+    assert novel_chain._strip_title("他推开门走了进去。", "某章标题") == "他推开门走了进去。"
+    assert novel_chain._strip_title("# 某章标题\n\n正文", "某章标题") == "正文"
+    assert novel_chain._strip_title("某章标题\n\n正文", "某章标题") == "正文"
+    assert novel_chain._strip_title("", "标题") == ""

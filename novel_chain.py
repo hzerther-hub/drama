@@ -226,6 +226,7 @@ def st_chapters(state: dict, ctx) -> dict:
                 fsh = fsh2 + [f for f in fsh if f not in fsh2]
                 closes = closes + closes2
         title = _planned_title(state, idx) or _chapter_title(text, idx)
+        text = _strip_title(text, title)      # 去掉正文首行重复的标题
         chap = {"idx": idx, "title": title,
                 "text": text, "summary": text[:_MAX_WORDS].replace("\n", " "),
                 "issues": issues}
@@ -363,6 +364,7 @@ def rewrite_chapter(state: dict, idx: int, feedback: str = "") -> dict:
     if len(text) < 50:
         raise StageFail("重写正文过短，已保留原章")
     issues, facts, fsh, closes = _review(state, text, idx)
+    text = _strip_title(text, old["title"])   # 去掉正文首行重复的标题
     old.update({"text": text, "summary": text[:_MAX_WORDS].replace("\n", " "),
                 "issues": issues})
     _apply_ledger(state, idx, facts, fsh, closes)
@@ -658,8 +660,28 @@ def _append_chapter(state: dict, chap: dict):
     path = _chapter_path(state, chap["idx"], chap["title"])
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        f.write(f"# {chap['title']}\n\n{chap['text']}\n")
+        f.write(f"# {chap['title']}\n\n{_strip_title(chap['text'], chap['title'])}\n")
     chap["path"] = path
+
+
+def _strip_title(text: str, title: str) -> str:
+    """去掉正文首行与章节标题重复的那一行。
+
+    模型按提示词「正文前第一行是章节标题」输出，而文件本身已有 # 标题，
+    不剥离就会出现「# 标题\\n\\n标题」的重复。
+    """
+    lines = (text or "").splitlines()
+    if not lines:
+        return text or ""
+    first = lines[0].strip().lstrip("#").strip()
+    if first and (first == (title or "").strip()
+                  or first in (title or "")
+                  or (title or "") in first):
+        rest = lines[1:]
+        while rest and not rest[0].strip():
+            rest.pop(0)
+        return "\n".join(rest)
+    return text
 
 
 def _append_setting(state: dict, name: str, text: str):
