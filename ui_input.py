@@ -21,8 +21,17 @@ from i18n import t
 # ---------------- Treeview 候选框小工具 ----------------
 
 def tv_select(lb, i) -> int:
-    """选中第 i 行（夹紧范围）并滚动可见，返回实际 i。"""
-    kids = lb.get_children("")
+    """选中第 i 行（夹紧范围）并滚动可见，返回实际 i。
+
+    lb 可能为 None：弹窗刚被销毁（hide）而按键事件仍在队列里——竞态下
+    直接放弃本次选中，不抛 AttributeError。
+    """
+    if lb is None:
+        return 0
+    try:
+        kids = lb.get_children("")
+    except KeyError:                       # 控件已销毁（tkinter 抛 KeyError）
+        return 0
     if not kids:
         return 0
     i = max(0, min(i, len(kids) - 1))
@@ -32,7 +41,9 @@ def tv_select(lb, i) -> int:
 
 
 def tv_index(lb) -> int:
-    """当前选中行索引（无选中返回 0）。"""
+    """当前选中行索引（无选中返回 0）。lb 为 None（弹窗已销毁）返回 0。"""
+    if lb is None:
+        return 0
     sel = lb.selection()
     return lb.index(sel[0]) if sel else 0
 
