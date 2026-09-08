@@ -764,10 +764,14 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "novel.badge_running": {"en": "Writing", "zh": "写小说中"},
     "novel.status_running": {"en": "✍ Novel production running…", "zh": "✍ 小说生产进行中…"},
     "novel.pause_review": {"en": "⏸ 「{stage}」done, paused", "zh": "⏸ 「{stage}」完成，已暂停"},
-    "novel.usage":  {"en": "Sub: start <idea> [chapters] | ok | adjust <fb> | "
-                          "status | drama a-b | rewrite N [fb] | extend N | deconstruct <file>",
-                     "zh": "子命令：start <一句灵感> [章数] | stop | resume [pid] | "
-                           "status | drama 起-止 | rewrite 章号 [反馈] | extend 加写N章 | deconstruct <txt>"},
+    "novel.usage":  {"en": "Sub: start <idea> [chapters] | use [pid] | ok | adjust <fb> | "
+                          "status | stop | resume [pid] | drama a-b | rewrite N [fb] | "
+                          "extend N | cover | publish <fmt> | deconstruct <file>"
+                          "（用 @pid 指定书，如 extend 30 @novel-20260908）",
+                     "zh": "子命令：start <一句灵感> [章数] | use [pid] 切换书 | ok | "
+                           "adjust <意见> | status | stop | resume [pid] | drama 起-止 | "
+                           "rewrite 章号 [反馈] | extend 加写N章 | cover | publish 格式 | "
+                           "deconstruct <txt>（末尾加 @pid 指定书，如 extend 30 @novel-20260908）"},
     "novel.img_need": {"en": "Image service not configured (LAS_IMAGE_BASE_URL / LAS_IMAGE_MODEL)",
                        "zh": "未配置图像服务（LAS_IMAGE_BASE_URL / LAS_IMAGE_MODEL）"},
         "novel.extend_done": {"en": "Total chapters now: {n}. /novel ok to continue",
@@ -786,6 +790,11 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
                            "zh": "重写：/novel rewrite <章号> [反馈]"},
     "novel.need_model": {"en": "No model configured", "zh": "未配置模型，请先在模型菜单选择"},
     "novel.none":   {"en": "No pipelines yet", "zh": "还没有流水线记录"},
+    "novel.notfound": {"en": "Pipeline not found", "zh": "找不到这本书（pid 不存在）"},
+    "novel.ambiguous": {"en": "Multiple pipelines match that prefix",
+                        "zh": "pid 前缀匹配到多本书，请输入更完整的 pid"},
+    "novel.using":  {"en": "Current book: {pid}（{t}）",
+                     "zh": "当前书：{pid}（{t}）"},
     "novel.no_book": {"en": "Manuscript not found", "zh": "书稿文件不存在"},
     "novel.no_chapters": {"en": "No finished chapters yet", "zh": "还没有已完成的章节"},
     "novel.busy":   {"en": "Pipeline already running", "zh": "已有流水线在运行"},

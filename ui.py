@@ -866,6 +866,18 @@ def _format_tool_result(name: str, result: str) -> list:
     return _fmt_plain(name, result)
 
 
+def _split_pid(rest: str) -> tuple[str, str]:
+    """从命令参数尾部拆出 @pid（指定操作哪本书）。
+
+    "30 @novel-20260908" → ("30", "novel-20260908")
+    "30"                 → ("30", "")
+    """
+    m = re.search(r"\s*@(\S+)\s*$", rest or "")
+    if not m:
+        return (rest or "").strip(), ""
+    return (rest[:m.start()]).strip(), m.group(1).strip()
+
+
 def _fmt_tool_args(args: dict) -> list:
     """工具入参 → 美化片段：每参一行「· 键: 值」，超长值截断。"""
     if not isinstance(args, dict) or not args:
@@ -4309,15 +4321,75 @@ class App:
 
     # ---- /novel 写小说生产线（进度像工具提示一样渲染进聊天区）----
 
+    def _novel_pick(self, pid: str = "", load: bool = True):
+        """定位一本书：pid 指定 > 内存当前 > 磁盘最近。
+
+        load=True 时把选中的书载入 self._novel_pipe（切换当前书）；
+        返回 (pipeline, error)，error 为 None 表示成功。
+        """
+        import pipeline as _pl
+        import novel_chain
+        pid = (pid or "").strip()
+        if pid:
+            rows = _pl.list_pipelines()
+            row = next((r for r in rows if r["pid"] == pid), None)
+            if row is None:
+                # 支持前缀匹配，省得敲完整时间戳
+                cand = [r for r in rows if r["pid"].startswith(pid)]
+                if len(cand) == 1:
+                    row = cand[0]
+                elif len(cand) > 1:
+                    return None, "ambiguous"
+            if row is None:
+                return None, "notfound"
+            p = _pl.load(row["pid"], novel_chain.STAGES)
+            if p is None:
+                return None, "notfound"
+            if load:
+                self._novel_pipe = p
+                self._novel_stepwise = p.pipeline_status == "paused"
+            return p, None
+        p = getattr(self, "_novel_pipe", None)
+        if p is not None:
+            return p, None
+        rows = _pl.list_pipelines()
+        if not rows:
+            return None, "none"
+        p = _pl.load(rows[0]["pid"], novel_chain.STAGES)
+        if p is None:
+            return None, "notfound"
+        if load:
+            self._novel_pipe = p
+            self._novel_stepwise = p.pipeline_status == "paused"
+        return p, None
+
     def _novel_command(self, arg: str):
-        """/novel 子命令：start <灵感> [章数] [auto] | ok | adjust <意见> | stop |
-        resume [pid] | status | drama 起-止 | rewrite N [反馈] | deconstruct <txt>。
-        默认逐阶段暂停供调定；进度实时渲染进聊天区。"""
+        """/novel 子命令：start <灵感> [章数] [auto] | use [pid] | ok | adjust <意见> |
+        stop | resume [pid] | status | drama 起-止 | rewrite N [反馈] | extend N |
+        cover | publish 格式 | deconstruct <txt>。
+        各命令可用 [pid] 指定操作哪本书（省略=当前书）；默认逐阶段暂停供调定。"""
         import novel_chain
         import pipeline as _pl
         sub = (arg or "").split(None, 1)
         head = sub[0] if sub else "status"
         rest = sub[1] if len(sub) > 1 else ""
+        # _novel_pipe 是内存态，重启后丢失；需要它的命令在此自动载入最近一本书。
+        if head not in ("start", "status", "deconstruct", "use", "resume") \
+                and not getattr(self, "_novel_pipe", None):
+            p, _err = self._novel_pick("")
+            if p is None:
+                self._set_status(_t("novel.none"))
+                return
+        if head == "use":
+            p, err = self._novel_pick(rest)
+            if err:
+                self._set_status(_t("novel." + err) if err in
+                                 ("none", "notfound", "ambiguous")
+                                 else _t("novel.none"))
+                return
+            self._append("📖 " + _t("novel.using", pid=p.pid,
+                                    t=p.title) + "\n", "meta")
+            return
         if head == "start":
             parsed = novel_chain.parse_start_args(rest)
             if parsed.get("error"):
@@ -4392,14 +4464,16 @@ class App:
                         self, "_novel_busy", False))
             threading.Thread(target=drama_work, daemon=True).start()
         elif head == "extend":
-            p = getattr(self, "_novel_pipe", None)
+            rest, pid = _split_pid(rest)
+            p, err = self._novel_pick(pid)
             try:
                 n = int(rest.strip())
             except ValueError:
                 self._set_status(_t("novel.usage"))
                 return
-            if not p:
-                self._set_status(_t("novel.none"))
+            if p is None:
+                self._set_status(_t("novel." + err) if err in
+                                 ("none", "notfound") else _t("novel.none"))
                 return
             novel_chain.extend_total(p, n)
             self._append("✅ " + _t("novel.extend_done",
@@ -4409,7 +4483,8 @@ class App:
                 self._novel_busy = True
                 self._novel_run(p)
         elif head == "rewrite":
-            p = getattr(self, "_novel_pipe", None)
+            rest, pid = _split_pid(rest)
+            p, err = self._novel_pick(pid)
             m = re.match(r"^(\d+)(?:\s+(.*))?$", rest.strip())
             if not (p and p.state.get("chapters")) or not m:
                 self._set_status(_t("novel.no_chapters"))
@@ -4524,11 +4599,14 @@ class App:
             if not rows:
                 self._append(_t("novel.none") + "\n💡 " + _t("novel.usage") + "\n", "meta")
                 return
+            cur = getattr(self, "_novel_pipe", None)
+            cur_pid = cur.pid if cur else ""
             for r in rows:
                 warn = ""
                 if r.get("save_errors"):
                     warn = f" ⚠检查点落盘失败×{r['save_errors']}"
-                self._append(f"· {r['pid']} [{r['pipeline_status']}] "
+                mark = "▶ " if r["pid"] == cur_pid else "· "
+                self._append(f"{mark}{r['pid']} [{r['pipeline_status']}] "
                              f"{r['title']}（债 {r['debts']}）{warn}\n", "meta")
 
     def _novel_ok(self):

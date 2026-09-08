@@ -84,9 +84,10 @@ setx LAS_EMBED_API_KEY "sk-..."
 ### 日常操作
 
 ```
-/novel status                     # 全部流水线状态、进度、质量债、检查点健康
+/novel status                     # 全部书状态（▶ 标出当前书）、进度、质量债、检查点健康
+/novel use [pid]                  # 切换当前书（省略=最近一本；支持 pid 前缀）
 /novel stop                       # 当前章完成后暂停
-/novel resume [pid]               # 从检查点恢复（省略 pid 取最近暂停的）
+/novel resume [pid]               # 从检查点恢复并继续跑
 /novel rewrite 7 感情线太突兀       # 重写第 7 章并落实反馈
 /novel extend 20                  # 加写 20 章（连载续写）
 /novel drama 1-10                 # 已完成章节 → 短剧剧本+分镜 md
@@ -96,6 +97,17 @@ setx LAS_EMBED_API_KEY "sk-..."
 /novel publish wattpad 1-50       # 发布到 Wattpad
 /novel publish webhook            # 推送到 Webhook
 ```
+
+**写多本书**：`/novel start` 开新书后，当前书会切到新书。想回到旧书用
+`/novel use <pid>`（pid 从 `/novel status` 里复制，支持前缀，如 `use novel-20260908`）。
+各命令也可用 `@pid` 直接指定书，不影响当前书，例如：
+
+```
+/novel extend 30 @novel-20260908-200622    # 给这本书加写 30 章
+/novel rewrite 3 改一下结尾 @novel-20260906-234119
+```
+
+`_novel_pipe` 是内存态，重启后自动载入最近一本书；要操作别的书先 `/novel use`。
 
 - 进度以工具提示样式实时渲染：🛠 阶段块、📖 章节完成块、⚠ 质量债、✅ 完成行
 - `/novel status` 中出现 `⚠检查点落盘失败×N` 表示检查点未能写入磁盘
