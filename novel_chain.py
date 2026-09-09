@@ -607,9 +607,404 @@ def rewrite_chapter(state: dict, idx: int, feedback: str = "") -> dict:
     return old
 
 
+# 单章轻量改写模式（区别于 rewrite 的"重写"语义：剧情事实与编号都不动）
+REWORK_MODES = ("polish", "expand", "condense")
+_REWORK_SYS = {
+    "polish": "你是网文润色编辑。不改变剧情事实、人物关系与章节结构，只提升语言质感："
+              "删冗余、紧节奏、统一人称与语气、修病句。只输出润色后的完整正文，不解释。",
+    "expand": "你是网文作者。不新增关键剧情转折与设定，只扩写本章：补充场景细节、"
+              "人物动作与心理、对话张力，让篇幅明显增加。只输出扩写后的完整正文，不解释。",
+    "condense": "你是网文编辑。压缩本章：删去重复铺陈与次要描写，保留关键情节、伏笔"
+                "与章末钩子，让篇幅明显减少但故事完整。只输出精简后的完整正文，不解释。",
+}
+_REWORK_TIP = {
+    "polish": "语言质感提升",
+    "expand": "扩写",
+    "condense": "精简",
+}
+
+
+def rework_chapter(state: dict, idx: int, mode: str,
+                   feedback: str = "") -> dict:
+    """对指定章节做润色/扩写/精简；保留编号与标题，全书 md 同步重建。
+
+    与 rewrite_chapter 的区别：rewrite 是「重写一章」（可换写法），
+    rework 是「在原文上做增量加工」（polish/expand/condense），原文事实保留。
+    """
+    if mode not in REWORK_MODES:
+        raise StageStopError(f"不支持的改写模式：{mode}")
+    chapters = state.get("chapters", [])
+    if not 1 <= idx <= len(chapters):
+        raise StageStopError(f"第 {idx} 章不存在或尚未生成")
+    old = chapters[idx - 1]
+    fb = f"\n作者补充要求（必须落实）：{feedback}\n" if feedback else ""
+    text = _ask(state, _REWORK_SYS[mode],
+                f"以下是第 {idx} 章《{old['title']}》原正文（模式：{mode}）：{fb}\n"
+                f"{old['text']}\n\n请按要求输出处理后的完整正文。")
+    if len(text) < 50:
+        raise StageFail("改写结果过短，已保留原章")
+    issues, facts, fsh, closes = _review(state, text, idx)
+    text = _strip_title(text, old["title"])
+    old.update({"text": text, "summary": text[:_MAX_WORDS].replace("\n", " "),
+                "issues": issues})
+    _apply_ledger(state, idx, facts, fsh, closes)
+    state["chapters"][idx - 1] = old
+    _rebuild_md(state)
+    _rag_index_chapter(state, old)
+    return old
+
+
+def book_stats(state: dict) -> dict:
+    """全书统计：章数/总字数/均章字数/最短最长章/质量债/未回收伏笔。"""
+    chapters = state.get("chapters", []) or []
+    words = [len(c.get("text", "")) for c in chapters]
+    open_fsh = [f for f in state.get("foreshadows", [])
+                if not f.get("closed_ch")]
+    return {
+        "title": state.get("title", ""),
+        "chapters": len(chapters),
+        "planned": int(state.get("total_chapters", 0) or 0),
+        "words": sum(words),
+        "avg": int(sum(words) / len(words)) if words else 0,
+        "shortest": min(words) if words else 0,
+        "longest": max(words) if words else 0,
+        "debts": len(state.get("debts", []) or []),
+        "open_foreshadows": len(open_fsh),
+        "ledger": len(state.get("ledger", []) or []),
+    }
+
+
+def resolve_stage(name: str) -> str:
+    """阶段名容错解析：接受英文键（chapter_plan）或中文标签（节奏拆章）。"""
+    name = (name or "").strip()
+    if name in STAGE_STATE_KEYS or name == "chapters":
+        return name
+    for k, label in STAGE_LABELS.items():
+        if name == label or (name and name in label):
+            return k
+    return ""
+
+
+# ---------------- 章节增删 / 改名 / 合规检查 / 多模型对比 ----------------
+
+def _reindex_refs(state: dict, at: int, delta: int):
+    """章号增删后同步引用：台账/伏笔/质量债/拆章任务单里的第N章。
+
+    delta=-1（删章）时，被删章自身的引用一并清除；delta=+1（插章）时
+    所有 >= at 的章号后移一位。
+    """
+    def _shift_num(n: int) -> int:
+        return n + delta if n >= at else n
+
+    led = []
+    for x in state.get("ledger", []) or []:
+        m = re.match(r"^第(\d+)章\s", x)
+        if m:
+            n = int(m.group(1))
+            if delta < 0 and n == at:
+                continue                      # 被删章的台账记录一并清掉
+            if n >= at:
+                x = x.replace(f"第{n}章", f"第{_shift_num(n)}章", 1)
+        led.append(x)
+    state["ledger"] = led
+
+    fsh = []
+    for f in state.get("foreshadows", []) or []:
+        if delta < 0 and f.get("open_ch") == at:
+            continue                          # 伏笔开于被删章 → 整条移除
+        f["open_ch"] = _shift_num(int(f.get("open_ch") or 0))
+        if f.get("closed_ch"):
+            f["closed_ch"] = _shift_num(int(f["closed_ch"]))
+        fsh.append(f)
+    state["foreshadows"] = fsh
+
+    debts = []
+    for d in state.get("debts", []) or []:
+        if delta < 0 and d.get("chapter") == at:
+            continue
+        d["chapter"] = _shift_num(int(d.get("chapter") or 0))
+        debts.append(d)
+    state["debts"] = debts
+
+    plan = state.get("chapter_plan") or ""
+    if plan:
+        lines = plan.splitlines()
+        if delta < 0:                         # 删章：该章的拆章任务行整行移除
+            lines = [ln for ln in lines
+                     if not re.match(rf"^\s*第{at}章", ln)]
+
+        def _ren(m):
+            n = int(m.group(1))
+            return f"第{_shift_num(n)}章" if n >= at else m.group(0)
+
+        state["chapter_plan"] = "\n".join(
+            re.sub(r"第(\d+)章", _ren, ln) for ln in lines)
+    if delta > 0:
+        state["total_chapters"] = int(state.get("total_chapters", 0) or 0) + 1
+
+
+def _rewrite_chapter_files(state: dict, start_idx: int):
+    """章号重排后，重写 start_idx 起的所有章节文件并清掉旧文件名残留。
+
+    文件名含章号（第0002章-x.md），重排后必须删旧名再写新名，
+    否则会留下「第0003章」这样的孤儿文件。
+    """
+    for c in state.get("chapters", []):
+        if c.get("idx", 0) < start_idx:
+            continue
+        old = c.get("path") or ""
+        new = _chapter_path(state, c["idx"], c["title"])
+        if old and os.path.abspath(old) != os.path.abspath(new) \
+                and os.path.isfile(old):
+            try:
+                os.remove(old)
+            except OSError:
+                pass                           # 占用/权限问题不阻断重排
+        _append_chapter(state, c)
+
+
+def drop_chapter(state: dict, idx: int) -> dict:
+    """删除第 idx 章：后续章号前移、章节文件重写、台账/伏笔同步。"""
+    chapters = state.get("chapters", []) or []
+    if not 1 <= idx <= len(chapters):
+        raise StageStopError(f"第 {idx} 章不存在或尚未生成")
+    victim = chapters[idx - 1]
+    path = victim.get("path") or _chapter_path(state, idx, victim["title"])
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass                                   # 文件被占用不阻断状态更新
+    del chapters[idx - 1]
+    for i, c in enumerate(chapters[idx - 1:], start=idx):
+        c["idx"] = i
+    state["chapters"] = chapters
+    _rewrite_chapter_files(state, idx)         # 删旧名 + 按新章号写回
+    _reindex_refs(state, idx, -1)
+    _rebuild_md(state)
+    return {"dropped": victim["title"], "remaining": len(chapters)}
+
+
+def insert_chapter(state: dict, idx: int, note: str = "") -> dict:
+    """在第 idx 位插入一章（原第 idx 章及其后整体后移一位）。
+
+    内容由模型生成：优先用拆章任务单里该位的目标/钩子，叠加作者补充要点；
+    插入后章号、章节文件、台账、伏笔、拆章任务单全部重排。
+    """
+    chapters = state.get("chapters", []) or []
+    if not 1 <= idx <= len(chapters) + 1:
+        raise StageStopError(f"插入位置 {idx} 超出范围（1..{len(chapters) + 1}）")
+    ctx_prev = chapters[idx - 2] if idx >= 2 else None
+    ctx_next = chapters[idx - 1] if idx - 1 < len(chapters) else None
+    bits = []
+    if ctx_prev:
+        bits.append(f"上一章（第{ctx_prev['idx']}章）梗概：{ctx_prev.get('summary', '')}")
+    if ctx_next:
+        bits.append(f"下一章（第{ctx_next['idx']}章）梗概：{ctx_next.get('summary', '')}")
+    if note:
+        bits.append(f"本章要点（必须落实）：{note}")
+    text = _ask(state, _SYS_WRITER,
+                "请在两章之间插入一章正文，承接上文、铺垫下文，风格与前文一致。\n"
+                + "\n".join(bits)
+                + f"\n\n{_chapter_prompt(state, idx)}\n"
+                "正文前第一行输出章节标题。")
+    if len(text) < 50:
+        raise StageFail("插入章正文过短，已放弃")
+    title = _chapter_title(text, idx)
+    text = _strip_title(text, title)
+    issues, facts, fsh, closes = _review(state, text, idx)
+    _reindex_refs(state, idx, +1)              # 先整体后移，再落到 idx 位
+    chap = {"idx": idx, "title": title, "text": text,
+            "summary": text[:_MAX_WORDS].replace("\n", " "), "issues": issues}
+    chapters.insert(idx - 1, chap)
+    state["chapters"] = chapters
+    _rewrite_chapter_files(state, idx)         # 原第 idx 章起全部后移重写
+    _apply_ledger(state, idx, facts, fsh, closes)
+    _rebuild_md(state)
+    _rag_index_chapter(state, chap)
+    return chap
+
+
+def rename_book(state: dict, new_title: str) -> str:
+    """改书名：更新标题、重命名书稿目录、重建说明与总纲。"""
+    new_title = (new_title or "").strip()
+    if not new_title:
+        raise StageStopError("书名不能为空")
+    state["title"] = new_title
+    _rename_book_dir(state, new_title)
+    _rebuild_md(state)
+    return new_title
+
+
+_SYS_COMPLIANCE = (
+    "你是网文平台合规审校。逐项检查本章是否存在平台常见红线风险："
+    "1) 涉政敏感 2) 涉黄低俗 3) 血腥暴力过度 4) 违禁品/犯罪手法细节 "
+    "5) 赌博诈骗教程 6) 封建迷信宣扬 7) 真实人物或机构负面影射 "
+    "8) 涉未成年人不良情节。输出规则：每条风险一行"
+    "「等级(高/中/低)｜类型｜原文摘录(≤20字)｜建议改法」；本章无风险只输出「无」。"
+    "不要复述剧情，不要给整体评价。")
+
+
+def check_compliance(state: dict, ch_start: int, ch_end: int,
+                     on_event=None) -> str:
+    """逐章合规自检，产出「合规检查.md」；返回报告路径。"""
+    on_event = on_event or (lambda e: None)
+    chapters = [c for c in state.get("chapters", [])
+                if ch_start <= c["idx"] <= ch_end]
+    if not chapters:
+        raise StageStopError("所选范围没有已完成章节")
+    out = os.path.join(_book_dir(state), "合规检查.md")
+    high = 0
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(f"# 合规检查报告（第 {ch_start}-{ch_end} 章）\n\n")
+        for c in chapters:
+            rep = _ask(state, _SYS_COMPLIANCE,
+                       f"第{c['idx']}章《{c['title']}》正文：\n{c['text']}")
+            f.write(f"## 第{c['idx']}章《{c['title']}》\n\n{rep}\n\n")
+            if "高｜" in rep or "高|" in rep:
+                high += 1
+            on_event({"type": "compliance_chapter", "idx": c["idx"]})
+        f.write(f"\n---\n共检查 {len(chapters)} 章，含高风险 {high} 章。\n")
+    return out
+
+
+def compare_draft(state: dict, idx: int, model_keys: list[str]) -> list[dict]:
+    """同一章用多个模型出稿，存到 对比出稿/ 目录；返回
+    [{"model", "path", "words"}]。不改动正稿，供作者择优。"""
+    chapters = state.get("chapters", []) or []
+    if not 1 <= idx <= len(chapters):
+        raise StageStopError(f"第 {idx} 章不存在或尚未生成")
+    keys = [k for k in (model_keys or []) if k]
+    if len(keys) < 2:
+        raise StageStopError("对比出稿至少需要两个模型 key")
+    old = chapters[idx - 1]
+    prompt = (f"以下是第 {idx} 章《{old['title']}》原正文：\n{old['text']}\n\n"
+              + _chapter_prompt(state, idx)
+              + "\n请重写本章，输出完整新正文（正文前第一行是章节标题）。")
+    outdir = os.path.join(_book_dir(state), "对比出稿")
+    os.makedirs(outdir, exist_ok=True)
+    results = []
+    for key in keys:
+        model = _resolve_model(key)
+        if model is None:
+            raise StageStopError(f"模型未配置：{key}")
+        text = _ask_model(model, _SYS_WRITER, prompt)
+        if len(text) < 50:
+            raise StageFail(f"模型 {key} 出稿过短，已跳过")
+        text = _strip_title(text, old["title"])
+        safe = _safe_name(key.replace("/", "-")) or "model"
+        path = os.path.join(outdir, f"第{idx:04d}章-{safe}.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"# {old['title']}（{key}）\n\n{text}\n")
+        results.append({"model": key, "path": path, "words": len(text)})
+    return results
+
+
+_SYS_COMIC = (
+    "你是漫画分镜师。把小说章节改编为可直接交画的漫画分镜表。输出规则："
+    "每章先输出「## 第N章《标题》」标题行，然后输出 Markdown 表格，列为"
+    "「格号｜画面描述（人物/动作/表情/背景）｜台词或旁白｜镜头与构图（景别/角度）｜"
+    "出图提示词（英文，含风格、光线、构图关键词）」；每章 8-16 格。"
+    "只输出标题与表格，不解释、不评价。")
+_SYS_CAST = (
+    "你是漫画角色设定师。依据给定的角色设定，为每个角色输出一段"
+    "「出图提示词」（英文，用于图像生成）：包含年龄感、体型、发型发色、瞳色、"
+    "服装（常服/正式/战损三态）、标志性配饰、气质关键词、画风与光线。"
+    "格式：每个角色一段，首行「### 角色名」，随后一行英文提示词，"
+    "再一行中文要点（≤40字）。只输出这些，不解释。")
+
+
+def comic_adapt(state: dict, ch_start: int, ch_end: int,
+                on_event=None) -> str:
+    """把已完成章节改编为漫画分镜表（含出图提示词）；返回输出文件路径。"""
+    on_event = on_event or (lambda e: None)
+    chapters = [c for c in state.get("chapters", [])
+                if ch_start <= c["idx"] <= ch_end]
+    if not chapters:
+        raise StageStopError("所选范围没有已完成章节")
+    out_path = os.path.join(_book_dir(state), "漫画分镜.md")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(f"# 漫画分镜表（第 {ch_start}-{ch_end} 章）\n\n")
+        for c in chapters:
+            body = _ask(state, _SYS_COMIC,
+                        f"第 {c['idx']} 章《{c['title']}》正文：\n{c['text']}\n"
+                        "请输出该章漫画分镜表（含英文出图提示词）。")
+            f.write(f"\n{body}\n")
+            on_event({"type": "comic_chapter", "idx": c["idx"]})
+    return out_path
+
+
+def comic_cast(state: dict) -> str:
+    """按角色设定生成「角色设定图提示词」，保证跨格形象一致；返回文件路径。"""
+    cast = (state.get("characters") or "").strip()
+    if not cast:
+        raise StageStopError("还没有角色设定（先跑完「角色」阶段）")
+    body = _ask(state, _SYS_CAST,
+                f"角色设定：\n{cast}\n请为每个角色输出设定图提示词。")
+    out_path = os.path.join(_book_dir(state), "角色设定图.md")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(f"# 角色设定图提示词\n\n{body}\n")
+    return out_path
+
+
+def drama_new(idea: str, episodes: int, model_key: str,
+              on_event=None) -> dict:
+    """原创短剧（不依赖小说）：设定 + 分集梗概 + 第 1 集剧本。
+
+    返回 {"dir", "setting", "episodes", "script"} 路径字典。
+    """
+    on_event = on_event or (lambda e: None)
+    idea = (idea or "").strip()
+    if not idea:
+        raise StageStopError("请给一句灵感/题材")
+    n = max(1, min(int(episodes or 3), 100))
+    state = {"model_key": model_key}
+    root = os.path.join(os.path.dirname(_novels_root()), "短剧")
+    setting = _ask(state, _SYS_PLANNER,
+                   f"短剧灵感：{idea}\n请输出竖屏短剧设定：题材定位、核心卖点、"
+                   "目标观众、主角与对手一句话人设、前 3 集钩子策略、付费卡点节奏。"
+                   "分条输出，不写正文。")
+    title = _safe_name(_first_meaningful_line(setting) or idea)[:24] or "未命名短剧"
+    outdir = _unique_dir(os.path.join(root, title))
+    os.makedirs(outdir, exist_ok=True)
+    sp = os.path.join(outdir, "设定.md")
+    with open(sp, "w", encoding="utf-8") as f:
+        f.write(f"# {title} · 短剧设定\n\n灵感：{idea}\n\n{setting}\n")
+    on_event({"type": "drama_new_stage", "name": "setting"})
+
+    eps = _ask(state, _SYS_PLANNER,
+               f"短剧设定：\n{setting}\n\n请输出 {n} 集分集梗概，每集一行："
+               "「第N集《标题》钩子：… 冲突：… 结尾卡点：…」。只输出清单。")
+    ep = os.path.join(outdir, "分集梗概.md")
+    with open(ep, "w", encoding="utf-8") as f:
+        f.write(f"# {title} · 分集梗概（{n} 集）\n\n{eps}\n")
+    on_event({"type": "drama_new_stage", "name": "episodes"})
+
+    script = _ask(state, _SYS_DRAMA,
+                  f"短剧设定：\n{setting}\n\n分集梗概：\n{eps}\n\n"
+                  "请写出第 1 集完整竖屏短剧剧本：分场、人物对白（角色名：台词）、"
+                  "每场结尾「镜头：」行给出景别与时长；开场 30 秒内放钩子，"
+                  "结尾留强卡点。")
+    scr = os.path.join(outdir, "第01集-剧本.md")
+    with open(scr, "w", encoding="utf-8") as f:
+        f.write(f"# {title} · 第 1 集剧本\n\n{script}\n")
+    on_event({"type": "drama_new_stage", "name": "script"})
+    return {"dir": outdir, "setting": sp, "episodes": ep, "script": scr,
+            "title": title, "total": n}
+
+
+def _first_meaningful_line(text: str) -> str:
+    """取第一行有实质内容的文本（跳过标题符号与空行）。"""
+    for ln in (text or "").splitlines():
+        s = ln.strip().lstrip("#·-— \t")
+        s = re.sub(r"^(题材|定位|书名|标题)[:：]\s*", "", s)
+        if len(s) >= 2:
+            return s[:24]
+    return ""
+
+
 def drama_adapt(state: dict, ch_start: int, ch_end: int,
                 on_event=None) -> str:
-    """把已完成章节改编为竖屏短剧剧本+分镜；返回输出文件路径。"""
     on_event = on_event or (lambda e: None)
     chapters = [c for c in state.get("chapters", [])
                 if ch_start <= c["idx"] <= ch_end]
@@ -643,8 +1038,12 @@ def deconstruct(txt_path: str, model_key: str) -> str:
 
 
 def _ask(state: dict, system: str, user: str) -> str:
+    """按 state["model_key"] 调一次流式；见 _ask_model。"""
+    return _ask_model(_resolve_model(state.get("model_key")), system, user)
+
+
+def _ask_model(model, system: str, user: str) -> str:
     """一次流式调用，收集完整文本；空回复自动重试一次；LLMError 冒泡分级。"""
-    model = _resolve_model(state.get("model_key"))
     msgs = [{"role": "system", "content": system},
             {"role": "user", "content": user}]
     out = ""

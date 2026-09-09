@@ -512,3 +512,60 @@ def test_sync_self_heals_legacy_weiming_title(tmp_path, monkeypatch):
     assert "novels" not in Path(st["dir"]).parts[1:-1][-1:] or True
     # 目录归位到 _novels_root（不再双层嵌套）
     assert Path(st["dir"]).parent == tmp_path / "novels"
+
+
+# ---------------- 章号重排（drop / insert 的引用同步） ----------------
+
+def _reindex_fixture():
+    return {
+        "total_chapters": 3,
+        "ledger": ["第1章 a", "第2章 b", "第3章 c"],
+        "foreshadows": [{"text": "断剑", "open_ch": 2, "closed_ch": None},
+                        {"text": "旧约", "open_ch": 3, "closed_ch": None}],
+        "debts": [{"chapter": 2, "detail": "慢"}, {"chapter": 3, "detail": "快"}],
+        "chapter_plan": ("第1章《A》目标：x\n第2章《B》目标：y\n"
+                         "第3章《C》目标：z"),
+    }
+
+
+def test_reindex_drop_shifts_and_purges():
+    """删第 2 章：后续章号前移，被删章的台账/伏笔/任务行整条清除。"""
+    st = _reindex_fixture()
+    novel_chain._reindex_refs(st, 2, -1)
+    assert st["ledger"] == ["第1章 a", "第2章 c"]
+    assert st["foreshadows"] == [{"text": "旧约", "open_ch": 2, "closed_ch": None}]
+    assert st["debts"] == [{"chapter": 2, "detail": "快"}]
+    assert st["chapter_plan"] == "第1章《A》目标：x\n第2章《C》目标：z"
+
+
+def test_reindex_insert_shifts_only():
+    """第 2 位插章：>=2 的章号全部后移，总量 +1，条目一条不少。"""
+    st = _reindex_fixture()
+    novel_chain._reindex_refs(st, 2, +1)
+    assert st["ledger"] == ["第1章 a", "第3章 b", "第4章 c"]
+    assert [f["open_ch"] for f in st["foreshadows"]] == [3, 4]
+    assert [d["chapter"] for d in st["debts"]] == [3, 4]
+    assert st["chapter_plan"] == ("第1章《A》目标：x\n第3章《B》目标：y\n"
+                                  "第4章《C》目标：z")
+    assert st["total_chapters"] == 4
+
+
+def test_resolve_stage_accepts_label_and_key():
+    assert novel_chain.resolve_stage("characters") == "characters"
+    assert novel_chain.resolve_stage("角色") == "characters"
+    assert novel_chain.resolve_stage("节奏拆章") == "chapter_plan"
+    assert novel_chain.resolve_stage("不存在的阶段") == ""
+
+
+def test_book_stats_counts():
+    st = {"title": "T", "total_chapters": 10,
+          "chapters": [{"idx": 1, "text": "x" * 100},
+                       {"idx": 2, "text": "y" * 300}],
+          "foreshadows": [{"text": "a", "open_ch": 1, "closed_ch": None},
+                          {"text": "b", "open_ch": 2, "closed_ch": 2}],
+          "debts": [{"chapter": 2, "detail": "慢"}],
+          "ledger": ["第1章 a", "第2章 b"]}
+    s = novel_chain.book_stats(st)
+    assert (s["chapters"], s["planned"], s["words"]) == (2, 10, 400)
+    assert (s["avg"], s["shortest"], s["longest"]) == (200, 100, 300)
+    assert (s["debts"], s["open_foreshadows"], s["ledger"]) == (1, 1, 2)

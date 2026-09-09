@@ -4152,6 +4152,28 @@ class App:
     _COMMANDS = [
         ("/help", "cmd.help", "help"),
         ("/novel", "cmd.novel", "novel"),
+        # /novel 常用子命令快捷项：输入 /novel 即出现在弹窗里，选中插入
+        # "/novel start " 再补参数发送（派发仍按首词 /novel 处理）
+        ("/novel start", "cmd.novel_start", "novel"),
+        ("/novel ok", "cmd.novel_ok", "novel"),
+        ("/novel adjust", "cmd.novel_adjust", "novel"),
+        ("/novel stage", "cmd.novel_stage", "novel"),
+        ("/novel status", "cmd.novel_status", "novel"),
+        ("/novel stat", "cmd.novel_stat", "novel"),
+        ("/novel show", "cmd.novel_show", "novel"),
+        ("/novel ledger", "cmd.novel_ledger", "novel"),
+        ("/novel polish", "cmd.novel_polish", "novel"),
+        ("/novel drop", "cmd.novel_drop", "novel"),
+        ("/novel insert", "cmd.novel_insert", "novel"),
+        ("/novel rename", "cmd.novel_rename", "novel"),
+        ("/novel check", "cmd.novel_check", "novel"),
+        ("/novel compare", "cmd.novel_compare", "novel"),
+        ("/novel resume", "cmd.novel_resume", "novel"),
+        ("/novel drama", "cmd.novel_drama", "novel"),
+        ("/novel drama new", "cmd.novel_drama_new", "novel"),
+        ("/novel comic", "cmd.novel_comic", "novel"),
+        ("/novel comic cast", "cmd.novel_comic_cast", "novel"),
+        ("/novel publish", "cmd.novel_publish", "novel"),
         ("/brainstorm", "cmd.brainstorm", "brainstorm"),
         ("/plan", "cmd.plan", "plan"),
         ("/work", "cmd.work", "work"),
@@ -4365,7 +4387,8 @@ class App:
 
     def _novel_command(self, arg: str):
         """/novel 子命令：start <灵感> [章数] [auto] | use [pid] | ok | adjust <意见> |
-        stop | resume [pid] | status | drama 起-止 | rewrite N [反馈] | extend N |
+        stage <阶段> <意见> | ledger | stat | show N | stop | resume [pid] | status |
+        drama 起-止 | rewrite N [反馈] | polish|expand|condense N [要求] | extend N |
         cover | publish 格式 | deconstruct <txt>。
         各命令可用 [pid] 指定操作哪本书（省略=当前书）；默认逐阶段暂停供调定。"""
         import novel_chain
@@ -4416,6 +4439,26 @@ class App:
             self._novel_ok()
         elif head == "adjust":
             self._novel_adjust(rest.strip())   # 内部自取当前书（重启后可用）
+        elif head == "stage":
+            self._novel_stage(rest.strip())
+        elif head == "ledger":
+            self._novel_ledger(rest.strip())
+        elif head == "stat":
+            self._novel_stat()
+        elif head == "show":
+            self._novel_show(rest.strip())
+        elif head == "drop":
+            self._novel_drop(rest.strip())
+        elif head == "insert":
+            self._novel_insert(rest.strip())
+        elif head == "rename":
+            self._novel_rename(rest.strip())
+        elif head == "check":
+            self._novel_check(rest.strip())
+        elif head == "compare":
+            self._novel_compare(rest.strip())
+        elif head in novel_chain.REWORK_MODES:
+            self._novel_rework(head, rest.strip())
         elif head == "stop":
             if getattr(self, "_novel_pipe", None):
                 self._novel_pipe.request_stop()
@@ -4439,11 +4482,16 @@ class App:
             self._novel_busy = True
             self._novel_run(p)
         elif head == "drama":
+            if rest.strip().startswith("new"):
+                self._novel_drama_new(rest.strip()[3:].strip())
+                return
             p = getattr(self, "_novel_pipe", None)
             m = re.match(r"^(\d+)\s*-\s*(\d+)$", rest.strip())
             if not (p and p.state.get("chapters")) or not m:
                 self._set_status(_t("novel.no_chapters"))
-                self._append("⚠ " + _t("novel.no_chapters") + "\n", "denied")
+                self._append("⚠ " + _t("novel.no_chapters")
+                             + "；原创短剧用 /novel drama new <灵感> [集数]\n",
+                             "denied")
                 return
             self._novel_busy = True
 
@@ -4463,6 +4511,8 @@ class App:
                     self.root.after(0, lambda: setattr(
                         self, "_novel_busy", False))
             threading.Thread(target=drama_work, daemon=True).start()
+        elif head == "comic":
+            self._novel_comic(rest.strip())
         elif head == "extend":
             rest, pid = _split_pid(rest)
             p, err = self._novel_pick(pid)
@@ -4674,6 +4724,421 @@ class App:
             finally:
                 self.root.after(0, lambda: setattr(self, "_novel_busy", False))
         threading.Thread(target=adj_work, daemon=True).start()
+
+    def _novel_stage(self, rest: str):
+        """指定重做任一规划阶段：/novel stage <阶段> <意见>。
+
+        与 adjust 的区别：adjust 只作用于「刚完成的那个阶段」，本命令可点名
+        改卷战略、世界设定等任意已完成阶段（revise_stage 已支持 7 个阶段）。
+        """
+        import novel_chain
+        if getattr(self, "_novel_busy", False):
+            self._set_status(_t("novel.busy"))
+            return
+        m = re.match(r"^(\S+)\s+(.+)$", rest, re.S)
+        if not m:
+            self._append("💡 /novel stage <阶段> <意见>；阶段可用中文名（角色/节奏拆章）"
+                         "或英文键（characters/chapter_plan）\n", "meta")
+            return
+        stage = novel_chain.resolve_stage(m.group(1))
+        feedback = m.group(2).strip()
+        if not stage:
+            self._append("⚠ 未知阶段「" + m.group(1) + "」。可选："
+                         + "、".join(novel_chain.STAGE_LABELS.values()) + "\n",
+                         "denied")
+            return
+        key = novel_chain.STAGE_STATE_KEYS.get(stage, "")
+        p, err = self._novel_pick("")
+        if p is None:
+            self._set_status(_t("novel." + err) if err in
+                             ("none", "notfound") else _t("novel.none"))
+            return
+        if not (key and p.state.get(key)):
+            self._append("⚠ 阶段「" + novel_chain.STAGE_LABELS.get(stage, stage)
+                         + "」还没有产出，无法调整\n", "denied")
+            return
+        self._novel_busy = True
+        self._novel_pipe = p
+        self._novel_last_done = stage
+        label = novel_chain.STAGE_LABELS.get(stage, stage)
+
+        def work():
+            try:
+                novel_chain.revise_stage(p.state, stage, key, feedback)
+                self.root.after(0, lambda: self._append(
+                    "✅ 已按意见重做「" + label + "」，/novel ok 继续\n", "meta"))
+            except Exception as e:          # noqa: BLE001
+                self.root.after(0, lambda: self._append(
+                    "❌ " + str(e) + "\n", "denied"))
+            finally:
+                self.root.after(0, lambda: setattr(self, "_novel_busy", False))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _novel_ledger(self, rest: str):
+        """查看事实账本 / 伏笔台账 / 质量债：/novel ledger [全部]（默认最近 20 条）。"""
+        import novel_chain
+        p, err = self._novel_pick("")
+        if p is None:
+            self._set_status(_t("novel." + err) if err in
+                             ("none", "notfound") else _t("novel.none"))
+            return
+        st = p.state
+        show_all = rest.strip() in ("all", "全部", "-a")
+        led = st.get("ledger", []) or []
+        fsh = st.get("foreshadows", []) or []
+        debts = st.get("debts", []) or []
+        open_fsh = [f for f in fsh if not f.get("closed_ch")]
+        lines = ["📒 " + (st.get("title") or p.pid) + " 台账",
+                 f"· 事实/伏笔记录 {len(led)} 条，伏笔 {len(fsh)} 条"
+                 f"（未回收 {len(open_fsh)}），质量债 {len(debts)} 条"]
+        if open_fsh:
+            lines.append("— 未回收伏笔 —")
+            for f in open_fsh[-12:]:
+                lines.append(f"  · 第{f['open_ch']}章 {f['text']}")
+        if debts:
+            lines.append("— 质量债 —")
+            for d in debts[-12:]:
+                lines.append(f"  · 第{d['chapter']}章 {d['detail']}")
+        if led:
+            tail = led if show_all else led[-20:]
+            lines.append("— 事实账本" + ("" if show_all else "（最近 20 条，"
+                         "/novel ledger 全部 看全量）") + " —")
+            lines.extend("  · " + x for x in tail)
+        self._append("\n".join(lines) + "\n", "meta")
+
+    def _novel_stat(self):
+        """全书统计：章数/字数/均章/质量债/未回收伏笔。"""
+        import novel_chain
+        p, err = self._novel_pick("")
+        if p is None:
+            self._set_status(_t("novel." + err) if err in
+                             ("none", "notfound") else _t("novel.none"))
+            return
+        s = novel_chain.book_stats(p.state)
+        done = s["chapters"]
+        plan = s["planned"] or done
+        pct = int(done * 100 / plan) if plan else 0
+        self._append(
+            f"📊 {s['title'] or p.pid}\n"
+            f"· 进度 {done}/{plan} 章（{pct}%）｜总字数 {s['words']:,}\n"
+            f"· 均章 {s['avg']:,} 字｜最短 {s['shortest']:,}｜最长 {s['longest']:,}\n"
+            f"· 质量债 {s['debts']} 条｜未回收伏笔 {s['open_foreshadows']} 条"
+            f"｜台账 {s['ledger']} 条\n", "meta")
+
+    def _novel_show(self, rest: str):
+        """预览章节正文：/novel show N [字数上限]（默认 2000 字，防刷屏）。"""
+        import novel_chain
+        p, err = self._novel_pick("")
+        if p is None:
+            self._set_status(_t("novel." + err) if err in
+                             ("none", "notfound") else _t("novel.none"))
+            return
+        m = re.match(r"^(\d+)(?:\s+(\d+))?$", rest.strip())
+        chapters = p.state.get("chapters", []) or []
+        if not m or not chapters:
+            self._append("💡 /novel show <章号> [字数上限]，当前已完成 "
+                         f"{len(chapters)} 章\n", "meta")
+            return
+        idx = int(m.group(1))
+        cap = int(m.group(2)) if m.group(2) else 2000
+        chap = next((c for c in chapters if c["idx"] == idx), None)
+        if not chap:
+            self._append(f"⚠ 第 {idx} 章不存在（已完成 {len(chapters)} 章）\n",
+                         "denied")
+            return
+        text = chap.get("text", "")
+        body = text[:cap]
+        more = f"\n…（共 {len(text):,} 字，已显示前 {cap} 字，"
+        more += "/novel show %d %d 看更多）" % (idx, cap * 2)
+        self._append(f"📖 第 {idx} 章《{chap.get('title', '')}》\n"
+                     + body + (more if len(text) > cap else "") + "\n",
+                     "toolresult")
+
+    def _novel_drop(self, rest: str):
+        """删除章节：/novel drop N [@pid]（后续章号前移，台账同步）。"""
+        import novel_chain
+        if getattr(self, "_novel_busy", False):
+            self._set_status(_t("novel.busy"))
+            return
+        rest, pid = _split_pid(rest)
+        p, err = self._novel_pick(pid)
+        if p is None:
+            self._set_status(_t("novel." + err) if err in
+                             ("none", "notfound") else _t("novel.none"))
+            return
+        m = re.match(r"^(\d+)$", rest.strip())
+        if not m:
+            self._append("💡 /novel drop <章号>（删除该章，后续章号前移）\n", "meta")
+            return
+        idx = int(m.group(1))
+        chapters = p.state.get("chapters", []) or []
+        chap = next((c for c in chapters if c["idx"] == idx), None)
+        if not chap:
+            self._append(f"⚠ 第 {idx} 章不存在（已完成 {len(chapters)} 章）\n",
+                         "denied")
+            return
+        try:
+            res = novel_chain.drop_chapter(p.state, idx)
+            p.save()                    # 立即落盘，防崩溃丢状态
+        except Exception as e:          # noqa: BLE001
+            self._append("❌ " + str(e) + "\n", "denied")
+            return
+        self._append(f"🗑 已删除第 {idx} 章《{chap['title']}》，"
+                     f"剩余 {res['remaining']} 章（章号已重排）\n", "meta")
+
+    def _novel_insert(self, rest: str):
+        """插入章节：/novel insert N [要点]（原第 N 章及之后整体后移）。"""
+        import novel_chain
+        if getattr(self, "_novel_busy", False):
+            self._set_status(_t("novel.busy"))
+            return
+        rest, pid = _split_pid(rest)
+        p, err = self._novel_pick(pid)
+        if p is None:
+            self._set_status(_t("novel." + err) if err in
+                             ("none", "notfound") else _t("novel.none"))
+            return
+        m = re.match(r"^(\d+)(?:\s+(.*))?$", rest.strip())
+        if not m:
+            self._append("💡 /novel insert <位置> [本章要点]\n", "meta")
+            return
+        idx, note = int(m.group(1)), (m.group(2) or "").strip()
+        self._novel_busy = True
+
+        def work():
+            try:
+                chap = novel_chain.insert_chapter(p.state, idx, note)
+                p.save()
+                msg = (f"➕ 已插入第 {idx} 章《{chap['title']}》"
+                       f"（{len(chap['text']):,} 字），后续章号已后移\n")
+                self.root.after(0, lambda: self._append(msg, "toolresult"))
+            except Exception as e:      # noqa: BLE001
+                self.root.after(0, lambda: self._append(
+                    "❌ " + str(e) + "\n", "denied"))
+            finally:
+                self.root.after(0, lambda: setattr(self, "_novel_busy", False))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _novel_rename(self, rest: str):
+        """改书名：/novel rename <新书名>（书稿目录随之改名）。"""
+        import novel_chain
+        new_title = rest.strip().strip('"“”')
+        if not new_title:
+            self._append("💡 /novel rename <新书名>\n", "meta")
+            return
+        p, err = self._novel_pick("")
+        if p is None:
+            self._set_status(_t("novel." + err) if err in
+                             ("none", "notfound") else _t("novel.none"))
+            return
+        try:
+            t = novel_chain.rename_book(p.state, new_title)
+            p.save()
+        except Exception as e:          # noqa: BLE001
+            self._append("❌ " + str(e) + "\n", "denied")
+            return
+        self._append(f"✏️ 书名已改为《{t}》，书稿目录："
+                     f"{p.state.get('dir', '')}\n", "meta")
+
+    def _novel_check(self, rest: str):
+        """合规自检：/novel check [起-止]（默认全部已完成章节）。"""
+        import novel_chain
+        if getattr(self, "_novel_busy", False):
+            self._set_status(_t("novel.busy"))
+            return
+        p, err = self._novel_pick("")
+        if p is None:
+            self._set_status(_t("novel." + err) if err in
+                             ("none", "notfound") else _t("novel.none"))
+            return
+        chapters = p.state.get("chapters", []) or []
+        if not chapters:
+            self._append("⚠ 还没有已完成的章节\n", "denied")
+            return
+        m = re.match(r"^(\d+)\s*-\s*(\d+)$", rest.strip())
+        lo = int(m.group(1)) if m else chapters[0]["idx"]
+        hi = int(m.group(2)) if m else chapters[-1]["idx"]
+        self._novel_busy = True
+
+        def work():
+            try:
+                out = novel_chain.check_compliance(
+                    p.state, lo, hi,
+                    on_event=lambda e: self.root.after(
+                        0, lambda: self._append(
+                            f"· 第 {e['idx']} 章已检查\n", "meta")))
+                msg = f"✅ 合规检查完成：{out}\n"
+                self.root.after(0, lambda: self._append(msg, "meta"))
+            except Exception as e:      # noqa: BLE001
+                self.root.after(0, lambda: self._append(
+                    "❌ " + str(e) + "\n", "denied"))
+            finally:
+                self.root.after(0, lambda: setattr(self, "_novel_busy", False))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _novel_compare(self, rest: str):
+        """多模型对比出稿：/novel compare N <模型key> <模型key> [...]。"""
+        import novel_chain
+        if getattr(self, "_novel_busy", False):
+            self._set_status(_t("novel.busy"))
+            return
+        p, err = self._novel_pick("")
+        if p is None:
+            self._set_status(_t("novel." + err) if err in
+                             ("none", "notfound") else _t("novel.none"))
+            return
+        parts = rest.split()
+        if len(parts) < 3 or not parts[0].isdigit():
+            self._append("💡 /novel compare <章号> <模型key> <模型key> …"
+                         "（至少两个模型，key 见模型菜单 provider/model）\n", "meta")
+            return
+        idx, keys = int(parts[0]), parts[1:]
+        self._novel_busy = True
+
+        def work():
+            try:
+                rows = novel_chain.compare_draft(p.state, idx, keys)
+                lines = [f"🧪 第 {idx} 章对比出稿（{len(rows)} 份，未改动正稿）"]
+                lines += [f"· {r['model']}：{r['words']:,} 字 → {r['path']}"
+                          for r in rows]
+                lines.append("择优后用 /novel rewrite " + str(idx)
+                             + " [反馈] 把选定写法落回正稿")
+                msg = "\n".join(lines) + "\n"
+                self.root.after(0, lambda: self._append(msg, "toolresult"))
+            except Exception as e:      # noqa: BLE001
+                self.root.after(0, lambda: self._append(
+                    "❌ " + str(e) + "\n", "denied"))
+            finally:
+                self.root.after(0, lambda: setattr(self, "_novel_busy", False))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _novel_rework(self, mode: str, rest: str):
+        """单章润色/扩写/精简：/novel polish|expand|condense N [要求]。"""
+        import novel_chain
+        if getattr(self, "_novel_busy", False):
+            self._set_status(_t("novel.busy"))
+            return
+        m = re.match(r"^(\d+)(?:\s+(.*))?$", rest.strip())
+        p, err = self._novel_pick("")
+        if p is None:
+            self._set_status(_t("novel." + err) if err in
+                             ("none", "notfound") else _t("novel.none"))
+            return
+        if not m or not p.state.get("chapters"):
+            self._append(f"💡 /novel {mode} <章号> [要求]，"
+                         f"当前已完成 {len(p.state.get('chapters', []))} 章\n",
+                         "meta")
+            return
+        idx, fb = int(m.group(1)), (m.group(2) or "").strip()
+        tip = novel_chain._REWORK_TIP.get(mode, mode)
+        self._novel_busy = True
+
+        def work():
+            try:
+                chap = novel_chain.rework_chapter(p.state, idx, mode, fb)
+                msg = (f"✅ 第 {chap['idx']} 章《{chap['title']}》{tip}完成"
+                       f"（{len(chap['text']):,} 字）\n")
+                self.root.after(0, lambda: self._append(msg, "toolresult"))
+            except Exception as e:          # noqa: BLE001
+                self.root.after(0, lambda: self._append(
+                    "❌ " + str(e) + "\n", "denied"))
+            finally:
+                self.root.after(0, lambda: setattr(self, "_novel_busy", False))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _novel_comic(self, rest: str):
+        """漫画分镜：/novel comic 起-止（分镜表+出图提示词）｜ /novel comic cast 角色设定图。"""
+        import novel_chain
+        if getattr(self, "_novel_busy", False):
+            self._set_status(_t("novel.busy"))
+            return
+        p, err = self._novel_pick("")
+        if p is None:
+            self._set_status(_t("novel." + err) if err in
+                             ("none", "notfound") else _t("novel.none"))
+            return
+        if rest in ("cast", "角色", "设定图"):
+            if not (p.state.get("characters") or "").strip():
+                self._append("⚠ 还没有角色设定（先跑完「角色」阶段）\n", "denied")
+                return
+            self._novel_busy = True
+
+            def cast_work():
+                try:
+                    out = novel_chain.comic_cast(p.state)
+                    msg = f"🎨 角色设定图提示词：{out}\n"
+                    self.root.after(0, lambda: self._append(msg, "meta"))
+                except Exception as e:      # noqa: BLE001
+                    self.root.after(0, lambda: self._append(
+                        "❌ " + str(e) + "\n", "denied"))
+                finally:
+                    self.root.after(0, lambda: setattr(
+                        self, "_novel_busy", False))
+            threading.Thread(target=cast_work, daemon=True).start()
+            return
+        chapters = p.state.get("chapters", []) or []
+        m = re.match(r"^(\d+)\s*-\s*(\d+)$", rest)
+        if not (chapters and m):
+            self._append("💡 /novel comic <起>-<止> 生成分镜表；"
+                         "/novel comic cast 生成角色设定图提示词\n", "meta")
+            return
+        lo, hi = int(m.group(1)), int(m.group(2))
+        self._novel_busy = True
+
+        def comic_work():
+            try:
+                out = novel_chain.comic_adapt(
+                    p.state, lo, hi,
+                    on_event=lambda e: self.root.after(
+                        0, lambda: self._append(
+                            f"🎬 第 {e['idx']} 章分镜完成\n", "meta")))
+                msg = f"✅ 漫画分镜表：{out}\n"
+                self.root.after(0, lambda: self._append(msg, "meta"))
+            except Exception as e:          # noqa: BLE001
+                self.root.after(0, lambda: self._append(
+                    "❌ " + str(e) + "\n", "denied"))
+            finally:
+                self.root.after(0, lambda: setattr(self, "_novel_busy", False))
+        threading.Thread(target=comic_work, daemon=True).start()
+
+    def _novel_drama_new(self, rest: str):
+        """原创短剧：/novel drama new <灵感> [集数]（设定+分集梗概+第1集剧本）。"""
+        import novel_chain
+        if getattr(self, "_novel_busy", False):
+            self._set_status(_t("novel.busy"))
+            return
+        m = re.match(r"^(.*?)(?:\s+(\d{1,3}))?$", rest.strip(), re.S)
+        idea = (m.group(1) or "").strip() if m else ""
+        eps = int(m.group(2)) if (m and m.group(2)) else 3
+        if not idea:
+            self._append("💡 /novel drama new <一句灵感> [集数]，"
+                         "如：/novel drama new 重生复仇爽剧 12\n", "meta")
+            return
+        if not self.current_model:
+            self._set_status(_t("novel.need_model"))
+            self._append("⚠ " + _t("novel.need_model") + "\n", "denied")
+            return
+        model_key = self.current_model.key
+        self._novel_busy = True
+
+        def work():
+            try:
+                res = novel_chain.drama_new(
+                    idea, eps, model_key,
+                    on_event=lambda e: self.root.after(
+                        0, lambda: self._append(
+                            f"· 短剧阶段完成：{e['name']}\n", "meta")))
+                msg = (f"🎬 短剧《{res['title']}》已建（{res['total']} 集规划）\n"
+                       f"· 设定：{res['setting']}\n"
+                       f"· 分集梗概：{res['episodes']}\n"
+                       f"· 第 1 集剧本：{res['script']}\n")
+                self.root.after(0, lambda: self._append(msg, "meta"))
+            except Exception as e:          # noqa: BLE001
+                self.root.after(0, lambda: self._append(
+                    "❌ " + str(e) + "\n", "denied"))
+            finally:
+                self.root.after(0, lambda: setattr(self, "_novel_busy", False))
+        threading.Thread(target=work, daemon=True).start()
 
     def _novel_run(self, p, until=None):
         """在 daemon 线程跑流水线；徽标转「进行中」，事件回主线程。"""

@@ -25,14 +25,15 @@ def show(app):
     except Exception:                # noqa: BLE001
         pass
     win.transient(app.root)
-    # 居中于主窗口
-    win.geometry("620x560")
+    # 居中于主窗口（创作流程章节加入后内容变长，窗口同步加高）
+    _W, _H = 660, 680
+    win.geometry(f"{_W}x{_H}")
     win.update_idletasks()
     mw, mh = app.root.winfo_width(), app.root.winfo_height()
     tx, ty = app.root.winfo_rootx(), app.root.winfo_rooty()
-    gx = tx + max(0, (mw - 620) // 2)
-    gy = ty + max(0, (mh - 560) // 2)
-    win.geometry("620x560+%d+%d" % (gx, gy))
+    gx = tx + max(0, (mw - _W) // 2)
+    gy = ty + max(0, (mh - _H) // 2)
+    win.geometry("%dx%d+%d+%d" % (_W, _H, gx, gy))
     # 无边框 + transient 的窗口容易开在主窗后面（看起来像点击没反应）：
     # 先抬到主窗之上并抢焦点，再模态锁定
     win.update_idletasks()
@@ -57,8 +58,11 @@ def show(app):
     box = scrolledtext.ScrolledText(win, wrap="word", font=(FONT_UI, 10),
                                     relief="flat", padx=14, pady=12)
     box.insert("1.0", _t("help.text"))
+    # 创作流程独立章节（网文 / 短剧 / 漫画 的命令与操作过程）
+    box.insert("end", "\n\n" + _t("help.create_title") + "\n")
+    box.insert("end", _t("help.create_text") + "\n")
     # 斜杠命令清单：从 app._COMMANDS 动态生成，新增命令自动出现在帮助里
-    box.insert("end", "\n\n" + _t("help.cmds_title") + "\n")
+    box.insert("end", "\n" + _t("help.cmds_title") + "\n")
     for cmd, dkey, _k in getattr(app, "_COMMANDS", []):
         box.insert("end", "  %s   %s\n" % (cmd, _t(dkey)))
     # 版权 / 开发者信息（GitHub 链接可点击）

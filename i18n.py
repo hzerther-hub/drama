@@ -760,17 +760,69 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "cmd.compact":  {"en": "Compact context", "zh": "压缩上下文"},
     "cmd.novel":    {"en": "Write a novel: workbench (auto-director)",
                      "zh": "写小说：开书工作台（自动导演整本生产）"},
+    "cmd.novel_start": {"en": "Start a book: /novel start <idea> [chapters] [auto]",
+                        "zh": "起书：/novel start <一句灵感> [章数] [auto]"},
+    "cmd.novel_ok": {"en": "Approve paused stage and continue",
+                     "zh": "当前阶段通过，继续下一阶段"},
+    "cmd.novel_adjust": {"en": "Redo paused stage: /novel adjust <feedback>",
+                         "zh": "按意见重做当前阶段：/novel adjust <修改意见>"},
+    "cmd.novel_stage": {"en": "Redo any stage: /novel stage <stage> <feedback>",
+                        "zh": "点名重做任一阶段：/novel stage <阶段> <意见>"},
+    "cmd.novel_stat": {"en": "Book stats: chapters / words / debts / foreshadows",
+                       "zh": "全书统计：章数 / 字数 / 质量债 / 未回收伏笔"},
+    "cmd.novel_show": {"en": "Preview a chapter: /novel show <n> [chars]",
+                       "zh": "预览章节正文：/novel show <章号> [字数上限]"},
+    "cmd.novel_ledger": {"en": "Fact ledger & foreshadow tracker",
+                         "zh": "事实账本 / 伏笔台账 / 质量债"},
+    "cmd.novel_polish": {"en": "Polish/expand/condense a chapter: polish|expand|condense N",
+                         "zh": "单章润色/扩写/精简：polish|expand|condense 章号"},
+    "cmd.novel_drop": {"en": "Delete a chapter: /novel drop <n>",
+                       "zh": "删除章节：/novel drop <章号>（后续章号前移）"},
+    "cmd.novel_insert": {"en": "Insert a chapter: /novel insert <n> [notes]",
+                         "zh": "插入章节：/novel insert <位置> [本章要点]"},
+    "cmd.novel_rename": {"en": "Rename the book: /novel rename <title>",
+                         "zh": "改书名：/novel rename <新书名>（书稿目录随之改名）"},
+    "cmd.novel_check": {"en": "Compliance self-check: /novel check [a-b]",
+                        "zh": "合规自检：/novel check [起-止]（产出合规检查.md）"},
+    "cmd.novel_compare": {"en": "Multi-model draft compare: /novel compare N <key> <key>",
+                          "zh": "多模型对比出稿：/novel compare 章号 <模型key> <模型key>"},
+    "cmd.novel_comic": {"en": "Comic panel script: /novel comic <a>-<b> | comic cast",
+                        "zh": "漫画分镜：/novel comic 起-止（分镜表+出图提示词）｜comic cast 角色设定图"},
+    "cmd.novel_drama_new": {"en": "Original short drama: /novel drama new <idea> [episodes]",
+                            "zh": "原创短剧：/novel drama new <灵感> [集数]（设定+分集梗概+第1集剧本）"},
+    "cmd.novel_comic_cast": {"en": "Character-sheet image prompts: /novel comic cast",
+                             "zh": "角色设定图提示词：/novel comic cast（锁定外形，跨格一致）"},
+    "cmd.novel_status": {"en": "Show pipeline progress / current stage",
+                         "zh": "查看流水线进度 / 当前阶段"},
+    "cmd.novel_resume": {"en": "Resume a paused/failed book",
+                         "zh": "恢复暂停/失败的书"},
+    "cmd.novel_drama": {"en": "Short-drama adaptation: /novel drama <start>-<end>",
+                        "zh": "短剧改编：/novel drama 起-止（章节→剧本+分镜）"},
+    "cmd.novel_publish": {"en": "Export/publish: /novel publish txt|md|epub|html|wattpad|webhook",
+                          "zh": "导出/发布：/novel publish txt|md|epub|html|wattpad|webhook"},
     "novel.started": {"en": "Pipeline started ({pid})", "zh": "流水线已启动（{pid}）"},
     "novel.badge_running": {"en": "Writing", "zh": "写小说中"},
     "novel.status_running": {"en": "✍ Novel production running…", "zh": "✍ 小说生产进行中…"},
     "novel.pause_review": {"en": "⏸ 「{stage}」done, paused", "zh": "⏸ 「{stage}」完成，已暂停"},
     "novel.usage":  {"en": "Sub: start <idea> [chapters] | use [pid] | ok | adjust <fb> | "
-                          "status | stop | resume [pid] | drama a-b | rewrite N [fb] | "
+                          "stage <stage> <fb> | stat | show <n> | ledger | drop <n> | "
+                          "insert <n> [notes] | rename <title> | check [a-b] | "
+                          "compare <n> <key> <key> | "
+                          "status | stop | resume [pid] | drama a-b | drama new <idea> [eps] | "
+                          "comic a-b | comic cast | rewrite N [fb] | "
+                          "polish|expand|condense N [fb] | "
                           "extend N | cover | publish <fmt> | deconstruct <file>"
                           "（用 @pid 指定书，如 extend 30 @novel-20260908）",
                      "zh": "子命令：start <一句灵感> [章数] | use [pid] 切换书 | ok | "
-                           "adjust <意见> | status | stop | resume [pid] | drama 起-止 | "
-                           "rewrite 章号 [反馈] | extend 加写N章 | cover | publish 格式 | "
+                           "adjust <意见> | stage <阶段> <意见> 点名重做 | stat 统计 | "
+                           "show 章号 预览 | ledger 台账 | drop 章号 删章 | "
+                           "insert 位置 [要点] 插章 | rename 新书名 | check [起-止] 合规检查 | "
+                           "compare 章号 模型key 模型key 对比出稿 | "
+                           "status | stop | resume [pid] | drama 起-止 | "
+                           "drama new <灵感> [集数] 原创短剧 | comic 起-止 分镜 | "
+                           "comic cast 角色设定图 | "
+                           "rewrite 章号 [反馈] | polish/expand/condense 章号 [要求] | "
+                           "extend 加写N章 | cover | publish 格式 | "
                            "deconstruct <txt>（末尾加 @pid 指定书，如 extend 30 @novel-20260908）"},
     "novel.img_need": {"en": "Image service not configured (LAS_IMAGE_BASE_URL / LAS_IMAGE_MODEL)",
                        "zh": "未配置图像服务（LAS_IMAGE_BASE_URL / LAS_IMAGE_MODEL）"},
@@ -846,6 +898,134 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
                         "zh": "好的，我已根据摘要恢复上下文，请继续。"},
     "help.cmds_title": {"en": "Slash commands (type / in the input box):",
                         "zh": "斜杠命令（在输入框输入 / 触发）："},
+    "help.create_title": {"en": "Creation workflow — web novel / short drama / comic:",
+                          "zh": "创作流程 —— 网文 / 短剧 / 漫画："},
+    "help.create_text": {
+        "en": """All creation starts from /novel. A book lives in novels/<title>/ as
+plain files, so drafts survive the chat.
+
+[1. Web novel — serialized fiction]
+  /novel start <idea> [chapters] [auto]
+      Start a book. Default = pause after every stage for your review;
+      append "auto" to run all stages without stopping. Chapters default 3, max 999.
+      Stages: setup → outline → world → contract → characters → volume →
+      chapter plan → chapter writing.
+  /novel ok              accept the paused stage and continue
+  /novel adjust <note>   redo the paused stage per your note
+  /novel stage <stage> <note>
+      Redo ANY planning stage by name (world / characters / volume / chapter_plan,
+      or Chinese labels) — adjust only touches the stage just finished.
+  /novel status          list books / progress
+  /novel stat            chapter count, word count, debts, open foreshadows
+  /novel show N [chars]  preview chapter N (default 2000 chars)
+  /novel ledger [all]    fact ledger / foreshadow tracker / quality debts
+  /novel stop            stop (finishes the current chapter, then pauses)
+  /novel resume [pid]    resume a paused/failed book (works after restart)
+  /novel use [pid]       switch which book later commands act on
+  /novel rewrite N [fb]  rewrite chapter N (optional feedback)
+  /novel polish|expand|condense N [fb]
+      Light rework of chapter N: polish wording / expand detail / condense.
+  /novel drop N          delete chapter N (later chapters renumber)
+  /novel insert N [notes]
+      Insert a chapter at position N (generated; later chapters shift down)
+  /novel rename <title>  rename the book (its folder is renamed too)
+  /novel check [a-b]     compliance self-check → 合规检查.md
+  /novel compare N <key> <key>
+      Draft chapter N with several models side by side → 对比出稿/ (main draft untouched)
+  /novel extend N        add N more chapters to a finished book
+  /novel deconstruct <file.txt>
+      Break down an existing work: genre / structure / characters / world /
+      writing style report — study what makes a hit before you start.
+  Output: novels/<title>/ with chapter text, review reports, 书籍说明.md
+
+[2. Short drama — vertical script + shots]
+  /novel drama <start>-<end>
+      Adapt finished chapters into a vertical short-drama script: scenes,
+      dialogue, and a camera line per scene (shot size / duration).
+  /novel drama new <idea> [episodes]
+      Start an ORIGINAL short drama (no novel needed): setting + per-episode
+      outline + full episode-1 script, under 短剧/<title>/.
+  Output: 短剧改编.md inside the book folder (adaptation) or 短剧/<title>/ (original).
+
+[3. Comic — panel script]
+  /novel comic <start>-<end>
+      Turn finished chapters into a panel table: panel no. / description /
+      dialogue / camera & composition / English image prompt → 漫画分镜.md
+  /novel comic cast
+      Character-sheet image prompts from the character settings, so the look
+      stays consistent across panels → 角色设定图.md
+  Then generate panel images with the image service
+  (LAS_IMAGE_BASE_URL / LAS_IMAGE_MODEL / LAS_IMAGE_API_KEY, same as /novel cover).
+
+[4. Publish]
+  /novel cover                       generate a cover (needs the image service)
+  /novel publish txt|md|epub|html|wattpad|webhook [start-end]
+      Export or push. wattpad needs LAS_PUBLISH_WATTPAD_TOKEN;
+      webhook needs LAS_PUBLISH_WEBHOOK_URL.
+
+Tip: append @pid to target a specific book, e.g. /novel extend 30 @novel-20260908.""",
+        "zh": """创作入口统一是 /novel。每本书落在 novels/<书名>/ 目录里，是普通文件，
+对话关掉稿子也还在。
+
+【一、网文（长篇连载）】
+  /novel start <一句灵感> [章数] [auto]
+      起书。默认每完成一个阶段就暂停，等你调定后再继续；
+      末尾加 auto 则一口气跑完。章数默认 3，上限 999。
+      阶段顺序：项目设定 → 宏观规划 → 本书世界 → 故事合约 → 角色 →
+      卷战略 → 节奏拆章 → 章节执行。
+  /novel ok              当前阶段没问题，继续下一阶段
+  /novel adjust <修改意见>  按你的意见重做当前阶段
+  /novel stage <阶段> <意见>
+      点名重做任意规划阶段（world / characters / volume / chapter_plan，
+      也可写中文名）——adjust 只管「刚完成的那个阶段」，本命令不受此限制。
+  /novel status          列出所有书 / 进度
+  /novel stat            章数、字数、质量债、未回收伏笔统计
+  /novel show 章号 [字数]  预览章节正文（默认显示 2000 字）
+  /novel ledger [全部]    事实账本 / 伏笔台账 / 质量债
+  /novel stop            停止（当前章写完后暂停）
+  /novel resume [pid]    恢复暂停/失败的书（重启后依然可用）
+  /novel use [pid]       切换后续命令操作哪本书
+  /novel rewrite 章号 [反馈]  重写第 N 章（可附修改反馈）
+  /novel polish|expand|condense 章号 [要求]
+      单章轻量加工：润色语言 / 扩写细节 / 精简篇幅（剧情事实不动）
+  /novel drop 章号        删除该章（后续章号自动前移）
+  /novel insert 位置 [要点]  插入一章（模型生成，原位置及之后整体后移）
+  /novel rename <新书名>   改书名（书稿目录随之改名）
+  /novel check [起-止]    合规自检 → 书目录下 合规检查.md
+  /novel compare 章号 模型key 模型key
+      同章多模型对比出稿 → 书目录下 对比出稿/（不动正稿，择优后再 rewrite）
+  /novel extend N        给已完成的书加写 N 章
+  /novel deconstruct <txt文件>
+      拆书：题材定位 / 剧情结构 / 人物 / 世界观 / 写法特征报告，
+      开书前先研究爆款怎么写的。
+  产物：novels/<书名>/ 目录，含章节正文、审查报告、书籍说明.md
+
+【二、短剧（竖屏剧本 + 分镜）】
+  /novel drama 起-止
+      把已完成章节改编为竖屏短剧剧本：分场、对白，每场结尾带镜头行
+      （景别 / 时长）。前提是书里已有写好的章节。
+  /novel drama new <灵感> [集数]
+      从零原创一部短剧（不需要小说）：设定 + 分集梗概 + 第 1 集完整剧本，
+      落在 短剧/<剧名>/ 目录。
+  产物：书目录下 短剧改编.md（改编）或 短剧/<剧名>/（原创）
+
+【三、漫画（分镜脚本）】
+  /novel comic 起-止
+      把已完成章节改编为漫画分镜表：格号 / 画面描述 / 台词 / 镜头构图 /
+      英文出图提示词 → 书目录下 漫画分镜.md
+  /novel comic cast
+      按角色设定生成「角色设定图提示词」，锁定外形，保证跨格形象一致
+      → 书目录下 角色设定图.md
+  再按分镜表用图像服务逐格出图（配置 LAS_IMAGE_BASE_URL /
+  LAS_IMAGE_MODEL / LAS_IMAGE_API_KEY，与 /novel cover 同一个服务）。
+
+【四、发布】
+  /novel cover                       生成封面（需配置图像服务）
+  /novel publish txt|md|epub|html|wattpad|webhook [起-止]
+      导出或推送。wattpad 需 LAS_PUBLISH_WATTPAD_TOKEN；
+      webhook 需 LAS_PUBLISH_WEBHOOK_URL。
+
+提示：命令末尾加 @pid 可指定某本书，如 /novel extend 30 @novel-20260908。"""},
     "help.copyright_title": {"en": "© Developer / Copyright", "zh": "© 开发者 / 版权"},
     "help.copyright": {"en": "Developer: 王海滨 (Wang Haibin)\n"
                              "Email: tbz@qq.com\n"
