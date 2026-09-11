@@ -781,6 +781,7 @@ def drop_chapter(state: dict, idx: int) -> dict:
     state["chapters"] = chapters
     _rewrite_chapter_files(state, idx)         # 删旧名 + 按新章号写回
     _reindex_refs(state, idx, -1)
+    _sync_review_reports(state)                # 被删章的报告清掉、后续章号对齐
     _rebuild_md(state)
     return {"dropped": victim["title"], "remaining": len(chapters)}
 
@@ -813,12 +814,18 @@ def insert_chapter(state: dict, idx: int, note: str = "") -> dict:
     title = _chapter_title(text, idx)
     text = _strip_title(text, title)
     issues, facts, fsh, closes = _review(state, text, idx)
-    _reindex_refs(state, idx, +1)              # 先整体后移，再落到 idx 位
+    _reindex_refs(state, idx, +1)              # 台账/伏笔/债/拆章单后移
+    # 原第 idx 章及之后的章号先整体后移——_reindex_refs 只重排台账/伏笔/
+    # 拆章单等引用，chapters 列表自身的 idx 字段必须在这里显式后移，
+    # 否则新旧两章共享同一章号（文件互相覆盖、RAG/审校报告全部错位）。
+    for c in chapters[idx - 1:]:
+        c["idx"] = int(c.get("idx") or 0) + 1
     chap = {"idx": idx, "title": title, "text": text,
             "summary": text[:_MAX_WORDS].replace("\n", " "), "issues": issues}
     chapters.insert(idx - 1, chap)
     state["chapters"] = chapters
     _rewrite_chapter_files(state, idx)         # 原第 idx 章起全部后移重写
+    _sync_review_reports(state)
     _apply_ledger(state, idx, facts, fsh, closes)
     _rebuild_md(state)
     _rag_index_chapter(state, chap)
@@ -1365,6 +1372,33 @@ def _write_review_report(state: dict, chap: dict):
         f.write("\n".join(lines))
 
 
+def _sync_review_reports(state: dict):
+    """审查报告目录与 state 全量对齐（章号重排后防孤儿/错位文件）。
+
+    以 state 里「有问题的章」为准：需要的重写，多余的（被删章、旧章号）
+    删除。drop/insert 之后调用，报告永远指向正确的章。
+    """
+    rd = os.path.join(_book_dir(state), _DIR_REVIEW)
+    want = {}                                # 文件名 → 章节
+    for c in state.get("chapters", []) or []:
+        if c.get("issues"):
+            name = re.sub(r"^第[0-9一二三四五六七八九十百千]+章[·\-\s]*", "",
+                          c["title"] or "")
+            want[f"第{c['idx']:04d}章-{_safe_name(name) or '未命名'}.md"] = c
+    try:
+        existing = set(os.listdir(rd)) if os.path.isdir(rd) else set()
+    except OSError:
+        return
+    for stale in existing - set(want):
+        try:
+            os.remove(os.path.join(rd, stale))
+        except OSError:
+            pass
+    for fname, c in want.items():
+        if fname not in existing:
+            _write_review_report(state, c)
+
+
 def _plan_path(state: dict) -> str:
     """全书规划文档：大纲/总纲.md。"""
     return os.path.join(_book_dir(state), _DIR_OUTLINE, _OUTLINE_FILE)
@@ -1510,5 +1544,5 @@ def _rebuild_md(state: dict):
             _append_setting(state, name, state[key])
     for c in state.get("chapters", []):
         _append_chapter(state, c)
-        _write_review_report(state, c)
+    _sync_review_reports(state)                # 全量对齐，清掉孤儿报告
     _write_readme(state)

@@ -55,7 +55,7 @@ class FakeLLM:
                 self.review_once_issues = None
                 return out
             return self.review
-        if "修订后的完整正文" in user:
+        if "修订后的完整正文" in user or "输出处理后的完整正文" in user:
             return self.fixed_text
         if "请写第" in user:
             body = "他推开房门走进房间，窗外的城市灯火通明。" * 6
@@ -569,3 +569,69 @@ def test_book_stats_counts():
     assert (s["chapters"], s["planned"], s["words"]) == (2, 10, 400)
     assert (s["avg"], s["shortest"], s["longest"]) == (200, 100, 300)
     assert (s["debts"], s["open_foreshadows"], s["ledger"]) == (1, 1, 2)
+
+
+# ---------------- 章节增删链路（曾出过章号重复/报告孤儿）----------------
+
+def _run_three_chapters(fake, tmp_path):
+    p = _start(total=3)
+    p.run()
+    return p
+
+
+def test_drop_renumbers_and_syncs_reports(fake, tmp_path):
+    """删章后：idx 连续、正文文件无孤儿、审查报告同步清掉被删章。"""
+    p = _run_three_chapters(fake, tmp_path)
+    st = p.state
+    novel_chain.drop_chapter(st, 2)
+    assert [c["idx"] for c in st["chapters"]] == [1, 2]
+    files = sorted(os.listdir(Path(st["dir"]) / "正文"))
+    assert len(files) == 2 and files[0].startswith("第0001章-")
+    # 审查报告与 state 对齐：FakeLLM 审校 PASS → 不应有任何孤儿报告
+    assert os.listdir(Path(st["dir"]) / "审查报告") == []
+    assert st["total_chapters"] == 3                # 删章不减总量
+
+
+def test_insert_renumbers_existing_chapters(fake, tmp_path):
+    """插章后原章号必须整体后移——曾因漏掉 chapters 列表本身导致 [1,2,2]。"""
+    p = _run_three_chapters(fake, tmp_path)
+    st = p.state
+    novel_chain.drop_chapter(st, 3)                 # 剩 2 章，空间干净
+    chap = novel_chain.insert_chapter(st, 2, "过渡")
+    idxs = [c["idx"] for c in st["chapters"]]
+    assert idxs == [1, 2, 3], f"章号重复: {idxs}"
+    assert chap["idx"] == 2
+    files = sorted(os.listdir(Path(st["dir"]) / "正文"))
+    assert len(files) == 3 and files[-1].startswith("第0003章-")
+    assert len(files) == len({f.split("-")[0] for f in files})  # 章号无重复
+    assert st["total_chapters"] == 4                # drop 不减(3) + insert +1 = 4
+
+
+def test_rename_book_moves_dir_and_docs(fake, tmp_path):
+    """/novel rename：目录、检查点路径、总纲、说明全部跟随新书名。"""
+    p = _run_three_chapters(fake, tmp_path)
+    st = p.state
+    old_dir = st["dir"]
+    novel_chain.rename_book(st, "新名字")
+    assert Path(st["dir"]).name == "新名字"
+    assert not os.path.exists(old_dir)              # 旧目录已搬走
+    assert (Path(st["dir"]) / "大纲" / "总纲.md").exists()
+    assert (Path(st["dir"]) / "说明.md").exists()
+    for c in st["chapters"]:                        # 章节路径跟随
+        assert c["path"].startswith(st["dir"])
+
+
+def test_rework_polish_keeps_index_and_title(fake, tmp_path):
+    """polish/expand/condense：保留编号与标题，正文更新并过审校。"""
+    p = _start(total=1)
+    p.run()
+    st = p.state
+    old_title = st["chapters"][0]["title"]
+    fake.fixed_text = "第1章 打磨版\n" + "打磨后的正文。" * 30
+    # FakeLLM 的「修订后的完整正文」分支正好可复用为改写输出
+    chap = novel_chain.rework_chapter(st, 1, "polish", "语言更凝练")
+    assert chap["idx"] == 1 and chap["title"] == old_title
+    assert "打磨" in chap["text"]
+    assert len(os.listdir(Path(st["dir"]) / "正文")) == 1
+    with pytest.raises(novel_chain.StageStopError):
+        novel_chain.rework_chapter(st, 1, "不存在模式")
