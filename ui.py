@@ -6953,7 +6953,9 @@ class App:
             return "\n".join(p.get("text", "") for p in c
                               if isinstance(p, dict) and p.get("type") == "text")
         # 批注按轮次内插：turn=N 的批注渲染在第 N 条用户消息前（与实时顺序一致）
-        notes = data.get("notes") or []
+        # 会话数据来自磁盘（旧版本写入 / 用户手改 / 崩溃半截），逐条校验后再用：
+        # 坏条目跳过，别让一条脏批注把整个会话载入带崩（notes 应为 list[dict]）。
+        notes = [n for n in (data.get("notes") or []) if isinstance(n, dict)]
         by_turn = {}
         for n in notes:
             by_turn.setdefault(n.get("turn"), []).append(n)
@@ -6992,27 +6994,33 @@ class App:
                     if n_img:
                         self._append(_t("sess.n_imgs", n=n_img) + "\n", "meta")
             elif role == "assistant":
-                tcs = m.get("tool_calls") or []
-                names = [tc["function"]["name"] for tc in tcs]
+                # 同上：tool_calls 条目可能残缺（缺 function / 不是对象），
+                # 旧实现取 tc["function"]["name"] 会 KeyError / TypeError。
+                tcs = [tc for tc in (m.get("tool_calls") or [])
+                       if isinstance(tc, dict)]
+                names = [(tc.get("function") or {}).get("name", "")
+                         for tc in tcs]
                 if content:
                     self._append(f"{content}\n", "assistant")
                 if names:
                     # 模型派发：回放时把"派发给哪个模型"显示出来，其余工具照旧列一行
                     dispatched = []
                     for tc in tcs:
-                        if tc["function"]["name"] == "call_model":
+                        fn = tc.get("function") or {}
+                        if fn.get("name", "") == "call_model":
                             try:
-                                a = json.loads(
-                                    tc["function"].get("arguments") or "{}")
+                                a = json.loads(fn.get("arguments") or "{}")
                             except Exception:            # noqa: BLE001
                                 a = {}
-                            key = a.get("model", "")
-                            dispatched.append(
-                                f"{config.dispatch_target_label(key)}（{key}）")
+                            key = (a.get("model", "")
+                                   if isinstance(a, dict) else "")
+                            if key:
+                                dispatched.append(
+                                    f"{config.dispatch_target_label(key)}（{key}）")
                     if dispatched:
                         self._append(
                             f"🔁 派发给 {'；'.join(dispatched)}\n", "dispatch")
-                    rest = [n for n in names if n != "call_model"]
+                    rest = [n for n in names if n and n != "call_model"]
                     if rest:
                         self._append(f"🔧 {'/'.join(rest)}\n", "tool")
         # 剩余批注（无对应轮次的旧格式）末尾补显

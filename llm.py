@@ -207,11 +207,15 @@ def stream_chat(model: config.ModelConfig, messages, tools=None):
             yield {"type": "reasoning", "delta": delta["reasoning_content"]}
 
         for tc in delta.get("tool_calls") or []:
+            if not isinstance(tc, dict):     # 远端可能给出非对象条目
+                continue
             idx = tc.get("index", 0)
             slot = acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
             if tc.get("id"):
                 slot["id"] = tc["id"]
-            fn = tc.get("function") or {}
+            fn = tc.get("function")
+            if not isinstance(fn, dict):     # function 也可能是字符串
+                fn = {}
             if fn.get("name"):
                 slot["name"] = fn["name"]
             if fn.get("arguments"):
@@ -309,7 +313,11 @@ def _to_anthropic_messages(messages):
                         content_blocks.append({"type": "text",
                                                "text": part.get("text", "")})
             for tc in m.get("tool_calls") or []:
-                fn = tc.get("function") or {}
+                if not isinstance(tc, dict):     # 会话从磁盘读入，条目可能残缺
+                    continue
+                fn = tc.get("function")
+                if not isinstance(fn, dict):
+                    fn = {}
                 args_raw = fn.get("arguments", "")
                 # Anthropic 要求 input 必须是 object/array，解析失败时给空对象
                 try:

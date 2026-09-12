@@ -158,7 +158,8 @@ class Agent:
             extra = mgr.tool_schemas()
             if self.mode == MODE_READONLY:
                 extra = [s for s in extra
-                         if not mgr.is_write_tool(s["function"]["name"])]
+                         if not mgr.is_write_tool(
+                             (s.get("function") or {}).get("name", ""))]
             base = base + extra
         return base
 
@@ -346,10 +347,16 @@ class Agent:
                         "content": "用户请求停止，未执行此工具",
                     })
                     continue
-                name = tc["function"]["name"]
+                fn = tc.get("function") or {}
+                name = fn.get("name", "")
+                # 模型给的 arguments 不保证是合法 JSON（可能被截断 / 多逗号），
+                # 也不保证是 JSON 对象（"null" / "[1,2]" / "3" 都是合法 JSON），
+                # 两种情况都会让后面 args.get(...) 炸掉整轮对话 → 一律当空参数。
                 try:
-                    args = json.loads(tc["function"]["arguments"])
-                except json.JSONDecodeError:
+                    args = json.loads(fn.get("arguments") or "{}")
+                except (TypeError, ValueError):
+                    args = {}
+                if not isinstance(args, dict):
                     args = {}
 
                 # 计划工具：先让界面把任务步骤换成模型的计划，再执行确认
