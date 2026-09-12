@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""cache.py：后端读写/过期/清理 + 高层 LLM/工具缓存接口。"""
+"""cache.py：后端读写/过期/清理 + 高层 LLM/工具缓存接口。
+
+开发者：wellfuture  <tbz@qq.com>
+"""
+
+import json
 
 import pytest
 
@@ -108,6 +113,82 @@ class TestHighLevel:
     def test_save_settings_ignores_unknown_keys(self):
         s = cache.save_settings(backend="memory", no_such_key=1)
         assert "no_such_key" not in s
+
+
+class TestMalformedConfigFile:
+    """畸形/不可读的 cache.json 必须静默回退默认。
+
+    设置读取在 get/put 的必经路径上，任何异常都会让整个缓存模块失效。
+    """
+
+    def _write(self, tmp_path, raw: bytes):
+        (tmp_path / "cache.json").write_bytes(raw)
+
+    def test_broken_json_falls_back_to_defaults(self, fresh_cache):
+        self._write(fresh_cache, b"{not json at all")
+        s = cache.load_settings()
+        assert s["backend"] == "auto"
+        assert s["llm_ttl"] == 3600
+        assert s["tool_ttl"] == 300
+
+    def test_non_object_toplevel_falls_back(self, fresh_cache):
+        # null / 数字 / 布尔 / 数组 / 字符串 都是合法 JSON，但不是设置对象。
+        # 旧实现会对 null、123 抛 TypeError: argument of type ... is not iterable
+        for raw in (b"null", b"123", b"true", b"[1, 2]", b'"text"'):
+            self._write(fresh_cache, raw)
+            cache.reset()
+            assert cache.load_settings()["backend"] == "auto", raw
+
+    def test_non_utf8_file_falls_back(self, fresh_cache):
+        # GBK 文件 → UnicodeDecodeError，是 ValueError 子类但不是 JSONDecodeError。
+        # 注意内容必须含非 ASCII 字符，否则 GBK 与 ASCII 字节相同、测不到解码分支。
+        raw = json.dumps({"backend": "内存", "llm_ttl": 1},
+                         ensure_ascii=False).encode("gbk")
+        self._write(fresh_cache, raw)
+        assert cache.load_settings()["backend"] == "auto"
+
+    def test_settings_path_is_directory_falls_back(self, fresh_cache):
+        # IsADirectoryError（OSError 子类），旧实现会冒泡
+        (fresh_cache / "cache.json").mkdir()
+        assert cache.load_settings()["backend"] == "auto"
+
+    def test_wrong_typed_values_fall_back_to_defaults(self, fresh_cache):
+        self._write(fresh_cache, json.dumps({
+            "backend": 7,          # int 而非 str
+            "sqlite_path": None,   # None
+            "llm_ttl": "abc",      # str 而非 int
+            "tool_ttl": None,
+        }).encode())
+        s = cache.load_settings()
+        assert s["backend"] == "auto"
+        assert s["sqlite_path"].endswith("cache.db")
+        assert s["llm_ttl"] == 3600
+        assert s["tool_ttl"] == 300
+
+    def test_bool_is_not_accepted_as_int(self, fresh_cache):
+        # True 是 int 的子类，宽松判断会把 llm_ttl 变成 True(=1)。
+        self._write(fresh_cache, b'{"llm_ttl": true}')
+        assert cache.load_settings()["llm_ttl"] == 3600
+
+    def test_valid_values_still_win(self, fresh_cache):
+        self._write(fresh_cache, json.dumps(
+            {"backend": "memory", "llm_ttl": 0}).encode())
+        s = cache.load_settings()
+        assert s["backend"] == "memory"
+        assert s["llm_ttl"] == 0
+
+    def test_unknown_keys_in_file_are_ignored(self, fresh_cache):
+        self._write(fresh_cache, b'{"backend": "memory", "no_such_key": 1}')
+        s = cache.load_settings()
+        assert s["backend"] == "memory"
+        assert "no_such_key" not in s
+
+    def test_bad_ttl_no_longer_breaks_put_llm(self, fresh_cache):
+        # 旧实现：ttl="abc" → if not ttl 拦不住 → put_llm 里 int("abc") 抛 ValueError
+        self._write(fresh_cache, b'{"backend": "memory", "llm_ttl": "abc"}')
+        msgs = [{"role": "user", "content": "hi"}]
+        cache.put_llm("m", msgs, None, [{"type": "text", "delta": "x"}])
+        assert cache.get_llm("m", msgs, None) == [{"type": "text", "delta": "x"}]
 
 
 class TestIsolation:

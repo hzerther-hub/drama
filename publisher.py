@@ -104,6 +104,11 @@ def export_epub(state: dict, path: str = "") -> str:
     out = path or _book_sibling(state, ".epub")
     title = _book_title(state)
     chapters = state.get("chapters", [])
+    # 序号单点来源：清单 id/href 与正文文件名必须同源。
+    # 历史实现用 range(1, N+1) 生成清单、却用 c['idx'] 命名正文文件，一旦 idx
+    # 不是 1..N 连续（删章/插章/历史脏数据）就会出现「清单指向不存在的 cN.xhtml、
+    # 真实存在的章文件未被声明」→ 阅读器丢章或报错。这里统一按位置编号。
+    seq = list(enumerate(chapters, 1))
     with zipfile.ZipFile(out, "w") as z:
         z.writestr(zipfile.ZipInfo("mimetype"), "application/epub+zip",
                    compress_type=zipfile.ZIP_STORED)
@@ -116,9 +121,8 @@ def export_epub(state: dict, path: str = "") -> str:
         manifest = "".join(
             f"<item id='c{i}' href='c{i}.xhtml' "
             "media-type='application/xhtml+xml'/>"
-            for i in range(1, len(chapters) + 1))
-        spine = "".join(f"<itemref idref='c{i}'/>"
-                        for i in range(1, len(chapters) + 1))
+            for i, _c in seq)
+        spine = "".join(f"<itemref idref='c{i}'/>" for i, _c in seq)
         z.writestr("OEBPS/content.opf",
                    "<?xml version='1.0' encoding='utf-8'?>"
                    "<package xmlns='http://www.idpf.org/2007/opf' version='3.0' "
@@ -130,10 +134,10 @@ def export_epub(state: dict, path: str = "") -> str:
                    + state.get("pid", "novel") + "</dc:identifier>"
                    "</metadata><manifest>" + manifest + "</manifest>"
                    "<spine>" + spine + "</spine></package>")
-        for c in chapters:
+        for i, c in seq:
             paras = "".join(f"<p>{_esc(p.strip())}</p>"
                             for p in c["text"].splitlines() if p.strip())
-            z.writestr(f"OEBPS/c{c['idx']}.xhtml",
+            z.writestr(f"OEBPS/c{i}.xhtml",
                        "<?xml version='1.0' encoding='utf-8'?>"
                        "<html xmlns='http://www.w3.org/1999/xhtml'><head><title>"
                        + _esc(c["title"]) + "</title></head><body><h2>"

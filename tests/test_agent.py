@@ -308,3 +308,52 @@ class TestMCPManagerIsolation:
         mcp.reset_manager()
         m2 = mcp.get_manager()
         assert m1 is not m2
+
+
+
+class TestMalformedToolArguments:
+    """模型给的 arguments 不是 JSON 对象时不能崩。
+
+    截断 / 多逗号 → JSONDecodeError；"null" / "[1,2]" / "3" 是合法 JSON 但
+    不是对象 → 旧实现在 args.get(...) 抛 AttributeError，整轮对话直接中断。
+    """
+
+    @pytest.mark.parametrize("raw", ["", "null", "[1,2]", "3", "true",
+                                     "{bad json", '{"path": "a",}'])
+    def test_non_object_arguments_treated_as_empty(self, monkeypatch, raw):
+        calls = {"done": False}
+
+        def stream(model, messages, schemas):
+            if not calls["done"]:
+                calls["done"] = True
+                yield {"type": "tool_calls", "tool_calls": [{
+                    "id": "c1", "type": "function",
+                    "function": {"name": "read_file", "arguments": raw}}]}
+                yield {"type": "finish", "reason": "tool_calls"}
+            else:
+                yield {"type": "text", "delta": "ok"}
+                yield {"type": "finish", "reason": "stop"}
+        monkeypatch.setattr(llm, "stream_chat", stream)
+
+        ag = agent.Agent(mode=agent.MODE_ALWAYS, model=MODEL)
+        assert ag.run("读文件") == "ok"
+        tool_msgs = [m for m in ag.messages if m.get("role") == "tool"]
+        assert tool_msgs and tool_msgs[0]["content"]
+
+    def test_missing_function_field_does_not_crash(self, monkeypatch):
+        """tool_call 缺 function 字段（部分后端会这样回）不能 KeyError。"""
+        calls = {"done": False}
+
+        def stream(model, messages, schemas):
+            if not calls["done"]:
+                calls["done"] = True
+                yield {"type": "tool_calls",
+                       "tool_calls": [{"id": "c1", "type": "function"}]}
+                yield {"type": "finish", "reason": "tool_calls"}
+            else:
+                yield {"type": "text", "delta": "ok"}
+                yield {"type": "finish", "reason": "stop"}
+        monkeypatch.setattr(llm, "stream_chat", stream)
+
+        ag = agent.Agent(mode=agent.MODE_ALWAYS, model=MODEL)
+        assert ag.run("x") == "ok"

@@ -6,6 +6,7 @@
 """
 
 from __future__ import annotations
+import copy
 import json
 import os
 from dataclasses import dataclass
@@ -80,27 +81,45 @@ if not os.path.exists(_CONFIG_DIR):
 _STATE_FILE = os.path.join(_CONFIG_DIR, "state.json")
 
 
-def _load_last_workspace() -> str:
+def _read_json_object(path: str) -> dict:
+    """读一个「顶层必须是对象」的 JSON 配置文件，任何情况下都不抛异常。
+
+    models.json / state.json / mcp.json 都是用户可手改的文件：文件缺失、
+    无权限、非 UTF-8、JSON 语法错，或顶层类型不对（数组 / null / 数字 都是
+    合法 JSON 但不是配置对象）都必须静默回退空 dict。这些读取函数在启动
+    路径（state.json → WORKSPACE）和每次请求的必经路径上，抛异常会让整个
+    应用起不来。
+    """
     try:
-        with open(_STATE_FILE, "r", encoding="utf-8") as f:
-            ws = json.load(f).get("workspace", "")
-        if ws and os.path.isdir(ws):
-            return ws
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        pass
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        # ValueError 涵盖 JSONDecodeError（语法错）与 UnicodeDecodeError（非 UTF-8）
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _as_int(v, default: int = 0) -> int:
+    """把配置里的值转 int；类型不对（None / "128k" / 列表）回退默认值。"""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _load_last_workspace() -> str:
+    ws = _read_json_object(_STATE_FILE).get("workspace", "")
+    if isinstance(ws, str) and ws and os.path.isdir(ws):
+        return ws
     return os.path.expanduser("~")
 
 
 def save_last_workspace(path: str):
-    """记住最近一次使用的工作目录。"""
+    """记住最近一次使用的工作目录（保留 state.json 里的其它字段）。"""
+    data = _read_json_object(_STATE_FILE)
+    data["workspace"] = str(path)
     try:
         os.makedirs(os.path.dirname(_STATE_FILE), exist_ok=True)
-        with open(_STATE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        data = {}
-    data["workspace"] = path
-    try:
         with open(_STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except OSError:
@@ -112,23 +131,16 @@ WORKSPACE = _load_last_workspace()
 
 def get_quant_llm_model() -> str:
     """量化面板「LLM 兜底」指定的模型 key（存于 state.json）；空 = 未指定。"""
-    try:
-        with open(_STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f).get("quant_llm_model", "") or ""
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return ""
+    v = _read_json_object(_STATE_FILE).get("quant_llm_model", "")
+    return v.strip() if isinstance(v, str) else ""
 
 
 def set_quant_llm_model(key: str):
     """记住量化 LLM 兜底用哪个模型。"""
+    data = _read_json_object(_STATE_FILE)
+    data["quant_llm_model"] = str(key or "")
     try:
         os.makedirs(os.path.dirname(_STATE_FILE), exist_ok=True)
-        with open(_STATE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        data = {}
-    data["quant_llm_model"] = key
-    try:
         with open(_STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except OSError:
@@ -260,22 +272,17 @@ def reasoning_choices_for(provider_id: str, provider_name: str, m: dict) -> tupl
 
 def load_models() -> tuple[list[ModelConfig], str]:
     """加载 models.json，返回 (模型列表, 默认模型 key)。"""
-    _ensure_models_file()
-    try:
-        with open(_MODELS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        data = _DEFAULT_MODELS
+    data = _load_models_data()      # 已归一：providers/models 必为 list[dict]
 
     models: list[ModelConfig] = []
-    for provider in data.get("providers", []):
+    for provider in data["providers"]:
         pid = provider.get("id", "")
         pname = provider.get("name", pid)
         base_url = provider.get("base_url", "")
         api_key = provider.get("api_key", "")
         # api_type 是 provider 级字段（旧条目缺失则按 base_url 启发式兜底）
         api_type = _normalize_api_type(provider.get("api_type"), base_url)
-        for m in provider.get("models", []):
+        for m in provider["models"]:
             mid = m.get("id", "")
             mname = m.get("name", mid)
             models.append(ModelConfig(
@@ -289,12 +296,12 @@ def load_models() -> tuple[list[ModelConfig], str]:
                 reasoning=bool(m.get("reasoning") or m.get("reasoning_effort")),
                 reasoning_effort=str(m.get("reasoning_effort", "") or ""),
                 reasoning_choices=reasoning_choices_for(pid, pname, m),
-                context_window=int(m.get("context_window", 0) or 0),
-                max_tokens=int(m.get("max_tokens", 0) or 0),
+                context_window=_as_int(m.get("context_window", 0)),
+                max_tokens=_as_int(m.get("max_tokens", 0)),
                 api_type=api_type,
             ))
     default = data.get("default", "")
-    return models, default
+    return models, default if isinstance(default, str) else ""
 
 
 def find_model(key: str) -> ModelConfig | None:
@@ -628,12 +635,29 @@ def set_kb_embedding(key: str):
 
 
 def _load_models_data() -> dict:
+    """读 models.json（顶层对象；损坏/类型不对则回退内置默认）。
+
+    模型配置的读写全部经这里，所以统一在此把 providers / models 归一成
+    list[dict]：用户手改 models.json 时很容易把这两处写成对象、或塞进字符串
+    条目，归一之后调用方（load_models / add_* / update_* / remove_*）不必
+    各自防御。返回的是独立副本，修改它不会污染内置默认值。
+    """
     _ensure_models_file()
-    try:
-        with open(_MODELS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        data = _DEFAULT_MODELS
+    data = _read_json_object(_MODELS_FILE)
+    if not data:                       # 缺文件 / 坏文件 / 空对象 → 内置默认
+        data = copy.deepcopy(_DEFAULT_MODELS)
+    providers = data.get("providers")
+    if not isinstance(providers, list):
+        providers = []
+    norm = []
+    for p in providers:
+        if not isinstance(p, dict):
+            continue                   # 非对象条目直接丢弃
+        models = p.get("models")
+        if not isinstance(models, list):
+            models = []
+        norm.append(dict(p, models=[m for m in models if isinstance(m, dict)]))
+    data["providers"] = norm
     return data
 
 
@@ -1079,13 +1103,9 @@ def load_mcp_servers() -> dict:
 
     文件不存在或损坏时返回空配置（不抛异常，界面可自行新建）。
     """
-    try:
-        with open(MCP_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data.get("servers"), dict):
-            return data
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        pass
+    data = _read_json_object(MCP_FILE)
+    if isinstance(data.get("servers"), dict):
+        return data
     return {"servers": {}}
 
 

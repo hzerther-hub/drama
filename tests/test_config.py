@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 """config.py：配置目录、工作区状态、models.json、语言设置。"""
 
+import json
 import os
+
+import pytest
 
 import config
 
@@ -115,7 +118,7 @@ def test_rename_provider_gpulocal_refused(monkeypatch):
     # gpulocal 本地功能已移除：遗留条目允许正常重命名（sync 不存在，不会被覆盖）
     state = _seed_providers(monkeypatch, [
         {"id": "gpulocal-8080", "name": "GPU Local", "base_url": "x",
-         "api_key": "local-noauth", "api_type": "openai_compatible",
+         "api_key": "本地免鉴权占位", "api_type": "openai_compatible",
          "models": []},
     ])
     err = config.rename_provider("gpulocal-8080", "Renamed GPU")
@@ -126,25 +129,25 @@ def test_rename_provider_gpulocal_refused(monkeypatch):
 def test_update_provider_full_edit(monkeypatch):
     state = _seed_providers(monkeypatch, [
         {"id": "p1", "name": "Old", "base_url": "http://old/v1",
-         "api_key": "sk-old", "api_type": "openai_compatible",
+         "api_key": "旧key占位", "api_type": "openai_compatible",
          "models": [{"id": "m1", "name": "M1"}]},
         {"id": "gpulocal-x", "name": "GPU", "base_url": "",
-         "api_key": "local-noauth", "api_type": "openai_compatible",
+         "api_key": "本地免鉴权占位", "api_type": "openai_compatible",
          "models": []},
     ])
     # 全字段编辑
     err = config.update_provider(
         "p1", name="New", base_url="http://new/v1/",
-        api_key="sk-new", api_type="anthropic")
+        api_key="新key占位", api_type="anthropic")
     assert err is None
     p = state["data"]["providers"][0]
     assert p["name"] == "New"
     assert p["base_url"] == "http://new/v1"        # 尾斜杠剥掉
-    assert p["api_key"] == "sk-new"
+    assert p["api_key"] == "新key占位"
     assert p["api_type"] == "anthropic"
-    # 部分编辑：None 字段不动；空 api_key 回落 local-noauth
+    # 部分编辑：None 字段不动；空 api_key 回落本地免鉴权占位
     assert config.update_provider("p1", api_key="") is None
-    assert state["data"]["providers"][0]["api_key"] == "local-noauth"
+    assert state["data"]["providers"][0]["api_key"] == "本地免鉴权占位"
     assert config.update_provider("p1", name=None, base_url=None) is None
     assert state["data"]["providers"][0]["name"] == "New"
     # gpulocal-* 遗留条目同样可编辑
@@ -204,7 +207,7 @@ def test_delete_provider_cascades_models(monkeypatch):
              {"id": "m1", "name": "M1"},
              {"id": "m2", "name": "M2"}]},
         {"id": "gpulocal-x", "name": "GPU", "base_url": "",
-         "api_key": "local-noauth", "api_type": "openai_compatible",
+         "api_key": "本地免鉴权占位", "api_type": "openai_compatible",
          "models": []},
     ])
     # gpulocal-* 遗留条目允许删除（功能已移除，无 sync 覆盖）
@@ -228,6 +231,119 @@ def test_check_provider_uniqueness_helper():
         data, exclude_id="a", new_id="a") is None
     assert config._check_provider_uniqueness(
         data, exclude_id="a", new_name="Alpha") is None
+
+
+
+# ============== 用户可编辑 JSON 损坏时的容错 ==============
+# models.json / state.json / mcp.json 都是用户可手改的文件。旧实现在「顶层不是
+# 对象」（数组/null/数字，都是合法 JSON 但不是配置对象）或「非 UTF-8」时抛
+# AttributeError / UnicodeDecodeError：读 state.json 的那次在模块级执行
+# （config.WORKSPACE = _load_last_workspace()），会让整个应用起不来。
+
+class TestMalformedConfigFiles:
+    @pytest.fixture(autouse=True)
+    def isolated_files(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, "_STATE_FILE", str(tmp_path / "state.json"))
+        monkeypatch.setattr(config, "_MODELS_FILE", str(tmp_path / "models.json"))
+        monkeypatch.setattr(config, "MCP_FILE", str(tmp_path / "mcp.json"))
+        self.tmp = tmp_path
+        return tmp_path
+
+    def _write(self, name, raw):
+        (self.tmp / name).write_bytes(raw)
+
+    # ---------------- state.json（启动路径） ----------------
+    @pytest.mark.parametrize("raw", [
+        b"[1,2]", b"null", b"123", b'"ws"', b"{bad json",
+        '{"workspace": "内存"}'.encode("gbk"),
+    ])
+    def test_broken_state_json_falls_back_to_home(self, raw):
+        self._write("state.json", raw)
+        assert config._load_last_workspace() == os.path.expanduser("~")
+
+    @pytest.mark.parametrize("raw", [b"[1,2]", b"null", b'"x"', b"{bad"])
+    def test_save_workspace_survives_broken_state_json(self, raw, tmp_path):
+        self._write("state.json", raw)
+        d = str(tmp_path / "proj")
+        os.makedirs(d, exist_ok=True)
+        config.save_last_workspace(d)          # 旧实现：TypeError
+        assert config._load_last_workspace() == d
+
+    def test_save_workspace_keeps_other_keys(self):
+        self._write("state.json",
+                    json.dumps({"quant_llm_model": "p/m"}).encode())
+        config.save_last_workspace("C:/ws")
+        assert config.get_quant_llm_model() == "p/m"
+
+    def test_quant_llm_model_survives_broken_state_json(self):
+        self._write("state.json", b"[1,2]")
+        assert config.get_quant_llm_model() == ""
+        config.set_quant_llm_model("p/m")      # 旧实现：TypeError
+        assert config.get_quant_llm_model() == "p/m"
+
+    # ---------------- models.json ----------------
+    @pytest.mark.parametrize("raw", [
+        b"[1,2]", b"null", b'"x"', b"{bad", b"{}",
+        '{"default": "内存"}'.encode("gbk"),
+    ])
+    def test_broken_models_json_uses_defaults(self, raw):
+        self._write("models.json", raw)
+        models, default = config.load_models()   # 旧实现：AttributeError
+        assert models and isinstance(default, str)
+
+    @pytest.mark.parametrize("raw", ["null", '"x"', "[1, 2]", '{"a": 1}', "123"])
+    def test_providers_wrong_type_is_normalized(self, raw):
+        self._write("models.json", ('{"providers": %s}' % raw).encode())
+        assert config._load_models_data()["providers"] == []
+        assert config.load_models()[0] == []
+
+    def test_model_entry_wrong_type_is_dropped(self):
+        self._write("models.json", json.dumps(
+            {"providers": [{"id": "p", "models": ["x", {"id": "m"}]}]}
+        ).encode())
+        models, _ = config.load_models()
+        assert [m.key for m in models] == ["p/m"]
+
+    def test_bad_int_fields_fall_back(self):
+        self._write("models.json", json.dumps(
+            {"providers": [{"id": "p", "models": [
+                {"id": "m", "context_window": "128k", "max_tokens": None}]}]}
+        ).encode())
+        models, _ = config.load_models()
+        assert models[0].context_window == 0
+        assert models[0].max_tokens == 0
+
+    def test_defaults_are_not_polluted_by_caller(self):
+        """回退到内置默认时返回独立副本：调用方改它不能污染后续读取。"""
+        self._write("models.json", b"[1,2]")
+        data = config._load_models_data()
+        data["providers"].append({"id": "凭空多出来的", "models": []})
+        assert config._load_models_data()["providers"] != data["providers"]
+
+    # ---------------- mcp.json ----------------
+    @pytest.mark.parametrize("raw", [b"[1,2]", b"null", b'{"servers": []}',
+                                     b"{bad", b'"x"'])
+    def test_broken_mcp_json_falls_back(self, raw):
+        self._write("mcp.json", raw)
+        assert config.load_mcp_servers() == {"servers": {}}
+
+
+def test_import_config_survives_broken_state_json(tmp_path):
+    """state.json 损坏时 `import config` 必须成功（WORKSPACE 在模块级求值）。"""
+    import subprocess
+    import sys
+
+    cfg = tmp_path / "local-ai-studio"
+    cfg.mkdir()
+    (cfg / "state.json").write_bytes(b"[1,2]")
+    env = dict(os.environ)
+    env.update(APPDATA=str(tmp_path), LOCALAPPDATA=str(tmp_path),
+               HOME=str(tmp_path), USERPROFILE=str(tmp_path))
+    env["PYTHONPATH"] = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    p = subprocess.run([sys.executable, "-c",
+                        "import config; print(config.WORKSPACE)"],
+                       env=env, capture_output=True, text=True, timeout=180)
+    assert p.returncode == 0, p.stderr
 
 
 def test_media_service_env_priority(monkeypatch):

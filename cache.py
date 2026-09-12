@@ -9,6 +9,9 @@
 - backend=auto：优先 SQLite（本机持久化），不可用退回内存
 
 设置持久化在 config.CONFIG_DIR/cache.json，可在界面「管理缓存」修改。
+
+开发者：王海滨（wellfuture）  <tbz@qq.com>
+时间：2026-09-12
 """
 
 from __future__ import annotations
@@ -36,8 +39,8 @@ def _default_settings() -> dict:
         "tool_ttl": 300,
     }
 
-_settings_lock = threading.RLock()   # 可重入：save_settings 内部会调 load_settings
-_settings = None
+_settings_lock = threading.RLock()   # 可重入：save_settings 持锁时会再调 _cached_settings()
+_settings: dict | None = None        # 进程内设置缓存；只能靠 save_settings()/reset() 失效
 
 
 def _cached_settings() -> dict:
@@ -45,13 +48,21 @@ def _cached_settings() -> dict:
     global _settings
     with _settings_lock:
         if _settings is None:
-            data = _default_settings()
+            defaults = _default_settings()
+            data = dict(defaults)
             try:
                 with open(_settings_file(), "r", encoding="utf-8") as f:
                     saved = json.load(f)
-                data.update({k: saved[k] for k in data if k in saved})
-            except (FileNotFoundError, json.JSONDecodeError):
-                pass
+            except (OSError, ValueError):
+                # 文件缺失/无权限/是个目录(OSError) 与 非 UTF-8/JSON 损坏(ValueError)
+                # 一并回退默认：设置读取在 get/put 的必经路径上，绝不能抛异常。
+                saved = None
+            if isinstance(saved, dict):
+                # 白名单 + 类型校验：未知键忽略，坏值（类型不符/None）丢回默认。
+                for k, default in defaults.items():
+                    v = saved.get(k)
+                    if v is not None and type(v) is type(default):
+                        data[k] = v
             _settings = data
         return _settings
 
@@ -71,6 +82,10 @@ def save_settings(**kwargs) -> dict:
         with open(_settings_file(), "w", encoding="utf-8") as f:
             json.dump(s, f, ensure_ascii=False, indent=2)
         _settings = s
+    # 必须在 _settings_lock 之外关闭旧连接：_get_sqlite() 的路径是
+    # 「持 _sqlite_lock → 取 _settings_lock」，若这里改成持 _settings_lock 时
+    # 再取 _sqlite_lock，两把锁的获取顺序成环 → 与并发读写线程死锁。
+    # 代价只是切换 sqlite_path 后存在一个窄窗口，并发读者可能短暂复用旧连接。
     _close_sqlite()   # 真正关闭旧连接（而非仅置 None 泄漏句柄）
     return dict(s)
 

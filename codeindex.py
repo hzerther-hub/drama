@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# 开发者备注：王海滨  2026-09-12 19:16
 """代码库索引：解析 → 分块 → 向量化（TF-IDF）→ SQLite 可检索数据库。
 
 思路同 opencode-codebase-index / @op1/code-intel：不是把全部代码塞进
@@ -60,7 +61,6 @@ _STOPWORDS = {
     "if", "then", "else", "elif", "return", "def", "class", "import",
     "from", "self", "true", "false", "none", "null", "void", "int", "str",
 }
-
 
 def tokenize(text: str) -> list[str]:
     """把代码文本拆成检索词：标识符 + camelCase/snake_case 子词 + 中文 bigram。"""

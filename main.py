@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# 开发者备注：王海滨  2026-09-12 19:37
 """Local AI Studio 入口。"""
 
 from __future__ import annotations

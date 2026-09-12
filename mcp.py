@@ -413,8 +413,14 @@ def _save_image(b64: str, mime: str) -> str | None:
 # ================= 多服务器管理 =================
 
 def _safe_name(s: str) -> str:
-    """把服务器/工具名里的非法字符换成下划线（OpenAI 工具名约束）。"""
-    return "".join(c if c.isalnum() or c in "-_" else "_" for c in s)
+    """把服务器/工具名里的非法字符换成下划线（OpenAI 工具名约束）。
+
+    注意：str.isalnum() 对 CJK 也返回 True，而 OpenAI 工具名只接受
+    ^[A-Za-z0-9_-]+$——中文服务器名会造出非法工具名导致请求被拒，
+    因此这里额外要求 ASCII（纯 ASCII 名称的行为与原先完全一致）。
+    """
+    return "".join(c if c.isascii() and (c.isalnum() or c in "-_") else "_"
+                   for c in s)
 
 
 class MCPManager:

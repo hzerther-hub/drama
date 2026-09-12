@@ -59,6 +59,20 @@ def test_other_events_do_not_refresh():
 
 # ---------------- /novel 子命令：内存态自动恢复 ----------------
 
+class _FakeRoot:
+    """Tk root 替身：after(0, fn) 同步执行（测试不需要事件循环）。
+
+    缺它时，_novel_adjust 里后台线程的 self.root.after 会抛 AttributeError，
+    再被兜底 except 里的第二次 root.after 抛出去 → 以
+    PytestUnhandledThreadExceptionWarning 的形式泄漏，掩盖真实的线程异常。
+    """
+
+    def after(self, _delay, fn=None, *args):
+        if fn is not None:
+            fn(*args)
+        return "fake-after"
+
+
 class CmdStub:
     """只提供 _novel_command 依赖的最小接口。"""
 
@@ -71,6 +85,7 @@ class CmdStub:
     _refresh_sidebar = lambda self: None
 
     def __init__(self):
+        self.root = _FakeRoot()
         self.lines = []
         self.status = []
         self._novel_pipe = None

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# 开发者备注：王海滨  2026-09-12 19:32
 """上下文管理（类 DeepSeek Harness）：预算 + 渐进压缩。
 
 对话/工具结果过大时按顺序处理：
@@ -32,7 +33,13 @@ IMAGE_TOKEN_ESTIMATE = 1100
 
 
 def estimate_text_tokens(s: str) -> int:
-    """估算单段文本的 token 数：tiktoken 精确值优先，否则 CJK/ASCII 分段启发式。"""
+    """估算单段文本的 token 数：tiktoken 精确值优先，否则 CJK/ASCII 分段启发式。
+
+    入参来自模型返回/历史消息，不保证是字符串（arguments 可能是 null，或已被
+    后端解析成对象）——先归一成字符串，别让"估算"本身把主流程带崩。
+    """
+    if not isinstance(s, str):
+        s = "" if s is None else str(s)
     if not s:
         return 0
     if _ENC is not None:
@@ -64,7 +71,11 @@ def estimate_tokens(messages: list) -> int:
         else:
             n += 200
         for tc in m.get("tool_calls") or []:
-            n += estimate_text_tokens(tc["function"].get("arguments", "")) + 16
+            # tool_call 可能是残缺条目（缺 function / 根本不是对象），取不到当空参数
+            fn = tc.get("function") if isinstance(tc, dict) else None
+            if not isinstance(fn, dict):
+                fn = {}
+            n += estimate_text_tokens(fn.get("arguments", "")) + 16
     return n
 
 
@@ -129,7 +140,8 @@ def _round_summary(messages: list, idxs: list[int]) -> str:
     text = head.get("content")
     if text and text.strip():
         parts.append("输出『" + text.strip()[:120].replace("\n", " ") + "』")
-    names = [tc["function"]["name"] for tc in head.get("tool_calls") or []]
+    names = [(tc.get("function") or {}).get("name", "")
+             for tc in head.get("tool_calls") or [] if isinstance(tc, dict)]
     if names:
         parts.append("调用工具 " + "/".join(names))
     return "· " + ("；".join(parts) if parts else "（空轮）")
