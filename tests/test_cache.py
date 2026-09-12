@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """cache.py：后端读写/过期/清理 + 高层 LLM/工具缓存接口。
 
-开发者：wellfuture  <tbz@qq.com>
+开发者：王海滨（wellfuture）  <tbz@qq.com>
 """
 
 import json

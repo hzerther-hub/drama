@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 开发者备注：王团结  2026-09-12 20:59
+# 开发者备注：王海滨  2026-09-12 20:59
 """Agent 循环：流式 function-calling + 权限控制。"""
 
 from __future__ import annotations
