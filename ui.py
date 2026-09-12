@@ -189,7 +189,6 @@ def _reasoning_label(val: str):
     return f"{REASONING_ICON.get('', '🌫')} {_t('model.reasoning.default')}"
 
 
-
 def _mode_label(mode):
     return _t(MODE_LABEL_KEYS.get(mode, "mode.ask"))
 def _stat_text(u: dict, cached_pct: float = 0, fast_hits=None, saved=None) -> str:
@@ -446,9 +445,22 @@ def _fmt_size(n) -> str:
     return "%.1f TB" % n
 
 
+_DIR_SIZE_CACHE: dict = {}      # path -> (monotonic 时间戳, 字节数)
+_DIR_SIZE_TTL = 10.0            # 同一路径 10 秒内复用上次结果
+
+
 def _dir_size(path: str, max_entries: int = 20000) -> int:
-    """目录聚合大小（递归，含隐藏文件）。条目数超过 max_entries 提前止步，
-    防止 node_modules/.git 之类超大目录拖慢文件树刷新。"""
+    """目录聚合大小（递归，含隐藏文件）。
+
+    条目数超过 max_entries 提前止步，防止 node_modules/.git 之类超大目录拖慢
+    文件树刷新。结果按路径缓存 _DIR_SIZE_TTL 秒：展开/刷新文件树会对同一批子
+    目录反复查询（/novel 每落一章就刷一次），缓存把这层重复递归扫描消掉；
+    缓存条目过多时整体清空，避免无限增长。
+    """
+    now = time.monotonic()
+    hit = _DIR_SIZE_CACHE.get(path)
+    if hit is not None and now - hit[0] < _DIR_SIZE_TTL:
+        return hit[1]
     total = 0
     count = 0
     stack = [path]
@@ -459,7 +471,7 @@ def _dir_size(path: str, max_entries: int = 20000) -> int:
                 for e in it:
                     count += 1
                     if count > max_entries:
-                        return total
+                        return total      # 超大目录：不缓存这次的部分结果
                     try:
                         if e.is_dir(follow_symlinks=False):
                             stack.append(e.path)
@@ -469,6 +481,9 @@ def _dir_size(path: str, max_entries: int = 20000) -> int:
                         pass
         except OSError:
             pass
+    if len(_DIR_SIZE_CACHE) > 512:
+        _DIR_SIZE_CACHE.clear()
+    _DIR_SIZE_CACHE[path] = (now, total)
     return total
 
 
@@ -2753,8 +2768,6 @@ class App:
 
         _reopen(rid)
 
-        _reopen(rid)
-
     def _schedule_fs_refresh(self):
         """写/删文件操作后刷新文件树（2 秒去抖，连续工具调用不反复重建）。"""
         import time as _t
@@ -3694,52 +3707,52 @@ class App:
         self._apply_reasoning(val)
 
     # ================= 派发守护：定时核验条件，不满足自动关掉 =================
-    DISPATCH_CHECK_S = 4        # 本地大脑核验周期（秒）
-    DISPATCH_CLOUD_S = 600      # 云端目标/网络探测周期（秒）
+    DISPATCH_CHECK_S = 4        # 守护轮询周期（秒）；每轮只读一个布尔，够轻
+    DISPATCH_CLOUD_S = 600      # 云端目标探测周期（秒）
 
     def _dispatch_check_loop(self):
-        """后台守护：派发开启时定时核验生效条件。
+        """后台守护：派发开启时定时探测云端目标（网络可达 + 密钥有效）。
 
-        - 本地大脑：未配置 / 未运行 / 不健康 → 立即自动关掉（状态确定）；
-          纯云端产品线（gpulocal 关闭）无本地大脑，不做此项核验；
-        - 云端目标（含网络可达性 / 密钥有效性）：连续 2 次探测失败 → 自动关掉
-          （60s 一次，防瞬时网络抖动误关）。
-        只关不启：重新满足条件后需手动再开（绝不自动拉起本地模型）。
+        连续 2 次探测失败 → 自动关掉（每 DISPATCH_CLOUD_S 探一次，防瞬时抖动误关）。
+        只关不启：重新满足条件后需手动再开。
+        (B) 收敛后派发只剩云端腿，没有「本地大脑」可核验，这里不再做本地检查。
         """
         last_cloud = 0.0
         while True:
             try:
                 if config.get_model_dispatch():
-                    if not self._dispatch_brain_healthy():
-                        name = config.get_dispatch_model().split("/")[-1]
-                        self.root.after(0, lambda: self._dispatch_auto_off(
-                            _t("dispatch.auto_off.brain", name=name)))
-                    else:
-                        now = time.time()
-                        if now - last_cloud >= self.DISPATCH_CLOUD_S:
-                            last_cloud = now
-                            ok, bad = self._dispatch_cloud_ok()
-                            if ok:
-                                self._dispatch_cloud_fails = 0
-                            else:
-                                self._dispatch_cloud_fails += 1
-                                if self._dispatch_cloud_fails >= 2:
-                                    self.root.after(
-                                        0, lambda b=bad: self._dispatch_auto_off(
-                                            _t("dispatch.auto_off.cloud",
-                                               models=b)))
+                    now = time.time()
+                    if now - last_cloud >= self.DISPATCH_CLOUD_S:
+                        last_cloud = now
+                        ok, bad = self._dispatch_cloud_ok()
+                        if ok:
+                            self._dispatch_cloud_fails = 0
+                        else:
+                            self._dispatch_cloud_fails += 1
+                            if self._dispatch_cloud_fails >= 2:
+                                self.root.after(
+                                    0, lambda b=bad: self._dispatch_auto_off(
+                                        _t("dispatch.auto_off.cloud", models=b)))
             except Exception:                       # noqa: BLE001
                 pass
             threading.Event().wait(self.DISPATCH_CHECK_S)
 
     def _dispatch_cloud_ok(self):
-        """探测云端目标所在端点（顺带验证网络与密钥）。返回 (是否全通, 失败串)。"""
+        """探测云端派发目标所在端点（顺带验证网络与密钥）。返回 (是否全通, 失败串)。
+
+        目标取自配置的 dispatch_pro / dispatch_flash（(B) 收敛已无 dispatch_vision
+        字段，旧实现硬取该键会 KeyError）；同一端点只探一次。一个目标都没配时
+        没有可探对象 → 返回通（是否生效由顶栏/面板按配置展示）。
+        """
+        cfg = config.get_dispatch_config()
         seen, mcs, bad = set(), [], []
-        for k in ("dispatch_flash", "dispatch_pro", "dispatch_vision"):
-            mc = config.find_model(config.get_dispatch_config()[k])
+        for k in ("dispatch_pro", "dispatch_flash"):
+            mc = config.find_model(cfg.get(k) or "")
             if mc and mc.base_url and mc.base_url not in seen:
                 seen.add(mc.base_url)
                 mcs.append(mc)
+        if not mcs:
+            return True, ""
         for mc in mcs:
             try:
                 _fetch_openai_models(mc.base_url, mc.api_key)
@@ -4044,33 +4057,36 @@ class App:
         ui_panel_kb.show(self)
 
     # ---- 顶栏派发快捷开关 ----
-    def _dispatch_brain_healthy(self) -> bool:
-        """大脑健康核验：本地 GPU 腿已移除，派发只剩云端腿，视为恒健康。
+    def _dispatch_targets_ready(self) -> bool:
+        """派发生效判据：云端目标已配置（顶栏与派发面板共用）。
 
-        云端目标/网络可达性由 _dispatch_check_loop 的云端探测单独把关。
+        (B) 收敛后没有「本地大脑」：本地服务健康核验已随工具一并退役。
+        网络与密钥可达性由 _dispatch_check_loop 的云端探测把关（探测不通会自动
+        关掉派发），所以这里只做零成本的配置判断，避免开面板就发网络请求。
         """
-        return True
+        cfg = config.get_dispatch_config()
+        return bool(cfg.get("dispatch_pro") or cfg.get("dispatch_flash"))
 
     def _update_dispatch_btn(self):
-        """按 开关+大脑状态 刷新顶栏按钮文字（● 生效 / ○ 未生效 / 关）。"""
+        """按 开关+目标配置 刷新顶栏按钮文字（● 生效 / ○ 未生效 / ⚡ 关）。"""
         if getattr(self, "dispatch_btn", None) is None:
             return                      # 产品开关关闭时无此按钮
         if not config.get_model_dispatch():
             self.dispatch_btn.config(text="⚡", fg="#94a3b8")
-        elif self._dispatch_brain_healthy():
+        elif self._dispatch_targets_ready():
             self.dispatch_btn.config(text="●", fg="#16a34a")
         else:
             self.dispatch_btn.config(text="○", fg="#d97706")
 
     def _toggle_dispatch(self):
-        """左键：切换模型派发总开关（不自动启动本地模型）。"""
+        """左键：切换模型派发总开关（不触碰任何模型服务）。"""
         on = not config.get_model_dispatch()
         config.set_model_dispatch(on)
         self._update_dispatch_btn()
-        name = config.get_dispatch_model().split("/")[-1]
+        name = (config.get_dispatch_pro() or "").split("/")[-1]
         if not on:
             self._set_status(_t("dispatch.topbar.now_off"))
-        elif self._dispatch_brain_healthy():
+        elif self._dispatch_targets_ready():
             self._set_status(_t("dispatch.topbar.now_on_active", name=name))
         else:
             self._set_status(_t("dispatch.topbar.now_on_inactive", name=name))
@@ -6393,7 +6409,7 @@ class App:
             if has_image:
                 vision_mc = None
                 if config.get_model_dispatch() and config.get_dispatch_smart():
-                    vk = tools.resolve_dispatch_vision_key()
+                    vk = config.resolve_dispatch_vision_key()
                     vision_mc = config.find_model(vk) if vk else None
                 if vision_mc is not None:
                     if not getattr(self, "_dispatch_notes", None):
@@ -7002,14 +7018,13 @@ class App:
         # 剩余批注（无对应轮次的旧格式）末尾补显
         for n in legacy_notes + [x for ts in by_turn.values() for x in ts]:
             _render_note(n)
-        # 历史会话开了派发 → 载入时自动打开派发；
-        # 但本地大脑服务没在运行 → 不开，回退非派发（直接用默认模型）
+        # 历史会话开了派发 → 载入时自动打开派发；没配云端目标 → 不开，回退非派发
         had_dispatch = any(n.get("kind") == "turn_model" for n in notes)
         if had_dispatch and not config.get_model_dispatch():
-            if self._dispatch_brain_healthy():
+            if self._dispatch_targets_ready():
                 config.set_model_dispatch(True)
                 self._update_dispatch_btn()
-                name = config.get_dispatch_model().split("/")[-1]
+                name = (config.get_dispatch_pro() or "").split("/")[-1]
                 self._set_status(_t("sess.dispatch_restored", name=name))
             else:
                 self._set_status(_t("sess.dispatch_fallback"))

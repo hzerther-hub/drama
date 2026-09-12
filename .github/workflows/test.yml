@@ -24,7 +24,7 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
 
       - name: Syntax check all modules
-        run: python -m py_compile *.py gpulocal/*.py examples/*.py products/*.py products/quant/*.py products/quant/data/*.py products/quant/kb/*.py packaging/*.py
+        run: python -m py_compile *.py examples/*.py products/*.py products/quant/*.py products/quant/data/*.py products/quant/kb/*.py packaging/*.py
 
       - name: Run tests
         run: python -m pytest tests/ -q

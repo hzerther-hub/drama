@@ -3,7 +3,7 @@
 """E2 打包管线：一条命令出某个产品的当前平台安装包。
 
 用法：
-    python packaging/build.py                 # 默认产品 devtool_local
+    python packaging/build.py                 # 默认产品 novelwriter
     python packaging/build.py devtool         # 纯云端版
     python packaging/build.py quant --clean   # 清掉 build/ 缓存重打
 
@@ -11,7 +11,6 @@
 CI：.github/workflows/test.yml 的 package 任务对三平台各跑一次。
 
 产品感知：读 products/<name>/profile.json——
-  · gpulocal 功能关 → 不打 gpulocal/ 数据目录（包更小）
   · exe_name 决定产物名
 注意：本脚本只生成 spec 并调 PyInstaller；图标/签名属 E3（品牌体系）。
 """
@@ -112,8 +111,6 @@ def build(product_name: str, clean: bool = False) -> str:
         hidden.append("tkinterdnd2")
     except ImportError:
         print("[build] 提示：未装 tkinterdnd2，拖放功能降级（打包继续）")
-    if prof.feature("gpulocal"):
-        datas.append((os.path.join(ROOT, "gpulocal"), "gpulocal"))  # 本地模型面板/服务/装机脚本
     datas = [(_abs(s), d) for s, d in datas]
 
     # ---- 生成 spec ----

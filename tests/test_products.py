@@ -40,7 +40,8 @@ def test_devtool_has_no_local_model():
 
 def test_devtool_local_is_full():
     prof = products.load_profile("devtool_local")
-    for k in ("gpulocal", "dispatch", "editor", "voice", "mcp"):
+    # gpulocal 模块已移除，不再是「满配」契约的一部分
+    for k in ("dispatch", "editor", "voice", "mcp"):
         assert prof.feature(k) is True
 
 

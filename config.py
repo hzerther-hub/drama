@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# 开发者备注：王海滨  2026-09-12 19:23
 """全局配置：模型端点、默认参数。
 
 模型列表从 models.json 加载，用户可以自行编辑该文件增加/删除模型。
@@ -106,7 +107,6 @@ def save_last_workspace(path: str):
         pass
 
 
-
 WORKSPACE = _load_last_workspace()
 
 
@@ -138,10 +138,9 @@ def set_quant_llm_model(key: str):
 SYSTEM_PROMPT = (
     "你是编码助手。优先用本地能力完成任务：用工具读文件、搜索代码、执行 shell、联网搜索，"
     "尽量本地解决（本地不额外花钱）。"
-    "只有当你确认任务超出本地能力/上下文，或本地缺少所需能力（如识图、超强推理/重分析）时，"
-    "才用 call_model 委派给云端：复杂/重推理→deepseek/deepseek-v4-pro；识图→deepseek-v4-flash-vision-exp。"
-    "本地能搞定就别委派。"
-    "无论本地还是委派，始终精炼作答：只给结论与必要依据，绝不输出大段文件内容或重复列表。"
+    "模型路由由应用层负责：复杂任务 / 识图会自动切到合适的云端模型，你没有委派工具，"
+    "也不要声称把任务派给了别的模型。"
+    "始终精炼作答：只给结论与必要依据，绝不输出大段文件内容或重复列表。"
     "修改/增强代码文件时，必须调用 write_file 把改动真正写回文件（不要只把新内容输出在回复里）；"
     "写完再用 read_file 抽查确认。"
     "完成纪律（必须遵守）："
@@ -151,7 +150,7 @@ SYSTEM_PROMPT = (
     "2) 改完必须用 lsp_diagnostics 或运行相关测试/脚本验证，发现问题就修，直到通过；"
     "3) 只有当所有步骤完成且验证通过、目标真正达成时，才给出最终答复；"
     "绝不在半途（改了一部分、还没验证通过）就草草结束。"
-    "请始终基于真实工具/委派结果作答，不要编造文件内容。"
+    "请始终基于真实工具结果作答，不要编造文件内容。"
     "用户消息可能附带本地媒体文件（图片/音频/视频）路径：图片直接以视觉输入提供；"
     "音频/视频可用 run_shell 调 ffmpeg（ffprobe）提取信息后再分析。"
 )
@@ -389,21 +388,18 @@ def set_font_size_editor(n: int):
     _save_models_data(data)
 
 
-# ---------------- 模型派发（多模型路由） ----------------
-# 编排模型先分析用户意图，再把任务派发给合适的模型：
-#   · 简单任务 → 本地大脑自己答，或派 dispatch_flash（云端轻量）
-#   · 复杂/重推理 → 派 dispatch_pro（云端高性能）
-#   · 识图 → 本地大脑带识图就本地看，否则派 dispatch_vision（云端识图）
-# 约束：本地模型互相串行（一次只能跑一个），因此本地→本地派发禁止；
-# call_model 只派文本子任务（识图由识图模型直接收附件）。
+# ---------------- 模型派发（云端多模型路由） ----------------
+# (B) 收敛后：主代理即派发大脑——没有 call_model 工具，也没有「本地大脑」配置。
+#   · 默认 → 当前模型自己答
+#   · 复杂/重推理 → ui._route_complex 把本轮换成 dispatch_pro（云端高性能）
+#   · 识图 → 当前模型不带识图时，换成已配置目标里带识图的模型
+#            （见下方 resolve_dispatch_vision_key）
 _DISPATCH_DEFAULTS = {
     "model_dispatch": True,                                     # 总开关
     "dispatch_smart": True,                                     # 智排：按任务类型自动路由/识图预路由
     "auto_cloud_fallback": True,                                # 目标模型不可用时自动回退云端
-    "dispatch_model": "deepseek/deepseek-v4-pro",               # 派发大脑（云端）
     "dispatch_flash": "deepseek/deepseek-v4-flash",             # 云端简单
     "dispatch_pro": "deepseek/deepseek-v4-pro",                 # 云端复杂/高性能
-    "dispatch_vision": "deepseek/deepseek-v4-flash-vision-exp", # 云端识图（必选）
 }
 
 
@@ -459,15 +455,6 @@ def set_dispatch_smart(on: bool):
         _save_models_data(data)
 
 
-def get_dispatch_model() -> str:
-    """本地大脑模型 key。"""
-    return get_dispatch_config()["dispatch_model"]
-
-
-def set_dispatch_model(key: str):
-    _set_dispatch_str("dispatch_model", key)
-
-
 def get_dispatch_flash() -> str:
     """云端轻量/简单任务派发目标。"""
     return get_dispatch_config()["dispatch_flash"]
@@ -486,13 +473,21 @@ def set_dispatch_pro(key: str):
     _set_dispatch_str("dispatch_pro", key)
 
 
-def get_dispatch_vision() -> str:
-    """云端识图兜底目标（必选）。"""
-    return get_dispatch_config()["dispatch_vision"]
+def resolve_dispatch_vision_key() -> str:
+    """识图预路由的目标模型 key；没有可用目标时返回空串。
 
-
-def set_dispatch_vision(key: str):
-    _set_dispatch_str("dispatch_vision", key)
+    (B) 收敛后不再有独立的 dispatch_vision 配置——识图只在「用户已配置的云端
+    派发目标」里挑带识图的模型（优先高性能 pro，再简单 flash），避免把图片发到
+    用户没指定的端点。
+    """
+    cfg = get_dispatch_config()
+    for k in (cfg.get("dispatch_pro"), cfg.get("dispatch_flash")):
+        if not k:
+            continue
+        mc = find_model(k)
+        if mc is not None and mc.vision:
+            return mc.key
+    return ""
 
 
 def _set_dispatch_str(field: str, key: str):
@@ -507,15 +502,15 @@ def _set_dispatch_str(field: str, key: str):
 def dispatch_target_label(key: str) -> str:
     """派发目标 key 的友好描述（界面/会话回放显示用）。
 
-    命中配置里的三个云端目标 → 中文角色标签；否则原样返回 key。
+    命中已配置的云端目标 → 中文角色标签；否则原样返回 key。
     """
     cfg = get_dispatch_config()
-    if key == cfg["dispatch_pro"]:
+    if key == cfg.get("dispatch_pro"):
         return "云端高性能"
-    if key == cfg["dispatch_flash"]:
+    if key == cfg.get("dispatch_flash"):
         return "云端简单"
-    if key == cfg["dispatch_vision"]:
-        return "云端识图"
+    if key == cfg.get("dispatch_thinking"):
+        return "云端思考"          # 预留：models.json 手填 thinking 目标时同样给标签
     return key
 
 

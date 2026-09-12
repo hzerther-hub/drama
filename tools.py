@@ -626,45 +626,10 @@ def _run_shell(args):
         return f"错误：命令超时（>{config.TOOL_EXEC_TIMEOUT}秒）"
 
 
-# ---------------- 模型派发（call_model：把文本子任务派发给其它模型） ----------------
-# 编排大脑分析意图后，用 call_model 把一段文本子任务派给已配置的云端目标。
-# 约束：本地模型串行（一次一个）——本地→本地派发禁止；只派文本，不带图片。
-
-# call_model 子任务时注入的子系统提示：让子模型只专注于该子任务、简洁作答。
-_DISPATCH_SUB_PROMPT = (
-    "你是一个子任务执行模型。请只完成用户给你的这段子任务，输出简洁、准确、"
-    "可用的结果即可，不要复述任务，不要询问上下文，不要在结果里加入与任务无关的内容。"
-)
-# 子任务结果回填主循环前的字符上限（防止撑爆主循环上下文；后续 context 压缩会再收紧）。
-DISPATCH_RESULT_KEEP = 8000
-
-CALL_MODEL_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "call_model",
-        "description": (
-            "把一段文本子任务委派给另一个（云端）模型处理（云端才花钱，非必要不用）。"
-            "只有当本地确实搞不定时才用：任务复杂/重推理/超出你上下文与能力，或本地缺少所需能力"
-            "（识图、专门领域专长等），或你尝试后仍无法高质量完成。本地能搞定就别委派。"
-            "目标选择：复杂、重推理、需更强能力→deepseek/deepseek-v4-pro；含图片/识图→deepseek-v4-flash-vision-exp。"
-            "model=目标模型 key；task=交给它的完整子任务提示词（尽量自包含）；"
-            "reasoning_effort 可选（复杂任务可设 high）。只做文本子任务，不要传图片。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "model": {"type": "string",
-                          "description": "目标模型 key（已配置的派发目标之一）"},
-                "task": {"type": "string",
-                         "description": "交给目标模型的子任务提示词"},
-                "reasoning_effort": {"type": "string",
-                                     "description": "可选：推理等级（low/medium/high）"},
-            },
-            "required": ["model", "task"],
-        },
-    },
-}
-
+# 模型派发（call_model）已退役 —— (B) 收敛后：主代理即派发大脑，复杂任务走
+# _route_complex 直接选 flash/pro/thinking；call_model 工具、子任务子提示、派发
+# 目标白名单、结果截断常量一并删除。相关测试：
+# tests/test_dispatch.py::TestCallModelGone
 
 # ---------------- 公司知识库（企业代码 RAG，kb_search 工具） ----------------
 # 只在「公司知识库已启用」时暴露（见 kb_schema），与 index_search（工作区）互补：
@@ -738,6 +703,7 @@ def kb_schema() -> list:
     return [KB_SEARCH_SCHEMA]
 
 
+<<<<<<< HEAD
 # ---------------- 代码知识图谱（内置 codegraph，code_graph 工具） ----------------
 # 与 index_search（文本块检索）互补：这里回答结构问题——符号定义在哪、
 # 谁调用了它、它依赖谁、上下游是什么。工作区里有真实 CodeGraph 库时直接读它。
@@ -854,120 +820,11 @@ def codegraph_schema() -> list:
     except Exception:                    # noqa: BLE001
         return []
     return [CODE_GRAPH_SCHEMA]
+=======
+>>>>>>> 1a7c87d (refactor(dispatch): (B) 收敛——退役 call_model 工具与本地大脑，派发纯云端化)
 
 
-def _is_local_key(model_key: str) -> bool:
-    """模型是否指向本地端点（127.0.0.1 / localhost）。"""
-    mc = config.find_model(model_key)
-    if mc is None:
-        return False
-    return any(h in mc.base_url for h in ("127.0.0.1", "localhost"))
 
-
-def _local_healthy(model_key: str) -> bool:
-    """给定本地模型 key，判断对应服务是否已启动且健康。
-
-    借助 localmodels（复用 gpulocal 的 systemd/进程守护 + /v1/models 健康检查）。
-    任何异常（gpulocal 缺失、找不到模型、服务未运行）都返回 False。
-    """
-    try:
-        import localmodels
-    except Exception:                # noqa: BLE001  gpulocal 目录缺失 → 降级
-        return False
-    try:
-        models = localmodels.list_models()
-    except Exception:                # noqa: BLE001
-        return False
-    if not models:
-        return False
-    for cfg in models.values():
-        key = "%s/%s" % (localmodels.provider_id(cfg),
-                         localmodels.model_id(cfg))
-        if key == model_key:
-            state, healthy = localmodels.status_of(cfg)
-            return bool(state == "active" and healthy)
-    return False
-
-
-def validate_dispatch_target(model: str) -> tuple:
-    """校验 call_model 的派发目标是否允许。返回 (True/False, 错误串或 None)。
-
-    允许：配置里的三个云端目标（flash/pro/vision）。
-    拒绝：本地模型（本地大脑自身=自我调用会递归，其它本地=串行互斥），
-          以及不在白名单里的任何目标。
-    """
-    cfg = config.get_dispatch_config()
-    cloud = {cfg["dispatch_flash"], cfg["dispatch_pro"], cfg["dispatch_vision"]}
-    if model in cloud:
-        return True, None
-    if _is_local_key(model):
-        if model == cfg["dispatch_model"]:
-            return False, "错误：不能派发给当前本地大脑自身（避免自我调用）"
-        return False, "错误：本地模型互斥，不能派发给其它本地模型"
-    return False, f"错误：派发目标不在白名单内：{model}"
-
-
-def resolve_dispatch_vision_key() -> str:
-    """识图预路由应选用的模型 key。
-
-    本地优先：本地大脑（dispatch_model）带识图且已在运行健康 → 用本地；
-    否则回退云端识图（dispatch_vision）。找不到可用识图返回空串。
-    """
-    cfg = config.get_dispatch_config()
-    lb = cfg["dispatch_model"]
-    if lb and _is_local_key(lb) and _local_healthy(lb):
-        mc = config.find_model(lb)
-        if mc is not None and mc.vision:
-            return lb
-    return cfg["dispatch_vision"]
-
-
-def _truncate_dispatch(text: str, keep: int) -> str:
-    """保头尾截断派发结果。"""
-    if len(text) <= keep:
-        return text
-    head = keep * 2 // 3
-    tail = keep - head
-    return text[:head] + f"\n…[已压缩，原 {len(text)} 字符]\n" + text[-tail:]
-
-
-def _call_model(args):
-    """call_model 执行器：把文本子任务派发给目标模型，返回其文本结果。"""
-    model = (args.get("model") or "").strip()
-    task = (args.get("task") or "").strip()
-    effort = (args.get("reasoning_effort") or "").strip()
-    if not model or not task:
-        return "错误：call_model 需要 model 与 task 参数"
-    if not config.get_model_dispatch():
-        return "错误：模型派发未开启，无法调用其它模型"
-    ok, err = validate_dispatch_target(model)
-    if not ok:
-        return err
-    mc = config.find_model(model)
-    if mc is None:
-        return f"错误：派发目标不存在：{model}"
-    # 允许按次指定推理等级：复制一个带指定 reasoning_effort 的配置，不改全局。
-    if effort:
-        import dataclasses
-        try:
-            mc = dataclasses.replace(mc, reasoning_effort=effort)
-        except Exception:            # noqa: BLE001  异常字段时保持原配置
-            pass
-    messages = [
-        {"role": "system", "content": _DISPATCH_SUB_PROMPT},
-        {"role": "user", "content": task},
-    ]
-    collected = []
-    try:
-        for ev in llm.stream_chat(mc, messages, None):
-            if ev["type"] == "text":
-                collected.append(ev["delta"])
-    except llm.LLMError as e:
-        return f"错误：派发失败：{e}"
-    text = "".join(collected)
-    if not text:
-        return "（派发目标未返回内容）"
-    return _truncate_dispatch(text, DISPATCH_RESULT_KEEP)
 
 
 def _media_out_path(subdir: str, filename: str, default_ext: str,
@@ -1081,22 +938,6 @@ def _lsp_diagnostics(args: dict) -> str:
     return "\n".join(lines)
 
 
-def call_model_schema() -> list:
-    """模型派发「已生效」时才提供 call_model 工具。
-
-    生效条件（与 UI 状态点一致）：总开关开启 + 指定了本地大脑（dispatch_model）
-    + 该本地模型已在运行且健康。任一不满足 → 不暴露该工具（视为未开启）。
-    """
-    if not config.get_model_dispatch():
-        return []
-    model_key = config.get_dispatch_model()
-    if not model_key:
-        return []
-    if not _local_healthy(model_key):
-        return []
-    return [CALL_MODEL_SCHEMA]
-
-
 def _task_plan(args: dict) -> str:
     """任务计划工具本体：只做校验与确认，界面渲染由 agent 发 plan 事件完成。"""
     steps = args.get("steps")
@@ -1126,7 +967,6 @@ _EXECUTORS = {
     "video_gen": _video_gen,
     "video_status": _video_status,
     "lsp_diagnostics": _lsp_diagnostics,
-    "call_model": _call_model,
     "task_plan": _task_plan,
 }
 

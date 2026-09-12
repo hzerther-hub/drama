@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# 开发者备注：王团结  2026-09-12 20:59
 """Agent 循环：流式 function-calling + 权限控制。"""
 
 from __future__ import annotations
@@ -148,8 +149,6 @@ class Agent:
     def _tool_schemas(self):
         base = (tools.readonly_schemas() if self.mode == MODE_READONLY
                 else tools.TOOL_SCHEMAS)
-        # 模型派发开启时提供 call_model（把文本子任务派发给其它模型）
-        base = base + tools.call_model_schema()
         # 公司知识库启用时提供 kb_search（企业代码 + 文档 RAG）
         base = base + tools.kb_schema()
         base = base + tools.codegraph_schema()

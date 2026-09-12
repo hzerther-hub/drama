@@ -459,52 +459,32 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     # —— 回复模型署名 / 会话载入恢复派发 ——
     "reply.model": {"en": "— by {model} —", "zh": "—— 由 {model} 处理 ——"},
     "sess.dispatch_restored": {
-        "en": "Dispatch restored (brain {name} running).",
-        "zh": "已随历史会话开启派发（本地大脑 {name} 运行中）。"},
+        "en": "Dispatch restored (cloud target {name}).",
+        "zh": "已随历史会话开启派发（云端目标 {name}）。"},
     "sess.dispatch_fallback": {
-        "en": "This session used dispatch, but the local brain is not running — replying with the default model.",
-        "zh": "该会话原开启派发，但本地大脑未运行——回退非派发，用默认模型回复。"},
+        "en": "This session used dispatch, but no cloud target is configured — replying with the default model.",
+        "zh": "该会话原开启派发，但未配置云端目标——回退非派发，用默认模型回复。"},
 
     # —— 模型派发设置面板 ——
     "model.dispatch":  {"en": "🔀 Model dispatch…", "zh": "🔀 模型派发…"},
     "dlg.dispatch":    {"en": "Model Dispatch", "zh": "模型派发"},
-    "dispatch.master": {"en": "Enable model dispatch (call_model tool)",
-                        "zh": "开启模型派发（call_model 工具）"},
-    "dispatch.smart":  {"en": "Smart routing: auto-switch to a vision model for images",
-                        "zh": "智排：识图预路由（带图自动切识图模型）"},
-    "dispatch.brain":  {"en": "Local brain (dispatch_model)",
-                        "zh": "本地大脑（dispatch_model）"},
+    "dispatch.master": {"en": "Enable model dispatch (cloud routing)",
+                        "zh": "开启模型派发（云端路由）"},
+    "dispatch.smart":  {"en": "Smart routing: complex tasks → Pro target; images → vision target",
+                        "zh": "智排：复杂任务切高性能目标、带图切识图目标"},
     "dispatch.cloud":  {"en": "Cloud targets", "zh": "云端目标"},
     "dispatch.flash":  {"en": "Simple", "zh": "云端简单"},
     "dispatch.pro":    {"en": "Complex", "zh": "云端高性能"},
-    "dispatch.vision": {"en": "Vision *", "zh": "云端识图（必选）"},
-    "dispatch.none_local": {"en": "(no local models)", "zh": "（无本地模型）"},
     "dispatch.off":    {"en": "○ Dispatch disabled (master switch off)",
                         "zh": "○ 模型派发未开启（总开关关闭）"},
-    "dispatch.no_brain": {"en": "⚠ No local brain selected — dispatch inactive",
-                          "zh": "⚠ 未选择本地大脑，派发视为未开启"},
-    "dispatch.active": {"en": "● Active: brain is running & healthy, call_model available",
-                        "zh": "● 已生效：本地大脑运行中，call_model 工具可用"},
-    "dispatch.inactive": {"en": "○ Not active: brain not running (start it in the model menu; never auto-started)",
-                          "zh": "○ 未生效：本地大脑未运行（请在模型菜单手动启动，不会自动拉起）"},
-    "dispatch.hint":   {"en": "Only local models already running are used; local models are serial "
-                             "(starting one stops others). Text subtasks go to the cloud targets; "
-                             "images are routed by smart routing (local vision first).",
-                        "zh": "仅派发给已在运行的本地模型；本地模型串行互斥（启动一个会停掉其它）。"
-                              "文本子任务派发给云端目标；识图走智排（本地识图优先，回退云端识图）。"},
-    "dispatch.vision_required": {"en": "Cloud vision target is required.",
-                                 "zh": "云端识图目标为必选项。"},
-    "dispatch.no_vision_models": {"en": "(no vision models — set vision:true)",
-                                  "zh": "（暂无识图模型，需 models.json 标记 vision:true）"},
-    "dispatch.vision_not_vision": {
-        "en": "⚠ {model} has no vision support; pick a 👁 model.",
-        "zh": "⚠ {model} 不支持识图，请选择带 👁 的模型。"},
-    "dispatch.brain_not_running_q": {
-        "en": "Local brain {brain} is not running.\nSave anyway (dispatch stays inactive until you start it)?",
-        "zh": "本地大脑 {brain} 未运行。\n仍要保存吗？（保存后派发仍视为未生效，直到手动启动该模型）"},
-    "dispatch.brain_not_running": {
-        "en": "⚠ Brain {brain} not running — dispatch inactive.",
-        "zh": "⚠ 本地大脑 {brain} 未运行，派发视为未生效。"},
+    "dispatch.active_cloud": {
+        "en": "● Active: dispatch on — complex tasks route to {name}.",
+        "zh": "● 生效：派发已开启——复杂任务路由到 {name}。"},
+    "dispatch.hint":   {"en": "Cloud routing only: complex tasks are answered by the "
+                             "Complex target, images by a vision-capable target. "
+                             "No local brain, no call_model tool.",
+                       "zh": "仅云端路由：复杂任务交给「云端高性能」目标，带图交给带识图的"
+                             "目标；没有本地大脑，也没有 call_model 工具。"},
     "dispatch.saved":  {"en": "Dispatch settings saved.", "zh": "模型派发设置已保存。"},
     "dispatch.save_fail": {"en": "Save failed: {e}", "zh": "保存失败：{e}"},
     "dispatch.refresh": {"en": "Refresh", "zh": "刷新"},
@@ -595,20 +575,17 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "dispatch.topbar.on_active": {"en": "🔀 Dispatch ●", "zh": "🔀 派发 ●"},
     "dispatch.topbar.on_inactive": {"en": "🔀 Dispatch ○", "zh": "🔀 派发 ○"},
     "dispatch.topbar.now_on_active": {
-        "en": "Dispatch ON — brain {name} running, call_model available.",
-        "zh": "模型派发已开启：本地大脑 {name} 运行中，call_model 可用。"},
+        "en": "Dispatch ON — complex tasks route to {name}.",
+        "zh": "模型派发已开启：复杂任务路由到 {name}。"},
     "dispatch.topbar.now_on_inactive": {
-        "en": "Dispatch ON, but brain {name} is not running — inactive until you start it.",
-        "zh": "派发已开启，但本地大脑 {name} 未运行——启动后才生效（不会自动拉起）。"},
+        "en": "Dispatch ON, but no cloud target is configured — inactive.",
+        "zh": "派发已开启，但未配置云端目标——不生效。"},
     "dispatch.topbar.now_off": {"en": "Dispatch OFF.",
                                 "zh": "模型派发已关闭。"},
     "dispatch.topbar.hint": {
         "en": "Click: toggle dispatch · Right-click: settings",
         "zh": "左键：开关派发 · 右键：派发设置"},
     # —— 派发守护（自动关掉） ——
-    "dispatch.auto_off.brain": {
-        "en": "🔁 Dispatch auto-OFF: local brain {name} is not running/healthy.",
-        "zh": "🔁 模型派发已自动关闭：本地大脑 {name} 未运行或不健康。"},
     "dispatch.auto_off.cloud": {
         "en": "🔁 Dispatch auto-OFF: cloud targets unreachable: {models} (network/endpoint issue).",
         "zh": "🔁 模型派发已自动关闭：云端目标探测不通：{models}（网络或端点异常）。"},
