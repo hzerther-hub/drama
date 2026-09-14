@@ -231,3 +231,75 @@ def test_adjust_recovers_stage_after_restart(monkeypatch):
     assert captured.get("key") == "outline"
     assert "太阳能" in captured.get("fb", "")
     assert app._novel_last_done == "outline"      # 记录已恢复
+
+
+# ---------------- 删除会话不得改变工作区状态 ----------------
+
+class _DelStub:
+    """哑 App：只提供删除路径用到的属性，用来跑真实的 ui.App 删除方法。"""
+
+    _cancel_runs = ui.App._cancel_runs      # 真实实现（取消运行中会话）
+
+    def __init__(self):
+        self.session_id = "cur"
+        self.session_title = "当前会话"
+        self._runs = {}
+        self._cur_run = None
+        self.new_persist = None
+        self.refreshed = False
+        self.status = ""
+
+    def _new_session(self, persist=True):
+        self.new_persist = persist          # 记录落盘意图（True 会把分组顶回来）
+
+    def _refresh_sidebar(self):
+        self.refreshed = True
+
+    def _set_status(self, s):
+        self.status = s
+
+
+def test_delete_current_session_does_not_persist_new_one(monkeypatch):
+    """删当前会话：新会话必须 persist=False，否则工作区分组立刻被顶回来。"""
+    import tkinter.messagebox
+    import sessions as sess_mod
+    import ui
+
+    deleted = []
+    monkeypatch.setattr(sess_mod, "delete", lambda sid: deleted.append(sid))
+    monkeypatch.setattr(tkinter.messagebox, "askyesno", lambda *a, **k: True)
+    stub = _DelStub()
+    ui.App._delete_current_session(stub)
+    assert deleted == ["cur"]
+    assert stub.new_persist is False        # 关键：不落盘 → 分组不会复活
+
+
+def test_delete_sessions_group_keeps_workspace(monkeypatch):
+    """删「工作区分组」：删完当前会话时同样不落盘，工作区状态保持不变。"""
+    import tkinter.messagebox
+    import sessions as sess_mod
+    import ui
+
+    deleted = []
+    monkeypatch.setattr(sess_mod, "delete", lambda sid: deleted.append(sid))
+    monkeypatch.setattr(tkinter.messagebox, "askyesno", lambda *a, **k: True)
+    stub = _DelStub()
+    ui.App._delete_sessions(stub, ["cur", "b"], "D:/ws-A")
+    assert sorted(deleted) == ["b", "cur"]
+    assert stub.new_persist is False
+
+
+def test_delete_other_session_only_refreshes(monkeypatch):
+    """删的不是当前会话：只刷新侧栏，不新建会话、不影响工作区。"""
+    import tkinter.messagebox
+    import sessions as sess_mod
+    import ui
+
+    deleted = []
+    monkeypatch.setattr(sess_mod, "delete", lambda sid: deleted.append(sid))
+    monkeypatch.setattr(tkinter.messagebox, "askyesno", lambda *a, **k: True)
+    stub = _DelStub()
+    ui.App._delete_sessions(stub, ["other"], "D:/ws-B")
+    assert deleted == ["other"]
+    assert stub.new_persist is None         # 没新建会话
+    assert stub.refreshed is True

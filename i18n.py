@@ -233,6 +233,11 @@ STRINGS: dict = {
 [Session]
 · Each conversation auto-saves; switch history sessions in the "＋ New session" menu
 · History continues context; auto-compacts when too long (a note appears in the chat)
+· Sessions run independently: while one is answering you can switch to another and
+  send there too — a ⏳ mark in the sidebar shows which sessions are still running,
+  and switching back restores the partial output (nothing is lost)
+· Deleting a chat or a workspace group never changes the current workspace; a deleted
+  session stays deleted (a running one is cancelled first)
 
 [Model management]
 · Top model button: quickly switch model
@@ -297,6 +302,10 @@ External MCP servers add more tools (model menu → 🔌 Manage MCP servers)
 【会话】
 · 每次对话自动保存，可在「＋ 新会话」菜单切换历史会话
 · 历史会话延续上下文；过长时自动压缩（聊天区会提示）
+· 多会话可同时进行：一个会话在回答时，你可以切到另一个会话继续提问；
+  侧栏用 ⏳ 标出仍在运行的会话，切回来会恢复已产生的输出（不会丢）
+· 删除聊天记录或工作区分组都不会改变当前工作区；删掉的会话不会自己回来
+  （若该会话正在运行，会先取消运行再删除）
 
 【模型管理】
 · 顶部模型按钮：快速切换模型
@@ -1060,6 +1069,8 @@ Tip: append @pid to target a specific book, e.g. /novel extend 30 @novel-2026090
     "sess.you":       {"en": "You: {t}", "zh": "你：{t}"},
     "sess.n_imgs":    {"en": "  🖼 [{n} image(s) in this message]", "zh": "  🖼 [本条含 {n} 张图片]"},
     "sess.loaded":    {"en": "Session loaded: {t}", "zh": "已载入会话：{t}"},
+    "sess.running_restored": {"en": "⏳ This session is still running — output restored (switch away freely, it keeps going)",
+                              "zh": "⏳ 该会话仍在进行中，已恢复输出（可随意切走，后台继续跑）"},
     "sess.del_btn":   {"en": "🗑 Delete selected", "zh": "🗑 删除选中"},
     "sess.del_title": {"en": "Delete session", "zh": "删除会话"},
     "sess.del_confirm": {"en": "Delete session \"{t}\"?", "zh": "确定删除会话「{t}」？"},

@@ -99,6 +99,46 @@ def _mode_btn_label(mode):
     """权限按钮文案：图标 + 模式名（跟随当前语言）。"""
     return f"{MODE_ICON.get(mode,'🛡')} {_mode_label(mode)}"
 
+
+class SessionRun:
+    """一次会话运行的全部状态：把「哪个会话在跑」与 App 的可见状态解耦。
+
+    并发/切换的关键约束：worker 只读写自己 run 的字段，绝不读
+    `self.session_id` / `self.messages` 这类「当前可见会话」状态——
+    否则运行中切换会话时，回复会被存进另一个会话（数据串档）。
+
+    buffer 记录本会话已渲染的 (文本, 标签)，切回来时据此恢复部分输出，
+    让用户看到「进程还在、输出没丢」。
+    """
+
+    __slots__ = ("sid", "title", "workspace", "messages", "model",
+                 "dispatch_on", "standalone", "notes", "buffer",
+                 "running", "stop", "task_failed", "started", "deleted")
+
+    def __init__(self, sid, title, workspace, messages, model,
+                 dispatch_on, standalone, notes):
+        self.sid = sid
+        self.title = title
+        self.workspace = workspace          # 本次运行固定的工作目录
+        self.messages = list(messages or [])  # 本会话的消息列表（run 自己的副本）
+        self.model = model
+        self.dispatch_on = dispatch_on
+        self.standalone = standalone
+        self.notes = notes                  # 批注列表（引用，随会话持久化）
+        self.buffer = []                    # [(text, tag)] 已渲染输出
+        self.running = False
+        self.stop = False
+        self.task_failed = False
+        self.started = time.time()
+        # 会话被删除：运行结束后不得落盘（否则会话会「复活」，看起来删不掉）
+        self.deleted = False
+
+    def record(self, text, tag):
+        """记一条输出（供切回时恢复）——仅文本层，富控件不回放。"""
+        if text:
+            self.buffer.append((text, tag))
+            del self.buffer[:-400]          # 上限防长跑爆内存
+
 # 推理等级可选值（第一个空值 = 留空，不发送、用模型默认）
 # 覆盖 OpenAI/Kimi/GLM（low/medium/high）与 DeepSeek（low/medium/high/xhigh/max/none）
 REASONING_CHOICES = ("", "none", "low", "medium", "high", "xhigh", "max")
@@ -1250,6 +1290,12 @@ class App:
         self._bind_hint(self.send_btn, "top.send")
         self._stop_requested = False
         self._running = False
+        # —— 多会话并发：每个会话一条独立运行记录（SessionRun）——
+        # worker 只读写自己 run 的字段，绝不读 self.session_id/self.messages
+        # 这类「当前可见会话」状态，否则运行中切会话会把回复存进别的会话。
+        self._runs: dict = {}            # sid -> SessionRun
+        self._cur_run = None             # 当前可见会话的运行记录
+        self._rec = threading.local()    # 工作线程 → 当前记录目标 run
 
         _clear_btn = _flat_button(btn_col, text=_t("btn.clear"), width=3,
                                   command=self.clear, font=(FONT_MONO, theme.FS_TOOLBAR))
@@ -1539,6 +1585,8 @@ class App:
         self.sidebar.tag_configure("group", font=(FONT_UI, 9, "bold"),
                                    foreground=theme.MUTED)
         self.sidebar.tag_configure("stripe", background=theme.STRIPE)
+        # 「进行中」会话：绿色加粗，一眼看出哪些会话还在跑
+        self.sidebar.tag_configure("running", foreground=theme.SUCCESS)
         self.sidebar.bind("<<TreeviewSelect>>", self._on_sidebar_select)
         # 会话项：DEL 键删除；右键菜单（重命名 / 删除）
         self.sidebar.bind("<Delete>", self._sidebar_delete_selected)
@@ -1595,6 +1643,11 @@ class App:
                     tags = ("current",) if s.get("id") == getattr(self, "session_id", None) else ()
                     if i % 2:              # 隔行斑马纹（i 为组内序号）
                         tags = tags + ("stripe",)
+                    # 正在跑的会话：绿底标记 + 标题前缀，来回切换也能看出
+                    # 「这条还在进行中」（多会话并发时的关键提示）
+                    if self._run_of(s.get("id")):
+                        title = "⏳ " + title
+                        tags = tags + ("running",)
                     self.sidebar.insert(parent, "end",
                                         text=title,
                                         values=(s["id"], s.get("workspace", "") or "",
@@ -1699,10 +1752,13 @@ class App:
             prompt = _t("sess.del_confirm_multi", n=len(sids), t=first_title)
         if messagebox.askyesno(_t("sess.del_title"), prompt):
             cur = getattr(self, "session_id", None)
+            self._cancel_runs(sids)         # 正在跑的会话：先取消运行再删
             for sid in sids:
                 sess_mod.delete(sid)
             if cur in sids:
-                self._new_session()
+                # 删掉的是当前会话 → 换一个「未落盘」的新会话：工作区保持不动，
+                # 侧栏也不会立刻冒出一条空记录（用户真发消息时才落盘生成）。
+                self._new_session(persist=False)
             else:
                 self._refresh_sidebar()
             self._set_status(_t("sess.deleted"))
@@ -1759,7 +1815,12 @@ class App:
         _post_menu(menu, e.x_root, e.y_root)
 
     def _delete_sessions(self, sids, ws=""):
-        """批量删除会话（工作区分组的「删除顶层」）；含当前会话则新开一个。"""
+        """批量删除会话（工作区分组的「删除顶层」）；含当前会话则新开一个。
+
+        删除后必须保持工作区状态不变，且被删的分组不能立刻顶回来：
+        新会话走 persist=False（用户真发消息时才落盘），否则刚删掉的工作区
+        分组马上又出现一条空会话，看起来像「删不掉」。
+        """
         from tkinter import messagebox
         import sessions as sess_mod
         label = ws or _t("sess.ungrouped")
@@ -1767,10 +1828,11 @@ class App:
                 _t("sess.del_title"),
                 _t("sess.del_group_confirm", ws=label, n=len(sids))):
             return
+        self._cancel_runs(sids)             # 正在跑的会话：先取消运行再删
         for sid in sids:
             sess_mod.delete(sid)
         if any(sid == getattr(self, "session_id", None) for sid in sids):
-            self._new_session()
+            self._new_session(persist=False)   # 不落盘 → 分组真正消失
         else:
             self._refresh_sidebar()
         self._set_status(_t("sess.deleted"))
@@ -3749,7 +3811,50 @@ class App:
         self.chat.tag_config("mdquote", font=(FONT_UI, s1, "italic"),
                              foreground=theme.MUTED, lmargin1=10, lmargin2=10)
 
+    def _rec_run(self):
+        """当前工作线程正在记录的 run（非运行期返回 None）。
+
+        用 getattr 兜底：_build_ui 期间（__init__ 早于并发字段初始化）
+        也会走到这里，不能让界面构建依赖初始化顺序。
+        """
+        rec = getattr(self, "_rec", None)
+        return getattr(rec, "run", None) if rec is not None else None
+
+    def _run_of(self, sid):
+        """某会话正在运行的记录（不在跑则 None）。界面构建期安全（见 _rec_run）。"""
+        run = getattr(self, "_runs", {}).get(sid or "")
+        return run if (run is not None and run.running) else None
+
+    def _cancel_runs(self, sids):
+        """会话被删除时取消其运行：请求停止 + 标记不得落盘。
+
+        不标记的话，正在跑的会话会在结束时照常 save，把刚删掉的会话
+        「复活」回侧栏——用户看到的就是「删了又变回来」。
+        """
+        for sid in sids:
+            run = getattr(self, "_runs", {}).pop(sid or "", None)
+            if run is not None:
+                run.deleted = True
+                run.stop = True
+            if getattr(self, "_cur_run", None) is run:
+                self._cur_run = None
+
+    def _record(self, text, tag=None):
+        """记录本条输出到「发起运行的会话」的 buffer。
+
+        返回 True = 可以渲染到聊天区（该会话就是当前可见会话）；
+        False = 该输出属于后台会话，只记录不渲染（切回去时再恢复）。
+        非运行期（用户手动调用等）始终返回 True，行为与以前一致。
+        """
+        run = self._rec_run()
+        if run is None:
+            return True
+        run.record(text, tag)
+        return run.sid == self.session_id
+
     def _append(self, text, tag=None):
+        if not self._record(text, tag):
+            return
         def _w():
             self.chat.config(state="normal")
             # 转轮还在转时，新内容插到转轮行之前（转轮始终在最后）
@@ -3765,6 +3870,12 @@ class App:
 
     def _append_segments(self, segs):
         """按片段插入富文本：链接可点击、「查看全文」弹窗显示完整内容。"""
+        render = True
+        for s in segs:                           # 先全量记录（不能短路），再决定渲染
+            if not self._record(s.get("text", ""), s.get("tag")):
+                render = False
+        if not render:
+            return                               # 后台会话：只记录不渲染
         def _w():
             self.chat.config(state="normal")
             # 转轮还在转时，新内容插到转轮行之前（转轮始终在最后）
@@ -4266,7 +4377,7 @@ class App:
 
     def _cmd_send(self, prompt: str):
         """命令注入提示词，走正常发送链路（含计划面板/审批/缓存）。"""
-        if self._running:
+        if self._run_of(self.session_id):
             self._set_status(_t("ui.running"))
             return
         self._send_with(prompt, [])
@@ -4287,7 +4398,7 @@ class App:
 
     def _compress_session(self):
         """/compress：把当前会话历史压缩成摘要，替换旧消息（保留最近几轮原文）。"""
-        if self._running:
+        if self._run_of(self.session_id):
             self._set_status(_t("ui.running"))
             return
         msgs = list(self.messages or [])
@@ -5226,7 +5337,7 @@ class App:
 
     def _send_queued(self):
         """发送全部排队消息（逐条，串行）。"""
-        if self._running or not self._msg_queue:
+        if self._run_of(self.session_id) or not self._msg_queue:
             return
         self._send_with(self._msg_queue.pop(0), [])
 
@@ -5236,7 +5347,7 @@ class App:
         排队非空且空闲时优先消化队列。必须 return "break"，
         否则 Text 类绑定补插换行。
         """
-        if self._running:
+        if self._run_of(self.session_id):
             self._queue_current()
         elif self._msg_queue:
             self._send_queued()
@@ -5256,15 +5367,25 @@ class App:
         self._set_status(_t("top.ready"))
 
     def _on_send_or_stop(self):
-        """发送按钮双态：空闲=发送；运行中=请求停止。"""
-        if self._running:
+        """发送按钮双态：空闲=发送；当前会话运行中=请求停止。"""
+        if self._run_of(self.session_id):
             self.request_stop()
         else:
             self.send()
 
     def request_stop(self):
-        """用户请求中止当前任务（下一检查点生效）；重复请求不重复提示。"""
-        if self._stop_requested:
+        """用户请求中止当前任务（下一检查点生效）；重复请求不重复提示。
+
+        多会话并发时只停**当前可见会话**的运行，其它会话继续跑。
+        """
+        run = self._run_of(self.session_id) or getattr(self, "_cur_run", None)
+        if run is not None and not run.running:
+            run = None
+        if run is not None:
+            if run.stop:
+                return
+            run.stop = True
+        elif self._stop_requested:
             return
         self._stop_requested = True
         self._set_status(_t("ui.stopping"))
@@ -5330,7 +5451,7 @@ class App:
 
     def _on_escape(self, _event):
         """Esc：任务运行中请求停止；空闲时无操作。"""
-        if self._running and not self._stop_requested:
+        if self._run_of(self.session_id) and not self._stop_requested:
             self.request_stop()
             return "break"
         return None
@@ -5372,8 +5493,9 @@ class App:
             self.input.delete("1.0", "end")
             self.input.config(fg="black")
             self._placeholder_active = False
-        if str(self.send_btn.cget("state")) == "disabled":
-            return                      # 任务进行中，防重复发送
+        if self._run_of(self.session_id):
+            return                      # 本会话还在跑：防同一会话重复发送
+        # 其它会话在跑不影响这里——多会话可同时进行（各自独立 run 与输出）
         if self._placeholder_active:
             # 未输入文字、只发附件：清掉占位符
             self.input.delete("1.0", "end")
@@ -5573,17 +5695,33 @@ class App:
         if history is None:          # 首轮：先落盘用户提问
             _persist()
 
+        # —— 建立本次运行的独立记录（并发/切换的关键）——
+        # 会话 id 在上方可为空，这里统一补齐：run 一旦建立，本次运行的身份
+        # （sid/title/workspace/messages）就固定下来，后续 worker 只认 run。
+        if self.session_id is None:
+            self.session_id = sess_mod.new_id()
+            self.session_title = self.session_title or sess_mod.make_title(text)
+            self.sess_btn.config(text="💬 " + self.session_title[:16])
+        run = SessionRun(self.session_id, self.session_title, session_ws,
+                         self.messages, run_model, dispatch_on, standalone,
+                         getattr(self, "_dispatch_notes", None))
+        self._runs[run.sid] = run
+        run.running = True
+        self._cur_run = run                   # 当前可见会话的运行（供停止/按钮态）
+
         self._set_status(_t("ui.thinking"))
         self._stop_requested = False
         self._running = True
         self.send_btn.config(text=_t("btn.stop"), fg="#dc2626")
         self._spinner_start(_t("status.thinking"))
         self.badge_busy(_t("ui.running"))
+        self._refresh_sidebar()               # 侧栏标出「进行中」
 
         def worker():
-            a = agent_mod.Agent(on_event=self._on_event,
+            self._rec.run = run               # 本线程后续输出都记到 run
+            a = agent_mod.Agent(on_event=lambda e: self._on_event(e, run),
                                 on_approval=self._approve,
-                                on_stop=self._check_stop,
+                                on_stop=lambda: run.stop,
                                 mode=self.mode,
                                 model=run_model)
             try:
@@ -5595,6 +5733,8 @@ class App:
             finally:
                 # 无论成功/失败，都把当前消息（含 AI 处理与回复/部分回复）落盘，
                 # 避免会话里只留用户提问、丢失 AI 的回应。
+                # 注意：全程用 run 的身份（sid/title/workspace），不用 self.*——
+                # 用户可能已切到别的会话，读 self.* 会把回复存错会话。
                 try:
                     msgs = getattr(a, "messages", None)
                     # 兜底：若消息末尾不是 assistant 且确有文本回复，补一条再存
@@ -5603,39 +5743,53 @@ class App:
                         if last is None or last.get("role") != "assistant":
                             msgs = list(msgs) + [{"role": "assistant", "content": final}]
                     if standalone:
-                        if self.messages is None:
-                            self.messages = []
-                        self.messages.extend(msgs[1:] if msgs else [])
+                        if run.messages is None:
+                            run.messages = []
+                        run.messages.extend(msgs[1:] if msgs else [])
                     elif msgs:
-                        self.messages = msgs
-                    elif self.messages is None:
-                        self.messages = []
-                    sess_mod.save(self.session_id, self.messages or [],
-                                  self.session_title, workspace=session_ws,
-                                  notes=getattr(self, "_dispatch_notes", None))
+                        run.messages = msgs
+                    elif run.messages is None:
+                        run.messages = []
+                    if not run.deleted:   # 会话已删：不落盘（否则会话「复活」）
+                        sess_mod.save(run.sid, run.messages or [],
+                                      run.title, workspace=run.workspace,
+                                      notes=run.notes)
                 except Exception:            # noqa: BLE001  落盘失败不阻断界面
                     pass
-                # Markdown 重排本回复块（须在末尾空行/模型标注之前——
-                # 重排会 delete(块起点, end)，放后面会把它们一并删掉）
-                self.root.after(0, self._md_render)
-                self._append("\n", "assistant")
-                # 回复末尾标注本条实际由哪个模型处理（派发开启时；
-                # 用 Agent 最终实际使用的模型——本地回退云端时显示云端）
-                if dispatch_on:
-                    _actual = getattr(a, "model", None) or run_model
-                    self._append(
-                        _t("reply.model", model=_actual.display_name) + "\n",
-                        "meta")
-                self._spinner_stop()   # 完成：移除转动的等待指示
-                self.badge_done(ok=not getattr(self, "_task_failed", False))
-                self._task_failed = False
-                self._set_status(_t("top.ready"))
-                self._running = False
+                # 仅当用户还停留在本会话时，才做界面收尾（否则静默完成，
+                # 切回来时由 buffer 恢复输出）
+                visible = (run.sid == self.session_id)
+                if visible:
+                    # Markdown 重排本回复块（须在末尾空行/模型标注之前——
+                    # 重排会 delete(块起点, end)，放后面会把它们一并删掉）
+                    self.root.after(0, self._md_render)
+                    self._append("\n", "assistant")
+                    # 回复末尾标注本条实际由哪个模型处理（派发开启时；
+                    # 用 Agent 最终实际使用的模型——本地回退云端时显示云端）
+                    if dispatch_on:
+                        _actual = getattr(a, "model", None) or run_model
+                        self._append(
+                            _t("reply.model", model=_actual.display_name) + "\n",
+                            "meta")
+                    self._spinner_stop()   # 完成：移除转动的等待指示
+                else:
+                    run.record("\n", "assistant")
+                    if dispatch_on:
+                        _actual = getattr(a, "model", None) or run_model
+                        run.record(_t("reply.model",
+                                      model=_actual.display_name) + "\n", "meta")
+                run.running = False
+                run.task_failed = getattr(self, "_task_failed", False)
+                if visible:
+                    self.badge_done(ok=not run.task_failed)
+                    self._task_failed = False
+                    self._set_status(_t("top.ready"))
+                    self.root.after(0, lambda: self.send_btn.config(
+                        text=_t("btn.send"), fg="black", state="normal"))
+                    self.root.after(0, self._clear_todo)  # 整轮结束：todo 消失
+                self._running = any(r.running for r in self._runs.values())
                 self._stop_requested = False
-                self.root.after(0, lambda: self.send_btn.config(
-                    text=_t("btn.send"), fg="black", state="normal"))
-                self.root.after(0, self._refresh_sidebar)   # 刷新左侧会话列表
-                self.root.after(0, self._clear_todo)     # 整轮结束：todo 清单消失
+                self.root.after(0, self._refresh_sidebar)   # 刷新左侧会话列表（清「进行中」）
 
         self._worker_th = threading.Thread(target=worker, daemon=True)
         self._worker_th.start()
@@ -5914,6 +6068,7 @@ class App:
         self.session_id = sess_mod.new_id()
         self.session_title = _t("sess.new")
         self.messages = []
+        self._cur_run = None            # 新会话：不再指向旧会话的运行
         if persist:
             try:
                 sess_mod.save(self.session_id, [], self.session_title,
@@ -5929,7 +6084,12 @@ class App:
         """聊天区顶部欢迎/使用说明卡片已移除：使用方式改在输入框占位提示里展示。"""
 
     def _load_session(self, sid: str):
-        """切换到历史会话：载入消息并回放到聊天区。"""
+        """切换到历史会话：载入消息并回放到聊天区。
+
+        若该会话有正在跑的 run：切过去后线程照常继续（run 的身份与输出
+        都独立保存），这里把已产生的部分输出恢复出来，并把发送/停止
+        按钮切到该会话的运行态——即「来回切换保持会话进程」。
+        """
         import sessions as sess_mod
         data = sess_mod.load(sid)
         if data is None:
@@ -5938,8 +6098,11 @@ class App:
         self.session_id = sid
         self.session_title = data.get("title") or _t("misc.no_title")
         self.messages = data["messages"]
-        # 切回会话创建时的工作目录（跨项目载入保持工具操作一致）
-        ws = data.get("workspace", "")
+        run = self._run_of(sid)
+        self._cur_run = run
+        # 运行中的会话：用 run 自己记的工作目录（用户可能已切到别处，
+        # 但本次运行的文件操作必须仍在原目录进行）
+        ws = (run.workspace if run else "") or data.get("workspace", "")
         if ws and os.path.isdir(ws) and ws != tools.get_workspace():
             tools.set_workspace(ws)
             config.save_last_workspace(ws)     # 会话载入切目录也记住
@@ -5952,6 +6115,11 @@ class App:
                           workspace=tools.get_workspace())
         self.clear()
         self.sess_btn.config(text="💬 " + self.session_title[:16])
+        # 运行中的会话：按钮回到「停止」态（该会话还在跑）
+        if run is not None:
+            self.send_btn.config(text=_t("btn.stop"), fg="#dc2626")
+        else:
+            self.send_btn.config(text=_t("btn.send"), fg="black", state="normal")
         # 回放历史：user / assistant 正文显示，工具过程折叠为一行
         def _content_text(c):
             """content 可能是字符串或多模态列表 → 提取文本部分。"""
@@ -6031,17 +6199,43 @@ class App:
                 self._set_status(_t("sess.dispatch_restored", name=name))
             else:
                 self._set_status(_t("sess.dispatch_fallback"))
-        self._set_status(_t("sess.loaded", t=self.session_title))
+        # 该会话还在跑 → 把已产生的输出接在历史后面，并显示「进行中」，
+        # 让用户切回来就看到「进程还在、输出没丢」，而不是一片空白。
+        if run is not None:
+            self._replay_run_buffer(run)
+            self.badge_busy(_t("ui.running"))
+            self._set_status(_t("sess.running_restored"))
+        else:
+            self._set_status(_t("sess.loaded", t=self.session_title))
+
+    def _replay_run_buffer(self, run):
+        """把运行中会话已产生的输出回放到聊天区（纯文本层，富控件不回放）。
+
+        回放期间清空记录目标，避免把回放内容又记进 buffer 造成重复。
+        """
+        saved, self._rec.run = self._rec_run(), None
+        try:
+            for text, tag in list(run.buffer):
+                if tag == "assistant":
+                    self._assistant_append(text)
+                else:
+                    self._append(text, tag)
+            self.root.after(0, self._md_render)
+        except Exception:                # noqa: BLE001  回放失败不影响主流程
+            pass
+        finally:
+            self._rec.run = saved
 
     def _delete_current_session(self):
-        """删除当前会话并开新会话。"""
+        """删除当前会话并开新会话（工作区不动，新会话发消息时才落盘）。"""
         import sessions as sess_mod
         from tkinter import messagebox
         if self.session_id and messagebox.askyesno(
                 _t("sess.del_title"), _t("sess.del_confirm", t=self.session_title)):
+            self._cancel_runs([self.session_id])
             sess_mod.delete(self.session_id)
             self._set_status(_t("sess.deleted"))
-            self._new_session()
+            self._new_session(persist=False)
 
     # ================= 语音（单按钮：长按=按住说话，轻点=自动停顿检测） =================
     def _voice_press(self, _event):
@@ -6154,6 +6348,8 @@ class App:
         self._md_buf = []
 
     def _assistant_append(self, delta):
+        if not self._record(delta, "assistant"):
+            return                               # 后台会话：只记录不渲染
         def _w():
             self.chat.config(state="normal")
             rng = self._spinner_range() if self._spinner_after is not None else None
@@ -6275,7 +6471,11 @@ class App:
             segs.append({"text": line[pos:], "tag": "assistant"})
         return segs
 
-    def _on_event(self, event):
+    def _on_event(self, event, run=None):
+        # 记录目标：本事件的所有输出都归到发起它的 run（多会话并发时
+        # 保证不串到别的会话；run=None 表示非会话运行，如小说流水线）。
+        if run is not None:
+            self._rec.run = run
         etype = event["type"]
         if etype == "text":
             self._spinner_stop()      # 有正文输出：先撤掉等待行
