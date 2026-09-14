@@ -381,33 +381,29 @@ def _fetch_openai_models(base_url: str, api_key: str,
     raise last_exc
 
 
-# 文件类型 → Noto 彩色图标（assets/icons/<hex>.png，见 _emoji_icon）
+# 文件类型 → 图标素材名（assets/icons/<name>.png，见 _emoji_icon）
+# 素材源为 Material Icon Theme + Fluent Emoji（均 MIT），见 assets/icons/gen_icons.js
 _TREE_ICON_MAP = {
-    "py": "1f40d", "md": "1f4dd", "markdown": "1f4dd",
-    "txt": "1f4c4", "log": "1f4c4",
-    "json": "2699", "yaml": "2699", "yml": "2699", "toml": "2699",
-    "ini": "2699", "cfg": "2699", "conf": "2699",
-    "ipynb": "1f4d3",
-    "html": "1f310", "htm": "1f310", "css": "1f310", "js": "1f310",
-    "mjs": "1f310", "ts": "1f310", "tsx": "1f310", "jsx": "1f310",
-    "png": "1f5bc", "jpg": "1f5bc", "jpeg": "1f5bc", "gif": "1f5bc",
-    "bmp": "1f5bc", "webp": "1f5bc", "svg": "1f5bc", "ico": "1f5bc",
-    "csv": "1f4ca", "xlsx": "1f4ca", "xls": "1f4ca",
-    "zip": "1f4e6", "tar": "1f4e6", "gz": "1f4e6", "tgz": "1f4e6",
-    "7z": "1f4e6", "rar": "1f4e6",
-    "pdf": "1f4d5", "doc": "1f4d8", "docx": "1f4d8",
-    "mp3": "1f3b5", "wav": "1f3b5", "flac": "1f3b5", "m4a": "1f3b5",
-    "mp4": "1f3ac", "mov": "1f3ac", "avi": "1f3ac", "mkv": "1f3ac",
-    "bat": "1f527", "sh": "1f527", "ps1": "1f527",
+    "py": "file-py",
+    "js": "file-js", "mjs": "file-js",
+    "ts": "file-ts", "tsx": "file-ts", "jsx": "file-ts",
+    "html": "file-html", "htm": "file-html",
+    "css": "file-css",
+    "md": "file-md", "markdown": "file-md",
+    "txt": "file-text", "log": "file-text",
+    "json": "file-json", "yaml": "file-json", "yml": "file-json", "toml": "file-json",
+    "ini": "file-cog", "cfg": "file-cog", "conf": "file-cog",
+    "ipynb": "file-notebook",
+    "png": "file-image", "jpg": "file-image", "jpeg": "file-image", "gif": "file-image",
+    "bmp": "file-image", "webp": "file-image", "svg": "file-image", "ico": "file-image",
+    "csv": "file-sheet", "xlsx": "file-sheet", "xls": "file-sheet",
+    "zip": "file-archive", "tar": "file-archive", "gz": "file-archive",
+    "tgz": "file-archive", "7z": "file-archive", "rar": "file-archive",
+    "pdf": "file-pdf", "doc": "file-doc", "docx": "file-doc",
+    "mp3": "file-audio", "wav": "file-audio", "flac": "file-audio", "m4a": "file-audio",
+    "mp4": "file-video", "mov": "file-video", "avi": "file-video", "mkv": "file-video",
+    "bat": "file-shell", "sh": "file-shell", "ps1": "file-shell",
 }
-
-
-def _emoji_icon(key: str):
-    """hex 码点 → 彩色 PNG PhotoImage（缺素材/非 Windows 返回 None）。"""
-    try:
-        return _icon_image(chr(int(key, 16)))
-    except Exception:                # noqa: BLE001
-        return None
 
 
 def _fmt_size(n) -> str:
@@ -526,33 +522,63 @@ def _flat_button(parent, text, command, width=12, font=(FONT_UI, 10)):
     return btn
 
 
-# ---------------- emoji 图标按钮：Windows 走 PNG 图片 ----------------
-# Tk 9.0 的 Windows 字体引擎渲染不了彩色字形（要 9.1+），字体方案在 Win 上
-# 只能出黑色图标；这里改用 Noto Emoji 的 PNG（Apache-2.0，assets/icons/），
-# 非平台 fallback：其它系统 emoji 字体本来就是彩色，继续走字体。
+# ---------------- 图标素材：彩色 PNG（Material Icon Theme + Fluent Emoji，均 MIT） ----------------
+# Tk 的 PhotoImage 不认 SVG，assets/icons/ 里放的是预先栅格化好的 PNG。
+# 图标标识沿用「emoji」：MODE_ICON / REASONING_ICON 等常量同时供按钮图标与提示
+# 文案使用，换成素材名会连文案一起改；故这里用 _ICON_ALIAS 把 emoji 码点翻译成
+# 语义素材名（文件树那套直接用素材名，粒度更细）。
 _ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                          "assets", "icons")
-_ICON_PHOTOS: dict = {}          # 文件名 key → PhotoImage（持引用防 GC）
+_ICON_PHOTOS: dict = {}          # 素材名 → PhotoImage（持引用防 GC）
+
+# emoji 码点 hex → 素材名
+_ICON_ALIAS = {
+    "1f916": "bot",         # 🤖 模型
+    "1f9e0": "brain",       # 🧠 推理等级
+    "2699": "settings",     # ⚙  设置
+    "1f4ac": "chat",        # 💬 会话
+    "1f517": "link",        # 🔗 续上下文
+    "2702": "scissors",     # ✂️ 独立提问
+    "1f512": "lock",        # 🔒 只读模式
+    "1f6e1": "shield",      # 🛡 询问模式
+    "26a1": "zap",          # ⚡ 始终允许 / 派发 / 命令弹窗
+    "1f4c8": "quant",       # 📈 量化面板
+    "1f4da": "kb",          # 📚 知识库
+    "2753": "help",         # ❓ 帮助
+    "1f4f8": "camera",      # 📸 截图
+    "1f504": "refresh",     # 🔄 刷新
+    "1f500": "route",       # 🔀 路由
+    "23f1": "timer",        # ⏱ 排队
+    "26aa": "circle",       # ⚪ 推理：默认
+    "1f6ab": "ban",         # 🚫 推理：关
+    "1f422": "turtle",      # 🐢 推理：低
+    "1f525": "flame",       # 🔥 推理：高
+    "1f680": "rocket",      # 🚀 推理：最高
+}
 
 
-def _icon_image(emoji):
-    """emoji → 彩色 PNG PhotoImage；非 Windows / 无 root / 缺素材返回 None。"""
-    if sys.platform != "win32":
-        return None
-    key = "_".join(f"{ord(c):x}" for c in emoji.replace("\ufe0f", ""))
-    path = os.path.join(_ICON_DIR, key + ".png")
+def _emoji_icon(key: str):
+    """图标键 → PhotoImage。key 可为 emoji 码点 hex，也可直接是素材名（如 "file-py"）。
+    缺素材返回 None，调用方回退 emoji 字形（界面不崩）。"""
+    name = _ICON_ALIAS.get(key, key)
+    path = os.path.join(_ICON_DIR, name + ".png")
     if not os.path.isfile(path):
         return None
-    img = _ICON_PHOTOS.get(key)
+    img = _ICON_PHOTOS.get(name)
     if img is None:
         try:
             img = tk.PhotoImage(file=path)
-            while img.width() > 18:          # 128px 源图缩到 ~16px 贴按钮
+            while img.width() > 18:          # 128px 源图缩到 ~16px 贴按钮/文件树
                 img = img.subsample(2)
-            _ICON_PHOTOS[key] = img
+            _ICON_PHOTOS[name] = img
         except Exception:                    # noqa: BLE001  PNG 损坏则回退字体
             return None
     return img
+
+
+def _icon_image(emoji):
+    """emoji → 图标 PhotoImage（先转码点 hex 再查素材，故与 _emoji_icon 同源）。"""
+    return _emoji_icon("_".join(f"{ord(c):x}" for c in emoji.replace("\ufe0f", "")))
 
 
 def _image_button(parent, img, command):
@@ -2508,7 +2534,7 @@ class App:
             if isdir:
                 # 目录显示递归聚合大小；文件显示自身大小
                 size_txt = f"  ({_fmt_size(_dir_size(e.path))})"
-                icon_key, fallback = "1f4c1", "📁"
+                icon_key, fallback = "folder", "📁"
             else:
                 try:
                     sz = e.stat().st_size
@@ -2516,7 +2542,7 @@ class App:
                     sz = 0
                 size_txt = f"  ({_fmt_size(sz)})"
                 ext = e.name.rsplit(".", 1)[-1].lower() if "." in e.name else ""
-                icon_key, fallback = _TREE_ICON_MAP.get(ext, "1f4c4"), "📄"
+                icon_key, fallback = _TREE_ICON_MAP.get(ext, "file-generic"), "📄"
             img = _emoji_icon(icon_key)
             txt = f"{e.name}{size_txt}" if img is not None else f"{fallback} {e.name}{size_txt}"
             kw = {"text": txt, "values": (e.path, isdir)}

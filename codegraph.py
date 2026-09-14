@@ -293,29 +293,49 @@ def _ext_conn(workspace: str) -> sqlite3.Connection:
 
 
 def _ext_search(ws: str, query: str, top_k: int) -> list[dict]:
-    """FTS5 优先，失败退化为 LIKE；返回本模块统一结构。"""
+    """符号检索：精确 → 前缀 → 包含 → FTS，逐级升级。
+
+    实测（真实 CodeGraph 库，17.5 万节点）：该库 name 上有索引，LIKE 查询
+    0.0x 秒返回；而它的 FTS 索引可能未建完/失效（查询返回 0 行且耗时
+    9-38 秒）。所以**不能 FTS 优先**——先走索引友好的 LIKE 三级，
+    都空了才用 FTS 兜文档/签名里的词（概念检索）。
+    """
     conn = _ext_conn(ws)
+    cols = ("name, kind, file_path, start_line, signature, docstring")
     try:
         rows = []
-        try:
-            toks = [t for t in re.split(r"[^\w\u4e00-\u9fff]+", query) if t]
-            if toks:
-                match = " ".join(t + "*" for t in toks[:6])
-                rows = conn.execute(
-                    "SELECT n.name, n.kind, n.file_path, n.start_line,"
-                    " n.signature, n.docstring FROM nodes_fts f"
-                    " JOIN nodes n ON n.id = f.rowid"
-                    " WHERE nodes_fts MATCH ? LIMIT ?",
-                    (match, top_k)).fetchall()
-        except sqlite3.Error:
-            rows = []
+        # 1) 精确同名 / 限定同名
+        rows = conn.execute(
+            f"SELECT {cols} FROM nodes WHERE name = ? OR qualified_name = ?"
+            " ORDER BY length(name) LIMIT ?", (query, query, top_k)).fetchall()
+        # 2) 前缀（LIKE 'x%' 可走索引）
+        if not rows:
+            rows = conn.execute(
+                f"SELECT {cols} FROM nodes WHERE name LIKE ? || '%'"
+                " OR qualified_name LIKE '%' || ? ORDER BY length(name) LIMIT ?",
+                (query, "." + query, top_k)).fetchall()
+        # 3) 包含
         if not rows:
             like = f"%{query}%"
             rows = conn.execute(
-                "SELECT name, kind, file_path, start_line, signature, docstring"
-                " FROM nodes WHERE name LIKE ? OR qualified_name LIKE ?"
-                " OR docstring LIKE ? ORDER BY length(name) LIMIT ?",
-                (like, like, like, top_k)).fetchall()
+                f"SELECT {cols} FROM nodes WHERE name LIKE ?"
+                " OR qualified_name LIKE ? ORDER BY length(name) LIMIT ?",
+                (like, like, top_k)).fetchall()
+        # 4) 仍为空 → FTS 兜底（文档/签名里的词；库健康时才快）
+        if not rows:
+            try:
+                toks = [t for t in re.split(r"[^\w\u4e00-\u9fff]+", query) if t]
+                if toks:
+                    match = "{name qualified_name} : " + " ".join(
+                        t + "*" for t in toks[:6])
+                    rows = conn.execute(
+                        "SELECT n.name, n.kind, n.file_path, n.start_line,"
+                        " n.signature, n.docstring FROM nodes_fts f"
+                        " JOIN nodes n ON n.id = f.rowid"
+                        " WHERE nodes_fts MATCH ? LIMIT ?",
+                        (match, top_k)).fetchall()
+            except sqlite3.Error:
+                rows = []
     finally:
         conn.close()
     return [{"name": r[0], "kind": r[1], "path": r[2], "line": r[3],
@@ -551,11 +571,15 @@ def search(workspace: str, query: str, top_k: int = 8) -> list[dict]:
         conn = _conn(workspace)
         try:
             if _has_fts(conn):
+                # 与外部后端一致：FTS 限定 name 列 + 按相关度排序。
+                # 不限定列会连 doc/sig 里的任意词一起匹配，噪声大。
                 sql = ("SELECT n.name, n.kind, n.path, n.lineno, n.sig, n.doc"
                        " FROM nodes_fts f JOIN nodes n ON n.id = f.rowid"
-                       " WHERE nodes_fts MATCH ? LIMIT ?")
+                       " WHERE nodes_fts MATCH ? ORDER BY rank LIMIT ?")
                 try:
-                    rows = conn.execute(sql, (_fts_query(query), top_k)).fetchall()
+                    toks = [t for t in re.split(r"[^\w\u4e00-\u9fff]+", query) if t]
+                    match = "{name} : " + " ".join(t + "*" for t in toks[:6])
+                    rows = conn.execute(sql, (match, top_k)).fetchall()
                 except sqlite3.OperationalError:
                     rows = []
             else:

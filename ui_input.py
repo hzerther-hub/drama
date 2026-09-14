@@ -88,8 +88,8 @@ class InputController:
 
     def __init__(self, app, emoji_icon, tree_icon_map):
         self.app = app
-        self.emoji_icon = emoji_icon          # ui._emoji_icon 注入（避免环导入）
-        self.tree_icon_map = tree_icon_map    # ui._TREE_ICON_MAP 注入
+        self.emoji_icon = emoji_icon          # ui._emoji_icon 注入（避免环导入）：图标键 → 图片
+        self.tree_icon_map = tree_icon_map    # ui._TREE_ICON_MAP 注入：扩展名 → 素材名
         self._cmd_pop = None
         self._cmd_lb = None
         self._cmd_cands: list = []
@@ -301,9 +301,9 @@ class InputController:
         return [p for p in files if frag_l in p.lower()][:80]
 
     def at_icon(self, path: str):
-        """@ 候选行的彩色图标：目录 📁，文件按扩展名映射。"""
-        key = "1f4c1" if path.endswith("/") else self.tree_icon_map.get(
-            path.rsplit(".", 1)[-1].lower() if "." in path else "", "1f4c4")
+        """@ 候选行的彩色图标：目录用 folder，文件按扩展名映射。"""
+        key = "folder" if path.endswith("/") else self.tree_icon_map.get(
+            path.rsplit(".", 1)[-1].lower() if "." in path else "", "file-generic")
         return self.emoji_icon(key)
 
     def at_insert(self):

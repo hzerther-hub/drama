@@ -226,6 +226,7 @@ func (a *App) PickAttachments() []Attachment         // 原生多选
 ## 八、与现有仓库的关系
 
 1. 本 Python 仓库打 `v0.x-python` 标签冻结；README 加一行「桌面新版开发中 → reasonix/」。
-2. `assets/icons/`（Noto Emoji PNG，Apache-2.0）直接复制进新仓库 frontend 静态资源 —— 图标体系延续。
+2. `assets/icons/`（Lucide 线性图标栅格化的 PNG，ISC 许可；语义命名 + `gen_icons.js` 可重生成）
+   直接复制进新仓库 frontend 静态资源 —— 图标体系延续。
 3. 行为对照测试：用 Python 版的历史会话 JSON 作为 Go 内核解析的黄金样例（golden files）。
 4. Python 版独有、新版权衡后砍掉的功能（voice、gpulocal 面板）在本文档 §二 有记录，不做隐性消失。

@@ -96,6 +96,9 @@ def build(product_name: str, clean: bool = False) -> str:
         return src if os.path.isabs(src) else os.path.join(ROOT, src)
 
     datas = [(os.path.join(ROOT, "fonts"), "fonts")]
+    # 界面图标素材（ui._ICON_DIR 找 assets/icons）：漏打进包则全部图标退回
+    # emoji 字形，Windows 上 Tk 9.0 渲染不了彩色字形 → 工具条/文件树一片黑。
+    datas.append((os.path.join(ROOT, "assets"), "assets"))
     # 所有产品的 profile.json 打进包（运行时 import products 要读）
     for name in products.list_products():
         datas.append((os.path.join(ROOT, "products", name, "profile.json"),

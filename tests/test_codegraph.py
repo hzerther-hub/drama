@@ -155,3 +155,40 @@ def test_external_ensure_does_not_rebuild(tmp_path):
     st = codegraph.ensure(ws)
     assert st["backend"] == "external"
     assert os.path.getmtime(os.path.join(ws, ".codegraph", "codegraph.db")) == before
+
+
+def test_external_search_prefers_indexed_like(tmp_path, monkeypatch):
+    """外部库检索：先走索引友好的 LIKE，不应一上来就查 FTS。
+
+    真实 CodeGraph 库里 FTS 可能未建完/失效（实测查询 0 行却耗时数十秒），
+    而 name 列有索引、LIKE 是毫秒级——顺序错了工具就没法用。
+    这里让任何 nodes_fts 查询直接抛错：只要结果仍能返回，就证明没依赖 FTS。
+    """
+    ws = _make_external_ws(str(tmp_path))
+    real_conn = codegraph._ext_conn
+    seen = []
+
+    class _Proxy:
+        def __init__(self, conn):
+            self._c = conn
+
+        def execute(self, sql, *a):
+            seen.append(sql)
+            if "nodes_fts" in sql:
+                raise AssertionError("不应该查 FTS：" + sql[:60])
+            return self._c.execute(sql, *a)
+
+        def close(self):
+            self._c.close()
+
+    monkeypatch.setattr(codegraph, "_ext_conn", lambda w: _Proxy(real_conn(w)))
+    rows = codegraph.search(ws, "orderList", 5)
+    assert rows and rows[0]["name"] == "orderList"
+    assert any("name = ?" in c for c in seen)          # 精确优先
+
+
+def test_external_search_falls_back_to_contains(tmp_path):
+    """精确/前缀都没有时，退到「包含」仍能命中（走索引列）。"""
+    ws = _make_external_ws(str(tmp_path))
+    rows = codegraph.search(ws, "rder", 5)             # 只匹配中段
+    assert any(r["name"] == "orderList" for r in rows)
