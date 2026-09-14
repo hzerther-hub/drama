@@ -282,6 +282,21 @@ External MCP servers add more tools (model menu → 🔌 Manage MCP servers)
 · Model menu → 🗂 Rebuild code index
 · Let index_search retrieve code by relevance to answer "where is X implemented"
 
+[Code graph]  (/graph — built-in code knowledge graph)
+Answers structural questions instead of making you grep then read whole files.
+· /graph stats                     graph size / languages / which backend
+· /graph search <name>             find symbols (functions, classes) by name/doc
+· /graph outline <file>            list a file's structure (classes + functions)
+· /graph callers <name>            who calls it — check before renaming or
+                                   changing a signature
+· /graph callees <name>            what it depends on / calls
+· /graph impact <name> [depth]     upstream+downstream layers (blast radius)
+· /graph build [--force]           (re)build the graph incrementally
+· The agent uses the same data through the code_graph tool, so it can look up
+  callers/callees itself instead of reading file after file.
+· Workspace already has a real CodeGraph store (.codegraph/codegraph.db)?
+  It is read-only reused as-is — no rebuild, no write to that database.
+
 [Voice]
 · 🎤 Voice input: press the button to record — release to transcribe (push-to-talk);
   a quick tap switches to auto-stop (ends after 1.5s of silence)
@@ -350,6 +365,20 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
 【代码索引】
 · 模型菜单 → 🗂 重建代码索引
 · 让 index_search 按相关度检索代码，回答「XX 在哪实现」类问题
+
+【代码图谱】（/graph —— 内置代码知识图谱）
+回答的是结构问题，不用再「先 grep 再整文件读」。
+· /graph stats                     图规模 / 语言分布 / 用的是哪个后端
+· /graph search <名字>             按名字或文档搜符号（函数、类）
+· /graph outline <文件>            列出某文件的结构（类 + 函数 + 行号）
+· /graph callers <名字>            谁调用了它——改名/改签名前必查
+· /graph callees <名字>            它调用了谁、依赖什么
+· /graph impact <名字> [层数]      上下游若干层（评估改动波及面）
+· /graph build [--force]           增量重建图谱
+· 模型侧通过 code_graph 工具用同一份数据，自己就能查调用关系，
+  不必一个文件一个文件地读。
+· 工作区里已有真实 CodeGraph 库（.codegraph/codegraph.db）时直接只读复用，
+  不重建、不写入那个库。
 
 【语音】
 · 🎤 语音输入：按下按钮录音，松开识别（按住说话）；轻点一下自动检测停顿（静音 1.5 秒结束）
