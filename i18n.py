@@ -761,6 +761,11 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "cmd.model":    {"en": "Switch model", "zh": "切换模型"},
     "cmd.dir":      {"en": "Change working directory", "zh": "切换工作目录"},
     "cmd.index":    {"en": "Rebuild code index", "zh": "重建代码索引"},
+    "cmd.graph":    {"en": "Code graph: search/outline/callers/callees/impact/stats "
+                           "(/graph callers foo)",
+                     "zh": "代码图谱：search 搜符号｜outline 文件结构｜callers 谁调用它｜"
+                           "callees 它调用谁｜impact 影响面｜stats 概况｜build 重建"
+                           "（如 /graph callers execute_tool）"},
     "cmd.cache":    {"en": "Manage cache", "zh": "管理缓存"},
     "cmd.mcp":      {"en": "Manage MCP servers", "zh": "管理 MCP 服务器"},
     "cmd.sessions": {"en": "Search/list sessions", "zh": "会话搜索/全部"},

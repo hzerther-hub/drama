@@ -152,6 +152,7 @@ class Agent:
         base = base + tools.call_model_schema()
         # 公司知识库启用时提供 kb_search（企业代码 + 文档 RAG）
         base = base + tools.kb_schema()
+        base = base + tools.codegraph_schema()
         # 合并 MCP 外部服务器的工具（只读模式下只加只读服务器的工具）
         mgr = mcp.get_manager()
         if mgr.connected and mgr.tool_map:

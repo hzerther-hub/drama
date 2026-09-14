@@ -683,6 +683,124 @@ def kb_schema() -> list:
     return [KB_SEARCH_SCHEMA]
 
 
+# ---------------- 代码知识图谱（内置 codegraph，code_graph 工具） ----------------
+# 与 index_search（文本块检索）互补：这里回答结构问题——符号定义在哪、
+# 谁调用了它、它依赖谁、上下游是什么。工作区里有真实 CodeGraph 库时直接读它。
+CODE_GRAPH_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "code_graph",
+        "description": (
+            "查询代码知识图谱（结构化，比 grep 快且省上下文）。用它回答："
+            "某函数/类定义在哪、谁调用了它（改动的波及面）、它调用了什么、"
+            "某文件里有什么、符号检索。action 取值："
+            "search=按名字/文档搜符号；outline=列某文件的结构（给 path）；"
+            "callers=谁调用了它（改名/改签名前必查）；callees=它依赖谁；"
+            "impact=上下游若干层（评估改动影响面）；stats=图规模概况。"
+            "已知函数/类名时优先用它，而不是先 grep 再整文件读。"),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string",
+                           "enum": ["search", "outline", "callers",
+                                    "callees", "impact", "stats"],
+                           "description": "要执行的结构查询类型"},
+                "query": {"type": "string",
+                          "description": "符号名或关键词（search/callers/callees/impact 用）"},
+                "path": {"type": "string",
+                         "description": "文件相对路径（outline 用）"},
+                "depth": {"type": "integer",
+                          "description": "impact 的层数，1-3（默认 2）"},
+            },
+            "required": ["action"],
+        },
+    },
+}
+
+
+def _code_graph(args: dict) -> str:
+    """code_graph 执行器：查代码知识图谱（只读，结果可缓存）。"""
+    import codegraph
+    ws = WORKSPACE
+    action = (args.get("action") or "search").strip().lower()
+    query = (args.get("query") or "").strip()
+
+    def _ensure():
+        """首次调用自动建图（有真实 CodeGraph 库则只读复用，不重建）。"""
+        st = codegraph.stats(ws)
+        if not st.get("nodes") and codegraph.backend(ws) != "external":
+            codegraph.build(ws)
+        return st
+
+    try:
+        if action == "stats":
+            st = _ensure()
+            st = codegraph.stats(ws)
+            langs = "、".join(f"{k}×{v}" for k, v in (st.get("langs") or {}).items())
+            src = ("外部 CodeGraph 库" if st.get("backend") == "external"
+                   else "内置图库")
+            return (f"代码图谱（{src}）：{st['files']:,} 文件 / {st['nodes']:,} 节点"
+                    f" / {st['edges']:,} 边\n语言分布：{langs or '未知'}\n库：{st['db']}")
+        if action == "outline":
+            p = (args.get("path") or "").replace("\\", "/").strip("/")
+            if not p:
+                return "错误：outline 需要 path（文件相对路径）。"
+            _ensure()
+            rows = codegraph.outline(ws, p)
+            if not rows:
+                return f"文件 {p} 在图谱中没有节点（路径是否正确？）"
+            return f"{p} 的结构：\n" + "\n".join(
+                f"  L{r['line']}-{r['endline']} [{r['kind']}] {r['name']}{r['sig']}"
+                for r in rows)
+        if not query:
+            return "错误：需要 query（符号名或关键词）。"
+        _ensure()
+        if action == "search":
+            rows = codegraph.search(ws, query, 8)
+            if not rows:
+                return f"图谱中未找到与「{query}」匹配的符号。"
+            return "\n".join(
+                f"- [{r['kind']}] {r['name']}{r['sig']} — {r['path']}:{r['line']}"
+                + (f"  // {r['doc']}" if r.get("doc") else "")
+                for r in rows)
+        if action == "callers":
+            rows = codegraph.callers(ws, query, 15)
+            if not rows:
+                return f"没有找到调用 {query} 的地方（或该符号未被解析）。"
+            return f"调用 {query} 的位置（{len(rows)} 处）：\n" + "\n".join(
+                f"  {r['name']} — {r['path']}:{r['line']}（{r['via']}）"
+                for r in rows)
+        if action == "callees":
+            rows = codegraph.callees(ws, query, 20)
+            if not rows:
+                return f"{query} 没有解析出下游依赖。"
+            return f"{query} 依赖/调用：\n" + "\n".join(
+                f"  {r['name']}（{r['kind']}）"
+                + (f" — {r['path']}:{r['line']}" if r.get("path") else "")
+                for r in rows)
+        if action == "impact":
+            rows = codegraph.subgraph(ws, query, int(args.get("depth") or 2))
+            if not rows:
+                return f"{query} 没有上下游关系可展示。"
+            return f"{query} 的上下游（最多 3 层）：\n" + "\n".join(
+                f"  {r['from']} → {r['to']}（{r['kind']}）" for r in rows)
+        return (f"错误：未知 action {action}"
+                "（可用 search/outline/callers/callees/impact/stats）。")
+    except Exception as e:               # noqa: BLE001  图谱失败不阻断主循环
+        return f"错误：代码图谱查询失败（{type(e).__name__}: {e}）"
+
+
+def codegraph_schema() -> list:
+    """codegraph 功能开启时才提供 code_graph 工具（与 kb_schema 同模式）。"""
+    try:
+        import products
+        if not products.feature("codegraph", False):
+            return []
+    except Exception:                    # noqa: BLE001
+        return []
+    return [CODE_GRAPH_SCHEMA]
+
+
 def _is_local_key(model_key: str) -> bool:
     """模型是否指向本地端点（127.0.0.1 / localhost）。"""
     mc = config.find_model(model_key)
@@ -870,6 +988,7 @@ _EXECUTORS = {
     "grep_search": _grep_search,
     "index_search": _index_search,
     "kb_search": _kb_search,
+    "code_graph": _code_graph,
     "run_shell": _run_shell,
     "web_search": _web_search,
     "lsp_diagnostics": _lsp_diagnostics,

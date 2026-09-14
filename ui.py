@@ -4298,6 +4298,7 @@ class App:
         ("/permission", "cmd.permission", "permission"),
         ("/context", "cmd.context", "context"),
         ("/index", "cmd.index", "index"),
+        ("/graph", "cmd.graph", "graph"),
         ("/cache", "cmd.cache", "cache"),
         ("/mcp", "cmd.mcp", "mcp"),
         ("/sessions", "cmd.sessions", "sessions"),
@@ -4335,6 +4336,8 @@ class App:
                 self._show_model_menu(anchor=self.cmd_plus)
             elif cmd == "/dir":
                 self._change_workspace()
+            elif cmd == "/graph":
+                self._graph_command(arg)
             elif cmd == "/index":
                 self._rebuild_codeindex()
             elif cmd == "/cache":
@@ -4495,6 +4498,108 @@ class App:
             self._novel_pipe = p
             self._novel_stepwise = p.pipeline_status == "paused"
         return p, None
+
+    def _graph_command(self, arg: str):
+        """/graph 子命令：search <名> | outline <文件> | callers <名> | callees <名> |
+        impact <名> [层数] | stats | build [--force]。
+
+        内置 codegraph：工作区里有真实 CodeGraph 库（.codegraph/codegraph.db）
+        就直接读它（只读复用）；否则用内置 AST 图库，首次访问自动建图。
+        """
+        import codegraph
+        ws = tools.get_workspace()
+        sub = (arg or "").split(None, 1)
+        head = (sub[0] if sub else "stats").lower()
+        rest = (sub[1] if len(sub) > 1 else "").strip()
+
+        def _ensure():
+            st = codegraph.stats(ws)
+            if not st.get("nodes") and codegraph.backend(ws) != "external":
+                self._append("🗂 首次使用，正在建图…\n", "meta")
+                st = codegraph.build(ws)
+                self._append(
+                    f"✅ 建图完成：{st['files']:,} 文件 / {st['nodes']:,} 节点"
+                    f" / {st['edges']:,} 边\n", "meta")
+            return st
+
+        if head == "build":
+            force = "--force" in rest or "-f" in rest
+            self._append("🗂 正在建图…\n", "meta")
+
+            def _work():
+                try:
+                    st = codegraph.build(ws, force=force)
+                    msg = (f"✅ 建图完成：{st['files']:,} 文件 / {st['nodes']:,} 节点"
+                           f" / {st['edges']:,} 边（重解析 {st['parsed']}，"
+                           f"跳过 {st['skipped']}）\n")
+                    self.root.after(0, lambda: self._append(msg, "meta"))
+                except Exception as e:      # noqa: BLE001
+                    self.root.after(0, lambda: self._append(
+                        "❌ 建图失败：" + str(e) + "\n", "denied"))
+            threading.Thread(target=_work, daemon=True).start()
+            return
+
+        if head == "stats":
+            st = _ensure()
+            langs = "、".join(f"{k}×{v}" for k, v in (st.get("langs") or {}).items())
+            src = ("外部 CodeGraph 库（只读复用）" if st.get("backend") == "external"
+                   else "内置图库")
+            lines = [f"🕸 代码图谱 · {src}",
+                     f"· {st['files']:,} 文件 / {st['nodes']:,} 节点 / {st['edges']:,} 边",
+                     f"· 语言：{langs or '未知'}",
+                     f"· 库：{st['db']}"]
+            if st.get("index_state"):
+                lines.append(f"· 索引状态：{st['index_state']}")
+            self._append("\n".join(lines) + "\n", "meta")
+            return
+
+        if not rest:
+            self._append("💡 /graph search|outline|callers|callees|impact|stats|build"
+                         "（如 /graph callers execute_tool）\n", "meta")
+            return
+        _ensure()
+        if head == "search":
+            rows = codegraph.search(ws, rest, 10)
+            if not rows:
+                self._append(f"图谱中未找到「{rest}」\n", "meta")
+                return
+            self._append("\n".join(
+                f"🔎 [{r['kind']}] {r['name']}{r['sig']} — {r['path']}:{r['line']}"
+                + (f"  // {r['doc']}" if r.get("doc") else "") for r in rows)
+                + "\n", "toolresult")
+        elif head == "outline":
+            p = rest.replace("\\", "/").strip("/")
+            rows = codegraph.outline(ws, p)
+            if not rows:
+                self._append(f"⚠ {p} 在图谱中没有节点（路径是否正确？）\n", "denied")
+                return
+            self._append(f"📄 {p}\n" + "\n".join(
+                f"  L{r['line']}-{r['endline']} [{r['kind']}] {r['name']}{r['sig']}"
+                for r in rows) + "\n", "toolresult")
+        elif head == "callers":
+            rows = codegraph.callers(ws, rest, 20)
+            self._append((f"⬅ 调用 {rest} 的位置（{len(rows)} 处）：\n" + "\n".join(
+                f"  {r['name']} — {r['path']}:{r['line']}（{r['via']}）"
+                for r in rows) if rows else f"没有找到调用 {rest} 的地方\n") + "\n",
+                "toolresult")
+        elif head == "callees":
+            rows = codegraph.callees(ws, rest, 20)
+            self._append((f"➡ {rest} 依赖/调用：\n" + "\n".join(
+                f"  {r['name']}（{r['kind']}）"
+                + (f" — {r['path']}:{r['line']}" if r.get("path") else "")
+                for r in rows) if rows else f"{rest} 没有解析出下游依赖\n") + "\n",
+                "toolresult")
+        elif head == "impact":
+            m = re.match(r"^(\S+)(?:\s+(\d))?$", rest)
+            name = m.group(1) if m else rest
+            depth = int(m.group(2)) if (m and m.group(2)) else 2
+            rows = codegraph.subgraph(ws, name, depth)
+            self._append((f"🕸 {name} 的上下游（{depth} 层）：\n" + "\n".join(
+                f"  {r['from']} → {r['to']}（{r['kind']}）" for r in rows)
+                if rows else f"{name} 没有上下游关系\n") + "\n", "toolresult")
+        else:
+            self._append("💡 /graph 子命令：search|outline|callers|callees|impact|stats|build\n",
+                         "meta")
 
     def _novel_command(self, arg: str):
         """/novel 子命令：start <灵感> [章数] [auto] | use [pid] | ok | adjust <意见> |

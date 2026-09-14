@@ -8,7 +8,8 @@
     "mcp": false,
     "attachments": true,
     "sessions": true,
-    "rag": true
+    "rag": true,
+    "codegraph": true
   },
   "exe_name": "LocalAIWriter"
 }

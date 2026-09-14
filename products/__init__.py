@@ -29,7 +29,8 @@ DEFAULT_PRODUCT = "novelwriter"
 ENV_KEY = "LOCAL_AI_PRODUCT"
 
 KNOWN_FEATURES = ("gpulocal", "dispatch", "editor", "voice", "mcp",
-                  "attachments", "sessions", "quant", "rag", "zh_only")
+                  "attachments", "sessions", "quant", "rag", "codegraph",
+                  "zh_only")
 
 
 @dataclass
