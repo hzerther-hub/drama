@@ -4292,7 +4292,7 @@ class App:
     def _novel_task_end(self, ok: bool = True):
         """小说/短剧任务收尾：释放发起会话的运行位。
 
-        徽标/状态只在用户仍停留在该会话且它没有别的运行时复位——
+        徽标/状态只在用户仍停留在发起会话（且它没有别的运行）才复位——
         否则后台任务完成会错误地清掉用户当前会话的运行指示。
         """
         run = getattr(self, "_novel_run", None)
@@ -4302,14 +4302,32 @@ class App:
         if run is None:
             return
         run.running = False
-        if self._runs.get(run.sid) is run:
-            self._runs.pop(run.sid, None)
+        # 已结束的 run 留在 _runs：切走再切回来，buffer 里的过程记录
+        # 依然回放——否则任务一结束输出就凭空消失
         if getattr(self, "_cur_run", None) is run:
             self._cur_run = None
         self._running = any(r.running for r in self._runs.values())
         if run.sid == self.session_id and self._run_of(run.sid) is None:
             self.root.after(0, lambda: (self.badge_done(ok=ok),
                                         self._set_status(_t("top.ready"))))
+        # 过程记录持久化：写进会话 notes（只显示、不发给模型）——重启后
+        # 切回该会话仍能看到上次任务做了什么
+        if run.buffer:
+            try:
+                import sessions as sess_mod
+                d = sess_mod.load(run.sid)
+                if d is not None:
+                    log = "".join(t for t, _ in list(run.buffer))[-4000:]
+                    notes = (d.get("notes") or []) + [{
+                        "kind": "novel_log", "turn": None,
+                        "text": "📋 " + _t("novel.log_note",
+                                           t=run.title) + "\n" + log}]
+                    sess_mod.save(run.sid, d.get("messages") or [],
+                                  d.get("title") or run.title,
+                                  workspace=d.get("workspace") or "",
+                                  notes=notes)
+            except Exception:          # noqa: BLE001  记录失败不影响任务
+                pass
         self.root.after(0, self._refresh_sidebar)
 
     def _novel_append(self, text, tag=None):
@@ -6869,7 +6887,9 @@ class App:
         self.session_title = data.get("title") or _t("misc.no_title")
         self.messages = data["messages"]
         self._apply_session_ui(data.get("ui") or {})   # 还原该会的模型/权限
-        run = self._run_of(sid)
+        # 已结束的任务 run 也保留在 _runs（含输出 buffer）：切回来过程记录
+        # 依然回放；进行中与否只影响按钮态与「进行中」提示
+        run = self._runs.get(sid)
         self._cur_run = run
         # 运行中的会话：用 run 自己记的工作目录（用户可能已切到别处，
         # 但本次运行的文件操作必须仍在原目录进行）
@@ -6886,8 +6906,8 @@ class App:
                           workspace=tools.get_workspace())
         self.clear()
         self.sess_btn.config(text="💬 " + self.session_title[:16])
-        # 运行中的会话：按钮回到「停止」态（该会话还在跑）
-        if run is not None:
+        # 运行中的会话：按钮回到「停止」态（该会话还在跑）；已结束则正常发送
+        if run is not None and run.running:
             self.send_btn.config(text=_t("btn.stop"), fg="#dc2626")
         else:
             self.send_btn.config(text=_t("btn.send"), fg="black", state="normal")
@@ -6913,6 +6933,11 @@ class App:
             elif n.get("kind") == "turn_model":
                 self._append(
                     _t("reply.model", model=n.get("model", "?")) + "\n", "meta")
+            elif n.get("kind") == "novel_log":
+                # 任务过程记录（重启后从 notes 恢复）；本会话还有活着的
+                # run（buffer 更完整）时不渲染，避免重复
+                if run is None or not run.buffer:
+                    self._append(n.get("text", "") + "\n", "meta")
 
         user_no = 0
         for m in self.messages:
@@ -6970,12 +6995,15 @@ class App:
                 self._set_status(_t("sess.dispatch_restored", name=name))
             else:
                 self._set_status(_t("sess.dispatch_fallback"))
-        # 该会话还在跑 → 把已产生的输出接在历史后面，并显示「进行中」，
-        # 让用户切回来就看到「进程还在、输出没丢」，而不是一片空白。
+        # 该会话有任务记录（在跑或刚结束）→ 把已产生的输出接在历史后面，
+        # 让用户切回来就看到「过程还在」，而不是一片空白。
         if run is not None:
             self._replay_run_buffer(run)
-            self.badge_busy(_t("ui.running"))
-            self._set_status(_t("sess.running_restored"))
+            if run.running:
+                self.badge_busy(_t("ui.running"))
+                self._set_status(_t("sess.running_restored"))
+            else:
+                self._set_status(_t("sess.loaded", t=self.session_title))
         else:
             self._set_status(_t("sess.loaded", t=self.session_title))
 
