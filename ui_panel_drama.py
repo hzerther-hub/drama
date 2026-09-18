@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk
 
@@ -82,10 +84,27 @@ def show(app):
     ui._make_modal(win, app.root)
 
     st = {"ch": chapters[0]["idx"], "shot": 0, "busy": False, "step": 3,
-          "img_refs": []}
+          "img_refs": [], "_t0": None, "_tick_id": None, "_gen_base": ""}
+
+    def _tick():
+        """生成中每秒把状态刷新成「…· Ns」，让长时间生成可感知。"""
+        tid = st.get("_tick_id")
+        if tid:
+            try:
+                win.after_cancel(tid)
+            except Exception:          # noqa: BLE001
+                pass
+            st["_tick_id"] = None
+        if not st["busy"] or not win.winfo_exists():
+            return
+        el = int(time.time() - st["_t0"]) if st["_t0"] else 0
+        stat_lbl.config(text=f"{st['_gen_base']} · {el}s")
+        st["_tick_id"] = win.after(1000, _tick)
 
     def status(msg, busy=False):
         st["busy"] = busy
+        st["_gen_base"] = msg if busy else ""
+        st["_t0"] = time.time() if busy else None
         stat_lbl.config(text=msg, fg=theme.DANGER if msg.startswith("❌")
                         else theme.MUTED)
         try:
@@ -96,6 +115,7 @@ def show(app):
                 app.badge_done()
         except Exception:              # noqa: BLE001
             pass
+        _tick()
 
     def _shot_paths(ch, i):
         return (os.path.join(book, dramavideo._FRAME_DIR, f"{ch}-{i:02d}.png"),
@@ -338,7 +358,7 @@ def show(app):
                          text=f"── {title_prefix}{sec}（{len(items)}）──",
                          font=(FONT_UI, 11, "bold"),
                          bg=theme.PANEL,
-                         fg=theme.ACCENT if title_prefix else theme.MUTED
+                         fg=theme.ACCENT
                          ).grid(row=row, column=0, columnspan=4, sticky="w",
                                 padx=4, pady=(10, 2))
                 row += 1
@@ -351,8 +371,8 @@ def show(app):
                     _build_cast_card(card, name, info, store_path)
                 row += (len(items) + 3) // 4
 
-        _grid_group(cast, "", cast_path)          # 全书（长期）
-        _grid_group(local, f"第{st['ch']}章·",   # 本章（暂时）
+        _grid_group(cast, "通用库·", cast_path)     # 全书长期资产（所有章共用）
+        _grid_group(local, f"第{st['ch']}章·",      # 本章暂时资产，随章切换
                     dramavideo._chapter_assets_path(state, st["ch"]))
 
     def _cast_local(ch):
@@ -543,9 +563,11 @@ def show(app):
         status(_t("ds.generating", n=_t("ds.ch_assets", n=ch)), busy=True)
         threading.Thread(target=work, daemon=True).start()
 
-    ui._flat_button(foot2, text=_t("ds.ch_assets_btn", n=st["ch"]),
-                    width=16, font=(FONT_UI, 10),
-                    command=_extract_chapter_assets).pack(side="left", padx=6)
+    ch_assets_btn = ui._flat_button(
+        foot2, text=_t("ds.ch_assets_btn", n=st["ch"]),
+        width=16, font=(FONT_UI, 10),
+        command=_extract_chapter_assets)
+    ch_assets_btn.pack(side="left", padx=6)
     _refresh_cast()
 
     # ================ 步骤3：分集视频 ================
@@ -607,6 +629,10 @@ def show(app):
     mood_e = tk.Entry(row3c, width=10, font=(FONT_UI, 10), relief="flat",
                       bg=theme.BG, fg=theme.TEXT)
     mood_e.pack(side="left", padx=4)
+    # 语速估算提示：旁白+台词完读所需秒数——低于它人物会说到一半被切镜
+    spk_lbl = tk.Label(row3c, text="", font=(FONT_UI, 9), bg=theme.PANEL,
+                       fg=theme.ACCENT)
+    spk_lbl.pack(side="left", padx=(8, 0))
     tk.Label(center3, text=_t("ds.desc"), font=(FONT_UI, 10),
              bg=theme.PANEL, fg=theme.MUTED).pack(anchor="w", padx=10)
     desc_t = tk.Text(center3, height=8, font=(FONT_UI, 10), wrap="word",
@@ -654,6 +680,18 @@ def show(app):
                         book, dramavideo._OUT_DIR))
                     if os.path.isdir(os.path.join(book, dramavideo._OUT_DIR))
                     else status(_t("ds.no_out"))).pack(pady=3)
+    # 片段都在 短剧片段/ 保留（每镜主成片 + 各条 take），换卡/重抽互不影响
+    ui._flat_button(right3, text=_t("ds.open_clips"), width=18,
+                    font=(FONT_UI, 10),
+                    command=lambda: os.startfile(os.path.join(
+                        book, dramavideo._CLIP_DIR))
+                    if os.path.isdir(os.path.join(book, dramavideo._CLIP_DIR))
+                    else status(_t("ds.no_clips_dir"))).pack(pady=3)
+    ui._flat_button(right3, text=_t("ds.play_clip"), width=18,
+                    font=(FONT_UI, 10),
+                    command=lambda: os.startfile(_canonical_clip())
+                    if os.path.exists(_canonical_clip())
+                    else status(_t("ds.no_clip"))).pack(pady=3)
     # ---- 抽卡选择器：take 列表 + 首帧缩略图预览 + 采用为当前成片 ----
     take_var = tk.StringVar()
     take_box = ttk.Combobox(right3, textvariable=take_var, state="readonly",
@@ -661,7 +699,8 @@ def show(app):
     take_box.pack(fill="x", padx=10, pady=(6, 0))
     take_box.bind("<<ComboboxSelected>>", lambda e: _preview_take())
     ui._flat_button(right3, text=_t("ds.adopt"), width=18,
-                    font=(FONT_UI, 10), command=_adopt_take).pack(pady=3)
+                    font=(FONT_UI, 10),
+                    command=lambda: _adopt_take()).pack(pady=3)
     tts_var = tk.BooleanVar(value=bool(state.get("drama_tts")))
 
     def _toggle_tts():
@@ -721,6 +760,10 @@ def show(app):
                 prev.config(image=ph, text="", width=0, height=0)
                 st["img_refs"].append(ph)
                 return
+            # 无 ffmpeg 抽不了首帧：明说，而不是装作没变化
+            prev.config(image="", width=30, height=6,
+                        text=f"{take_var.get()}\n· {_t('ds.take_no_preview')}")
+            return
         _show_shot_frame()
 
     def _adopt_take():
@@ -779,6 +822,12 @@ def show(app):
         era_e.delete(0, "end"); era_e.insert(0, s.get("era", ""))
         cam_e.delete(0, "end"); cam_e.insert(0, s.get("camera", ""))
         mood_e.delete(0, "end"); mood_e.insert(0, s.get("mood", ""))
+        need = dramavideo._speech_seconds(s)
+        dur = int(float(s.get("duration") or 0))
+        spk_lbl.config(text=_t("ds.speech_hint", n=need)
+                       + ("" if dur >= need else " ⚠"))
+        if dur < need:
+            spk_lbl.config(fg=theme.DANGER)
         chars_e.delete(0, "end")
         chars_e.insert(0, "、".join(s.get("characters", [])))
         sec_sp.set(int(s.get("duration", 5)))
@@ -824,6 +873,22 @@ def show(app):
         if 0 <= idx < len(chapters):
             st["ch"] = chapters[idx]["idx"]
             _refresh_shots(0)
+            # 资产库跟着章节走：本章专属分组 + 提取按钮文字同步切换
+            if ch_assets_btn.winfo_exists():
+                ch_assets_btn.config(text=_t("ds.ch_assets_btn", n=st["ch"]))
+            _refresh_cast()
+
+    _GEN_KIND = {"frame": "关键帧", "clip": "镜头视频", "dub": "配音",
+                 "cast": "形象", "shots": "分镜"}
+
+    def _gen_event(e):
+        """生成子步骤（关键帧/镜头视频/配音）→ 状态栏分步提示。"""
+        if e.get("type") == "drama_media" and e.get("label"):
+            k = _GEN_KIND.get(e.get("kind"), "")
+            extra = f"{e['label']}{('·' + k) if k else ''}"
+            if e.get("sec"):
+                extra += f"（出片 {int(float(e['sec']))}s）"
+            st["_gen_base"] = _t("ds.generating", n=extra)
 
     def _gen_work(kind):
         ch, i = st["ch"], st["shot"] + 1
@@ -831,26 +896,31 @@ def show(app):
             return
         cast = _cast()
         shot = _shots()[st["shot"]]
+        ev = lambda e: win.after(0, lambda: _gen_event(e))   # noqa: E731
         if kind == "frame":
             # 点按即（重）生成：force=True 无视「文件存在即跳过」缓存
-            dramavideo.keyframe(state, cast, shot, ch, i, force=True)
+            dramavideo.keyframe(state, cast, shot, ch, i,
+                                on_event=ev, force=True)
         elif kind == "clip":
             frame, _ = _shot_paths(ch, i)
             if not os.path.exists(frame):
-                dramavideo.keyframe(state, cast, shot, ch, i)
+                dramavideo.keyframe(state, cast, shot, ch, i, on_event=ev)
             urls = _load_json(os.path.join(book, dramavideo._SHOT_DIR,
                                            "urls.json"), {})
             dramavideo.clip(state, shot, urls.get(f"{ch}-{i:02d}", ""),
-                            ch, i, force=True)
+                            ch, i, on_event=ev, force=True)
         elif kind == "take":
             # 抽卡：同关键帧再生成一条候选，旧卡与新卡都保留
             frame, _ = _shot_paths(ch, i)
             if not os.path.exists(frame):
-                dramavideo.keyframe(state, cast, shot, ch, i)
+                dramavideo.keyframe(state, cast, shot, ch, i, on_event=ev)
             urls = _load_json(os.path.join(book, dramavideo._SHOT_DIR,
                                            "urls.json"), {})
             tpath = dramavideo.gen_clip_take(
-                state, shot, urls.get(f"{ch}-{i:02d}", ""), ch, i)
+                state, shot, urls.get(f"{ch}-{i:02d}", ""), ch, i,
+                on_event=ev)
+            m = re.search(r"take(\d+)\.mp4$", tpath.replace("\\", "/"))
+            st["_last_take_n"] = m.group(1) if m else ""
             win.after(0, lambda tp=tpath: _refresh_takes(tp))
         else:
             n = len(_shots())
@@ -871,6 +941,9 @@ def show(app):
         if st["busy"]:
             status(_t("ds.busy"), busy=True)
             return
+        if kind in ("frame", "clip", "take"):
+            # 表单编辑先落盘：改完直接点生成即生效，不必先点「保存分镜」
+            _save_shot()
         names = {"frame": _t("ds.gen_frame"), "clip": _t("ds.gen_clip"),
                  "take": _t("ds.take"), "concat": _t("ds.concat")}
         status(_t("ds.generating", n=names[kind]), busy=True)
@@ -881,8 +954,15 @@ def show(app):
             except Exception as e:       # noqa: BLE001
                 win.after(0, lambda: status(f"❌ {type(e).__name__}: {e}"))
             else:
-                win.after(0, lambda: (_refresh_shots(st["shot"]),
-                                      status(_t("ds.ready"))))
+                def done():
+                    _refresh_shots(st["shot"])
+                    if kind == "take":
+                        n = st.get("_last_take_n") or ""
+                        status(_t("ds.take_done", n=n) if n
+                               else _t("ds.ready"))
+                    else:
+                        status(_t("ds.ready"))
+                win.after(0, done)
         threading.Thread(target=work, daemon=True).start()
 
     def _run_thread(fn):

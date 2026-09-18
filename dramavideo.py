@@ -718,9 +718,9 @@ def build_shots(state: dict, chapter: dict, on_event=None,
                         for k in ((info.get("looks") or {}))})
     era_rule = ("每个镜头标注 era（所处时代/阶段，与该镜头场景一致，"
                 "角色服装随 era 走）。"
-                + (f"era 必须优先从这些已生成形象的阶段名里选："
-                   f"{'、'.join(era_names)}——没有合适再自创简短新词。"
-                   if era_names else ""))
+        + (f"era 必须优先从这些已生成形象的阶段名里选："
+           f"{'、'.join(era_names)}——没有合适再自创简短新词。"
+           if era_names else ""))
     text = _ask(
         state,
         "你是短剧导演。把小说章节改编为竖屏短剧分镜表。每个镜头 4-15 秒，"
@@ -730,6 +730,9 @@ def build_shots(state: dict, chapter: dict, on_event=None,
         "单独放 camera 字段）。"
         "camera 写本镜运镜（推近/拉远/横移/摇/跟拍/固定），mood 写本镜"
         "情绪氛围（如 紧张/温馨/压抑/燃），供配音语气与表演参考。"
+        "duration 必须够把话说完：中文语速约 4 字/秒，"
+        "有旁白或台词的镜头按（旁白字数+台词字数）÷4 再加 2 秒余量取整，"
+        "宁可长一点，人物没说完话就切镜是重大缺陷。"
         + era_rule +
         "每个镜头再写一句 narration 旁白解说词（第三人称说书人口吻，"
         "15-40 字，交代前情/心理/转折，让观众听得懂剧情；纯对白镜也要有）。"
@@ -848,7 +851,8 @@ def keyframe(state: dict, cast: dict, shot: dict, ch: int, i: int,
     prompt = (f"{style}。{shot['description']}。"
               f"场景：{scene_name}。出场角色：{'、'.join(who) or '（无）'}。"
               "参考图依次为场景空镜、角色形象、道具，"
-              "严格保持参考图中场景布置、角色长相与道具外观一致。竖屏构图。")
+              "严格保持参考图中场景布置、角色长相与道具外观一致。"
+              "画面中不要出现任何字幕、文字、标题、水印或字母字符。竖屏构图。")
     on_event({"type": "drama_media", "kind": "frame",
               "label": f"第{ch}章 镜头{i}"})
     path, url = imggen.generate_ex(prompt, out, size="1K", ratio="9:16",
@@ -891,6 +895,18 @@ def clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
     return _render_clip(state, shot, frame_url, ch, i, out, on_event)
 
 
+def _speech_seconds(shot: dict) -> int:
+    """旁白+台词按中文语速（约 4 字/秒）估完读时长，另加 1.5s 收尾余量。
+
+    视频模型给多长画面就只能说多长的话——镜头时长低于这个数时，
+    台词必然被截断（人物没说完就切镜），所以渲染前取两者较大值。
+    """
+    spoken = len((shot.get("narration") or "").strip()) + \
+        len((shot.get("dialogue") or "").strip())
+    need = int(spoken / 4.0 + 1.5 + 0.999)
+    return max(_MIN_SEC, min(_MAX_SEC, need))
+
+
 def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
                  out: str, on_event) -> str:
     """渲染一条镜头视频到指定路径（clip 与抽卡 gen_clip_take 共用）。"""
@@ -900,15 +916,19 @@ def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
     camera = (shot.get("camera") or "").strip()
     mood = (shot.get("mood") or "").strip()
     # 画面指令与配音指令分离：模型同步语音只许念「旁白/台词」，
-    # 风格与分镜术语（机位/焦段/运镜）绝不能被读出来，且锁死中文普通话
-    prompt = (f"{style}。画面：{shot['description']}。")
+    # 风格与分镜术语（机位/焦段/运镜）绝不能被读出来，且锁死中文普通话。
+    # 屏显文字一律禁止：模型烧录的字幕中英夹杂、汉字常渲染成乱码，
+    # 解说信息由配音承担，画面保持纯净
+    prompt = (f"{style}。画面：{shot['description']}。"
+              "画面中不要出现任何字幕、文字、标题、水印或字母字符。")
     if camera:
         prompt += f"镜头运动：{camera}。"
     if mood:
         prompt += f"本镜情绪氛围：{mood}。"
     prompt += ("\n配音要求：成片语音只朗读下面标注的内容，画面描述、风格说明"
                "等其它文字一律不要朗读、不要复述；全程中文普通话，"
-               "不要出现英语或任何其它语言")
+               "不要出现英语或任何其它语言；台词要完整说完、旁白要完整读完，"
+               "人物说到一半不得结束镜头")
     if mood:
         prompt += f"；语气贴合「{mood}」的情绪"
     prompt += "。\n"
@@ -918,11 +938,12 @@ def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
         prompt += f"台词（角色对白）：{dialogue}"
     if not narration and not dialogue:
         prompt += "旁白/台词：无——本镜只有环境音，不要生成任何人声。"
+    sec = max(float(shot.get("duration") or _MIN_SEC), _speech_seconds(shot))
     on_event({"type": "drama_media", "kind": "clip",
-              "label": f"第{ch}章 镜头{i}"})
+              "label": f"第{ch}章 镜头{i}", "sec": sec})
     want_dub = bool(state.get("drama_tts")) and (shot.get("dialogue") or "").strip()
     raw = videogen.generate(prompt, out if not want_dub else out + ".raw.mp4",
-                            image=frame_url, seconds=shot["duration"],
+                            image=frame_url, seconds=sec,
                             timeout=240.0)
     if not want_dub:
         return raw

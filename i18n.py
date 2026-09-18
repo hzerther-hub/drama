@@ -901,6 +901,11 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
                            "zh": "重写：/novel rewrite <章号> [反馈]"},
     "novel.need_model": {"en": "No model configured", "zh": "未配置模型，请先在模型菜单选择"},
     "novel.none":   {"en": "No pipelines yet", "zh": "还没有流水线记录"},
+    "novel.done_hint": {"en": "This book is finished. Use /novel extend N "
+                              "to write N more chapters",
+                        "zh": "这本书已按计划写完。想继续写下去用 "
+                              "/novel extend N（再加写 N 章，从最后一章"
+                              "接着写）"},
     "novel.notfound": {"en": "Pipeline not found", "zh": "找不到这本书（pid 不存在）"},
     "novel.ambiguous": {"en": "Multiple pipelines match that prefix",
                         "zh": "pid 前缀匹配到多本书，请输入更完整的 pid"},
@@ -1066,6 +1071,14 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "ds.gen_clip":  {"en": "Generate clip (img2vid)", "zh": "生成镜头视频（图生视频）"},
     "ds.concat":    {"en": "Concat episode (ffmpeg)", "zh": "合成整集（ffmpeg）"},
     "ds.take":      {"en": "🎬 Roll a take (gacha)", "zh": "🎬 抽卡（再生成一条）"},
+    "ds.take_done": {"en": "take{n} generated — select it above, then "
+                          "「采用选中的卡」 to swap it in",
+                     "zh": "take{n} 已生成：下拉选中后点「采用选中的卡」"
+                           "换入成片"},
+    "ds.take_no_preview": {"en": "preview needs ffmpeg (generation & "
+                                 "adoption still work)",
+                           "zh": "预览首帧需要 ffmpeg（不影响生成与采用）"},
+    "ds.speech_hint": {"en": "speech needs ≥{n}s", "zh": "读完需≥{n}秒"},
     "ds.adopt":     {"en": "✅ Use this take", "zh": "✅ 采用选中的卡"},
     "ds.take_main": {"en": "Current clip", "zh": "当前成片"},
     "ds.adopt_none": {"en": "Select a take first", "zh": "先在下拉里选一条卡"},
@@ -1073,6 +1086,11 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
                       "zh": "已采用该卡为当前成片，重新合成整集即生效"},
     "ds.open_out":  {"en": "Open output folder", "zh": "打开成片目录"},
     "ds.no_out":    {"en": "No output folder yet", "zh": "还没有成片目录"},
+    "ds.open_clips": {"en": "Open clips folder (all takes kept)",
+                      "zh": "打开片段目录（全部保留）"},
+    "ds.no_clips_dir": {"en": "No clips folder yet", "zh": "还没有片段目录"},
+    "ds.play_clip": {"en": "▶ Play this shot", "zh": "▶ 播放本镜"},
+    "ds.no_clip":   {"en": "This shot has no video yet", "zh": "本镜还没有视频"},
     "ds.no_clips":  {"en": "No finished clips to concat", "zh": "没有已完成的镜头片段可合成"},
     "novel.busy":   {"en": "Pipeline already running", "zh": "已有流水线在运行"},
     "novel.busy_other":   {"en": "This book is already being processed in another session", "zh": "同一本书正在另一个会话处理，等它完成或先切书"},

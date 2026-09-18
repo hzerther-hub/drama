@@ -1351,7 +1351,8 @@ class App:
         self._runs: dict = {}            # sid -> SessionRun
         self._cur_run = None             # 当前可见会话的运行记录
         self._rec = threading.local()    # 工作线程 → 当前记录目标 run
-        self._novel_run = None           # 在跑的小说/短剧任务（发起会话的 run）
+        self._novel_srun = None          # 在跑的小说/短剧任务（发起会话的
+        # SessionRun）。别命名成 _novel_run：那会遮蔽同名流水线执行方法。
 
         _clear_btn = _flat_button(btn_col, text=_t("btn.clear"), width=3,
                                   command=self.clear, font=(FONT_MONO, theme.FS_TOOLBAR))
@@ -4226,8 +4227,8 @@ class App:
                 run.stop = True
             if getattr(self, "_cur_run", None) is run:
                 self._cur_run = None
-            if getattr(self, "_novel_run", None) is run:
-                self._novel_run = None
+            if getattr(self, "_novel_srun", None) is run:
+                self._novel_srun = None
 
     def _novel_task_busy(self) -> bool:
         """本会话是否已有任务在跑（聊天或小说/短剧）：会话级互斥。
@@ -4274,7 +4275,7 @@ class App:
         run.running = True
         self._runs[run.sid] = run
         self._cur_run = run
-        self._novel_run = run
+        self._novel_srun = run
         self._novel_busy = True
         # 懒创建（或尚未落库）的会话立即写库：侧栏才有这一行，⏳「进行中」
         # 标记才有处可挂——否则任务在跑、侧栏却找不到这个会话
@@ -4295,8 +4296,8 @@ class App:
         徽标/状态只在用户仍停留在发起会话（且它没有别的运行）才复位——
         否则后台任务完成会错误地清掉用户当前会话的运行指示。
         """
-        run = getattr(self, "_novel_run", None)
-        self._novel_run = None
+        run = getattr(self, "_novel_srun", None)
+        self._novel_srun = None
         self._novel_busy = False
         self._drama_stop_event = None
         if run is None:
@@ -4336,7 +4337,7 @@ class App:
         临时把线程的记录目标切到任务 run，复用 _append 的整套路由；
         聊天线程的 thread-local 不受影响（用完即还原）。
         """
-        run = getattr(self, "_novel_run", None)
+        run = getattr(self, "_novel_srun", None)
         if run is None:
             self._append(text, tag)
             return
@@ -5435,9 +5436,26 @@ class App:
                              f"{r['title']}（债 {r['debts']}）{warn}\n", "meta")
 
     def _novel_ok(self):
-        """继续：逐阶段模式下只推进一个阶段，随后再次暂停供调定。"""
+        """继续：逐阶段模式下只推进一个阶段，随后再次暂停供调定。
+
+        重启后内存态丢失时自动从磁盘取当前书；已写完的书提示用
+        /novel extend N 加写章节，而不是笼统的「还没有流水线记录」。
+        """
         p = getattr(self, "_novel_pipe", None)
-        if not p or p.pipeline_status != "paused":
+        if p is None:
+            p2, err = self._novel_pick("")
+            if p2 is None:
+                self._set_status(_t("novel.none"))
+                return
+            if p2.pipeline_status == "done":
+                self._set_status(_t("novel.done_hint"))
+                self._append("💡 " + _t("novel.done_hint") + "\n", "meta")
+                return
+            if p2.pipeline_status != "paused":
+                self._set_status(_t("novel.none"))
+                return
+            p = p2
+        elif p.pipeline_status != "paused":
             self._set_status(_t("novel.none"))
             return
         if self._novel_task_busy():
@@ -6018,7 +6036,7 @@ class App:
 
     def _novel_event(self, e):
         """流水线事件 → 聊天区；输出归属发起任务的会话（切走了进 buffer）。"""
-        run = getattr(self, "_novel_run", None)
+        run = getattr(self, "_novel_srun", None)
         if run is None:
             self._novel_event_impl(e)
             return

@@ -150,6 +150,41 @@ def test_build_shots_locks_era_vocab_to_cast_looks(book, monkeypatch):
     dramavideo.build_shots(state, chapter, cast=cast)
     assert "现代" in seen["sys"] and "仙侠" in seen["sys"]
     assert "必须优先" in seen["sys"]
+    assert "4 字/秒" in seen["sys"]          # 时长按语速给足的提示
+
+
+def test_speech_seconds_and_clip_uses_it(book, monkeypatch):
+    """话没说完就切镜：渲染时长取 镜头时长 与 语速估算 的较大值。"""
+    state, tmp = book
+    long_narr = "旁白" * 30                    # 60 字 → 60/4+1.5 ≈ 16.5 → 15
+    shot = {"title": "t", "scene": "", "characters": [], "props": [],
+            "description": "d", "narration": long_narr, "dialogue": "",
+            "duration": 5}
+    need = dramavideo._speech_seconds(shot)
+    assert dramavideo._MIN_SEC <= need <= dramavideo._MAX_SEC
+    assert need > 5                            # 60 字念不完 5 秒
+    # 短台词：4 字 → 4/4+1.5 ≈ 2.5 → 4（下限），不拉长原 8 秒镜头
+    short = dict(shot, narration="他说好", duration=8)
+    assert dramavideo._speech_seconds(short) == dramavideo._MIN_SEC
+
+    seen = {}
+
+    def fake_gen(prompt, out, image=None, seconds=0, timeout=0):
+        seen["sec"] = seconds
+        seen["prompt"] = prompt
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "wb") as f:
+            f.write(b"V")
+        return out
+
+    monkeypatch.setattr(dramavideo.videogen, "generate", fake_gen)
+    dramavideo.clip(state, shot, "u://f", 1, 1)
+    assert seen["sec"] == need                 # 按语速拉长
+    assert "不要出现任何字幕" in seen["prompt"]  # 屏显文字禁止
+    assert "完整说完" in seen["prompt"]         # 截断防护
+    # 短镜头不被拉长
+    dramavideo.clip(state, short, "u://f", 1, 2)
+    assert seen["sec"] == 8
 
 
 def test_keyframe_refs_scene_chars_props_and_caches(book, monkeypatch):

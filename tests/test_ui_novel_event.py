@@ -320,7 +320,7 @@ def test_novel_event_restores_rec_run():
     app = StubApp()
     app._rec = threading.local()
     app._rec.run = object()                 # 模拟主线程已有记录目标
-    app._novel_run = type("R", (), {"sid": "s2"})()
+    app._novel_srun = type("R", (), {"sid": "s2"})()
     saved = app._rec.run
     app._novel_event({"type": "stage_done", "name": "setup"})
     assert app._rec.run is saved            # 还原：不污染后续主线程输出路由
@@ -329,7 +329,7 @@ def test_novel_event_restores_rec_run():
 
 def test_novel_event_without_run_renders_directly():
     app = StubApp()
-    app._novel_run = None
+    app._novel_srun = None
     app._novel_event({"type": "chapter_done", "idx": 2,
                       "title": "接触", "words": 900})
     assert app.refreshes == 1
