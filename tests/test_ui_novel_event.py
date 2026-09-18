@@ -8,6 +8,8 @@ class StubApp:
     """只提供 _novel_event 依赖的最小接口。"""
 
     _novel_event = ui.App._novel_event
+    _novel_event_impl = ui.App._novel_event_impl
+    _rec_run = ui.App._rec_run
 
     def __init__(self):
         self.lines = []
@@ -63,6 +65,10 @@ class CmdStub:
     _novel_command = ui.App._novel_command
     _novel_pick = ui.App._novel_pick
     _novel_adjust = ui.App._novel_adjust
+    _novel_task_busy = ui.App._novel_task_busy
+    _novel_task_begin = ui.App._novel_task_begin
+    _run_of = ui.App._run_of
+    _refresh_sidebar = lambda self: None
 
     def __init__(self):
         self.lines = []
@@ -70,6 +76,9 @@ class CmdStub:
         self._novel_pipe = None
         self._novel_busy = False
         self._running = False
+        self.session_id = None
+        self._runs = {}
+        self.messages = []
         self.current_model = None
         self._novel_stepwise = False
         self._novel_last_done = None
@@ -303,3 +312,25 @@ def test_delete_other_session_only_refreshes(monkeypatch):
     assert deleted == ["other"]
     assert stub.new_persist is None         # 没新建会话
     assert stub.refreshed is True
+
+
+def test_novel_event_restores_rec_run():
+    """事件路由：临时切到任务 run 记录输出，用完还原线程记录目标。"""
+    import threading
+    app = StubApp()
+    app._rec = threading.local()
+    app._rec.run = object()                 # 模拟主线程已有记录目标
+    app._novel_run = type("R", (), {"sid": "s2"})()
+    saved = app._rec.run
+    app._novel_event({"type": "stage_done", "name": "setup"})
+    assert app._rec.run is saved            # 还原：不污染后续主线程输出路由
+    assert app._novel_last_done == "setup"  # 且事件正常处理
+
+
+def test_novel_event_without_run_renders_directly():
+    app = StubApp()
+    app._novel_run = None
+    app._novel_event({"type": "chapter_done", "idx": 2,
+                      "title": "接触", "words": 900})
+    assert app.refreshes == 1
+    assert any("接触" in t for _tag, t in app.lines)

@@ -132,3 +132,44 @@ class TestTitle:
 
     def test_empty(self):
         assert sessions.make_title("   ") == "新会话"
+
+
+class TestSessionUi:
+    def test_set_ui_and_load(self):
+        sid = sessions.new_id()
+        sessions.save(sid, [{"role": "user", "content": "hi"}], "t")
+        assert sessions.set_ui(sid, {"model": "k/m1", "mode": "ask"})
+        d = sessions.load(sid)
+        assert d["ui"] == {"model": "k/m1", "mode": "ask"}
+        assert d["messages"] == [{"role": "user", "content": "hi"}]
+
+    def test_save_without_ui_preserves_existing(self):
+        sid = sessions.new_id()
+        sessions.save(sid, [], "t", ui={"model": "k/a", "mode": "always"})
+        sessions.save(sid, [{"role": "user", "content": "x"}], "t")  # 未带 ui
+        assert sessions.load(sid)["ui"] == {"model": "k/a", "mode": "always"}
+
+    def test_save_with_ui_overwrites(self):
+        sid = sessions.new_id()
+        sessions.save(sid, [], "t", ui={"model": "k/a", "mode": "ask"})
+        sessions.save(sid, [], "t", ui={"model": "k/b", "mode": "readonly"})
+        assert sessions.load(sid)["ui"] == {"model": "k/b", "mode": "readonly"}
+
+    def test_load_legacy_returns_empty_ui(self):
+        sid = sessions.new_id()
+        sessions.save(sid, [{"role": "user", "content": "旧"}], "旧")
+        d = sessions.load(sid)
+        assert d["ui"] == {}            # 旧记录无 ui 键 → 空字典不炸
+
+    def test_set_ui_missing_session(self):
+        assert sessions.set_ui("不存在", {"model": "x"}) is False
+
+    def test_set_ui_keeps_notes_and_title(self):
+        sid = sessions.new_id()
+        sessions.save(sid, [{"role": "user", "content": "hi"}], "标题",
+                      notes=[{"kind": "turn_model", "turn": 1, "model": "A"}])
+        sessions.set_ui(sid, {"model": "k/m", "mode": "ask"})
+        d = sessions.load(sid)
+        assert d["title"] == "标题"
+        assert d["notes"] == [{"kind": "turn_model", "turn": 1, "model": "A"}]
+        assert d["ui"] == {"model": "k/m", "mode": "ask"}

@@ -135,7 +135,8 @@ class SessionRun:
 
     __slots__ = ("sid", "title", "workspace", "messages", "model",
                  "dispatch_on", "standalone", "notes", "buffer",
-                 "running", "stop", "task_failed", "started", "deleted")
+                 "running", "stop", "task_failed", "started", "deleted",
+                 "kind", "novel_pid")
 
     def __init__(self, sid, title, workspace, messages, model,
                  dispatch_on, standalone, notes):
@@ -154,6 +155,10 @@ class SessionRun:
         self.started = time.time()
         # 会话被删除：运行结束后不得落盘（否则会话会「复活」，看起来删不掉）
         self.deleted = False
+        # kind: chat=Agent 对话；novel=小说/短剧流水线任务（输出路由/停止
+        # 方式不同）。novel_pid：任务处理的书（同书跨会话互斥用）。
+        self.kind = "chat"
+        self.novel_pid = ""
 
     def record(self, text, tag):
         """记一条输出（供切回时恢复）——仅文本层，富控件不回放。"""
@@ -1346,6 +1351,7 @@ class App:
         self._runs: dict = {}            # sid -> SessionRun
         self._cur_run = None             # 当前可见会话的运行记录
         self._rec = threading.local()    # 工作线程 → 当前记录目标 run
+        self._novel_run = None           # 在跑的小说/短剧任务（发起会话的 run）
 
         _clear_btn = _flat_button(btn_col, text=_t("btn.clear"), width=3,
                                   command=self.clear, font=(FONT_MONO, theme.FS_TOOLBAR))
@@ -2503,8 +2509,8 @@ class App:
             try:
                 report = novel_chain.book_review_full(state)
             except Exception as e:        # noqa: BLE001
-                self.root.after(0, lambda: self._append(
-                    f"❌ {type(e).__name__}: {e}\n", "denied"))
+                self._novel_append(
+                    f"❌ {type(e).__name__}: {e}\n", "denied")
                 return
             self.root.after(0, lambda: (
                 self._append("📝 " + _t("ed.review_done") + "\n", "meta"),
@@ -3612,6 +3618,7 @@ class App:
             if hasattr(self, "bottom_model_btn"):
                 self.bottom_model_btn.config(text=self._model_btn_label(),
                                              width=self._model_btn_width())
+            self._persist_session_ui()
 
     def _think_btn_text(self):
         """思考按钮文案：模型默认 / 当前等级。"""
@@ -4092,6 +4099,36 @@ class App:
         self._set_status(_t("st.perm", m=_mode_label(mode)))
         if hasattr(self, "bottom_mode_btn"):
             _set_btn_icon(self.bottom_mode_btn, MODE_ICON.get(mode, "🛡"))
+        self._persist_session_ui()
+
+    def _session_ui_state(self) -> dict:
+        """当前会话绑定的界面状态：模型 + 权限模式（思考等级随模型走）。"""
+        return {"model": (self.current_model.key if self.current_model else ""),
+                "mode": getattr(self, "mode", "")}
+
+    def _persist_session_ui(self):
+        """把 模型/权限模式 记到当前会话——切回该会话时一并还原。"""
+        import sessions as sess_mod
+        sid = getattr(self, "session_id", None)
+        if not sid:
+            return
+        try:
+            sess_mod.set_ui(sid, self._session_ui_state())
+        except Exception:              # noqa: BLE001  状态记忆失败不影响使用
+            pass
+
+    def _apply_session_ui(self, ui: dict):
+        """切换会话：还原该会话记住的 模型/权限模式（无记录则保持现状）。"""
+        if not ui:
+            return
+        key = ui.get("model") or ""
+        if key and getattr(self, "model_map", None):
+            mc = self.model_map.get(key)
+            if mc is not None and mc is not self.current_model:
+                self._select_model(key)    # 复用：按钮/思考图标/状态联动
+        mode = ui.get("mode") or ""
+        if mode and mode != getattr(self, "mode", ""):
+            self._select_mode(mode)
 
     def _toggle_ctx(self):
         """切换 续上下文 ⇄ 独立提问，并持久化到 models.json。"""
@@ -4181,6 +4218,96 @@ class App:
                 run.stop = True
             if getattr(self, "_cur_run", None) is run:
                 self._cur_run = None
+            if getattr(self, "_novel_run", None) is run:
+                self._novel_run = None
+
+    def _novel_task_busy(self) -> bool:
+        """本会话是否已有任务在跑（聊天或小说/短剧）：会话级互斥。
+
+        其它会话跑什么都不影响这里——多会话各自独立（与聊天同规则）。
+        """
+        return self._run_of(self.session_id) is not None
+
+    def _novel_task_begin(self):
+        """小说/短剧命令起跑：注册为**发起会话**的 SessionRun。
+
+        之后该任务的所有输出都路由到这个会话（可见即渲染；切到别的
+        会话则记入 run.buffer，切回来时恢复——「过程跟着会话走」）。
+        侧栏给该会话挂 ⏳ 进行中标记。本会话已在跑返回 None；
+        同一本书正在别的会话处理也返回 None（拒绝并发改同一本书）。
+        """
+        import sessions as sess_mod
+        if self._novel_task_busy():
+            return None
+        if self.session_id is None:
+            self.session_id = sess_mod.new_id()
+            self.session_title = sess_mod.make_title("/novel")
+            if hasattr(self, "sess_btn"):
+                self.sess_btn.config(text="💬 " + self.session_title[:16])
+        pid = ""
+        p = getattr(self, "_novel_pipe", None)
+        if p is not None:
+            pid = p.state.get("pid", "") or ""
+        if pid:
+            for r in self._runs.values():
+                if (r is not None and r.running
+                        and getattr(r, "kind", "") == "novel"
+                        and getattr(r, "novel_pid", "") == pid):
+                    self._set_status(_t("novel.busy_other"))
+                    return None
+        run = SessionRun(self.session_id, self.session_title,
+                         tools.get_workspace(), self.messages,
+                         self.current_model, False, False,
+                         getattr(self, "_dispatch_notes", None))
+        run.kind = "novel"
+        run.novel_pid = pid
+        run.running = True
+        self._runs[run.sid] = run
+        self._cur_run = run
+        self._novel_run = run
+        self._novel_task_begin()
+        self._refresh_sidebar()
+        return run
+
+    def _novel_task_end(self, ok: bool = True):
+        """小说/短剧任务收尾：释放发起会话的运行位。
+
+        徽标/状态只在用户仍停留在该会话且它没有别的运行时复位——
+        否则后台任务完成会错误地清掉用户当前会话的运行指示。
+        """
+        run = getattr(self, "_novel_run", None)
+        self._novel_run = None
+        self._novel_busy = False
+        self._drama_stop_event = None
+        if run is None:
+            return
+        run.running = False
+        if self._runs.get(run.sid) is run:
+            self._runs.pop(run.sid, None)
+        if getattr(self, "_cur_run", None) is run:
+            self._cur_run = None
+        self._running = any(r.running for r in self._runs.values())
+        if run.sid == self.session_id and self._run_of(run.sid) is None:
+            self.root.after(0, lambda: (self.badge_done(ok=ok),
+                                        self._set_status(_t("top.ready"))))
+        self.root.after(0, self._refresh_sidebar)
+
+    def _novel_append(self, text, tag=None):
+        """任务输出按发起会话路由：可见即渲染，后台记入 buffer（切回恢复）。
+
+        临时把线程的记录目标切到任务 run，复用 _append 的整套路由；
+        聊天线程的 thread-local 不受影响（用完即还原）。
+        """
+        run = getattr(self, "_novel_run", None)
+        if run is None:
+            self._append(text, tag)
+            return
+        saved = self._rec_run()
+        self._rec.run = run
+        try:
+            self._append(text, tag)
+        finally:
+            self._rec.run = saved
 
     def _record(self, text, tag=None):
         """记录本条输出到「发起运行的会话」的 buffer。
@@ -4996,7 +5123,7 @@ class App:
             idea = parsed["idea"]
             total = parsed["total"]
             auto = parsed["auto"]
-            if self._running or getattr(self, "_novel_busy", False):
+            if self._novel_task_busy():
                 self._set_status(_t("novel.busy"))
                 return
             model_key = self.current_model.key if self.current_model else ""
@@ -5007,7 +5134,7 @@ class App:
             p = novel_chain.new_pipeline(idea, total, model_key)
             self._novel_pipe = p
             self._novel_stepwise = not auto
-            self._novel_busy = True
+            self._novel_task_begin()
             self._novel_run(p, until=("setup" if self._novel_stepwise else None))
         elif head == "ok":
             self._novel_ok()
@@ -5053,7 +5180,7 @@ class App:
                 self._set_status(_t("novel.notfound"))
                 return
             self._novel_pipe = p
-            self._novel_busy = True
+            self._novel_task_begin()
             self._novel_run(p)
         elif head == "drama":
             if rest.strip().startswith("new"):
@@ -5083,7 +5210,7 @@ class App:
                 if p0 is None:
                     self._set_status(_t("novel.none"))
                     return
-                if getattr(self, "_novel_busy", False):
+                if self._novel_task_busy():
                     self._set_status(_t("novel.busy"))
                     return
                 if not messagebox.askyesno(
@@ -5109,7 +5236,7 @@ class App:
                              + "；原创短剧用 /novel drama new <灵感> [集数]\n",
                              "denied")
                 return
-            self._novel_busy = True
+            self._novel_task_begin()
 
             def drama_work():
                 try:
@@ -5118,14 +5245,13 @@ class App:
                         on_event=lambda e: self.root.after(
                             0, lambda: self._novel_event(e)))
                 except Exception as e:          # noqa: BLE001
-                    self.root.after(0, lambda: self._append(
-                        "❌ " + str(e) + "\n", "denied"))
+                    self._novel_append(
+                        "❌ " + str(e) + "\n", "denied")
                 else:
-                    self.root.after(0, lambda: self._append(
-                        "✅ " + _t("novel.drama_done", file=out) + "\n", "meta"))
+                    self._novel_append(
+                        "✅ " + _t("novel.drama_done", file=out) + "\n", "meta")
                 finally:
-                    self.root.after(0, lambda: setattr(
-                        self, "_novel_busy", False))
+                    self._novel_task_end()
             threading.Thread(target=drama_work, daemon=True).start()
         elif head == "comic":
             self._novel_comic(rest.strip())
@@ -5144,9 +5270,8 @@ class App:
             novel_chain.extend_total(p, n)
             self._append("✅ " + _t("novel.extend_done",
                                     n=p.state["total_chapters"]) + "\n", "meta")
-            if p.pipeline_status == "paused" and not getattr(
-                    self, "_novel_busy", False):
-                self._novel_busy = True
+            if p.pipeline_status == "paused" and not self._novel_task_busy():
+                self._novel_task_begin()
                 self._novel_run(p)
         elif head == "rewrite":
             rest, pid = _split_pid(rest)
@@ -5156,21 +5281,20 @@ class App:
                 self._set_status(_t("novel.no_chapters"))
                 self._append("⚠ " + _t("novel.no_chapters") + "\n", "denied")
                 return
-            self._novel_busy = True
+            self._novel_task_begin()
             ridx, fb = int(m.group(1)), (m.group(2) or "").strip()
 
             def rw_work():
                 try:
                     chap = novel_chain.rewrite_chapter(p.state, ridx, fb)
-                    self.root.after(0, lambda: self._append(
+                    self._novel_append(
                         _t("novel.chapter", n=chap["idx"], t=chap["title"],
-                           w=len(chap["text"])) + "\n", "toolresult"))
+                           w=len(chap["text"])) + "\n", "toolresult")
                 except Exception as e:          # noqa: BLE001
-                    self.root.after(0, lambda: self._append(
-                        "❌ " + str(e) + "\n", "denied"))
+                    self._novel_append(
+                        "❌ " + str(e) + "\n", "denied")
                 finally:
-                    self.root.after(0, lambda: setattr(
-                        self, "_novel_busy", False))
+                    self._novel_task_end()
             threading.Thread(target=rw_work, daemon=True).start()
         elif head == "cover":
             import imggen
@@ -5183,19 +5307,18 @@ class App:
                 self._set_status(_t("novel.img_need"))
                 self._append("⚠ " + _t("novel.img_need") + "\n", "denied")
                 return
-            self._novel_busy = True
+            self._novel_task_begin()
 
             def cover_work():
                 try:
                     out = publisher.cover(p.state)
-                    self.root.after(0, lambda: self._append(
-                        "✅ " + _t("novel.cover_done", file=out) + "\n", "meta"))
+                    self._novel_append(
+                        "✅ " + _t("novel.cover_done", file=out) + "\n", "meta")
                 except Exception as e:          # noqa: BLE001
-                    self.root.after(0, lambda: self._append(
-                        "❌ " + str(e) + "\n", "denied"))
+                    self._novel_append(
+                        "❌ " + str(e) + "\n", "denied")
                 finally:
-                    self.root.after(0, lambda: setattr(
-                        self, "_novel_busy", False))
+                    self._novel_task_end()
             threading.Thread(target=cover_work, daemon=True).start()
         elif head == "publish":
             import publisher
@@ -5209,34 +5332,33 @@ class App:
                 self._set_status(_t("novel.no_chapters"))
                 self._append("⚠ " + _t("novel.no_chapters") + "\n", "denied")
                 return
-            self._novel_busy = True
+            self._novel_task_begin()
 
             def pub_work():
                 try:
                     if fmt == "wattpad":
                         msg = publisher.publish_wattpad(p.state, a, b)
-                        self.root.after(0, lambda: self._append(
+                        self._novel_append(
                             "✅ " + _t("novel.wattpad_done", msg=msg)
-                            + "\n", "meta"))
+                            + "\n", "meta")
                     elif fmt == "webhook":
                         msg = publisher.publish_webhook(p.state, a, b)
-                        self.root.after(0, lambda: self._append(
+                        self._novel_append(
                             "✅ " + _t("novel.webhook_done", msg=msg)
-                            + "\n", "meta"))
+                            + "\n", "meta")
                     elif fmt in ("txt", "md", "epub", "html"):
                         out = getattr(publisher, "export_" + fmt)(p.state)
-                        self.root.after(0, lambda: self._append(
+                        self._novel_append(
                             "✅ " + _t("novel.export_done", file=out)
-                            + "\n", "meta"))
+                            + "\n", "meta")
                     else:
-                        self.root.after(0, lambda: self._append(
-                            "⚠ " + _t("novel.publish_usage") + "\n", "denied"))
+                        self._novel_append(
+                            "⚠ " + _t("novel.publish_usage") + "\n", "denied")
                 except Exception as e:          # noqa: BLE001
-                    self.root.after(0, lambda: self._append(
-                        "❌ " + str(e) + "\n", "denied"))
+                    self._novel_append(
+                        "❌ " + str(e) + "\n", "denied")
                 finally:
-                    self.root.after(0, lambda: setattr(
-                        self, "_novel_busy", False))
+                    self._novel_task_end()
             threading.Thread(target=pub_work, daemon=True).start()
         elif head == "deconstruct":
             path = rest.strip().strip('"')
@@ -5244,21 +5366,20 @@ class App:
             if not path or not model_key:
                 self._set_status(_t("novel.need_model"))
                 return
-            self._novel_busy = True
+            self._novel_task_begin()
 
             def deco_work():
                 try:
                     out = novel_chain.deconstruct(path, model_key)
                 except Exception as e:          # noqa: BLE001
-                    self.root.after(0, lambda: self._append(
-                        "❌ " + str(e) + "\n", "denied"))
+                    self._novel_append(
+                        "❌ " + str(e) + "\n", "denied")
                 else:
-                    self.root.after(0, lambda: self._append(
+                    self._novel_append(
                         "✅ " + _t("novel.deconstruct_done", file=out) + "\n",
-                        "meta"))
+                        "meta")
                 finally:
-                    self.root.after(0, lambda: setattr(
-                        self, "_novel_busy", False))
+                    self._novel_task_end()
             threading.Thread(target=deco_work, daemon=True).start()
         else:                                  # status
             rows = _pl.list_pipelines()
@@ -5281,9 +5402,9 @@ class App:
         if not p or p.pipeline_status != "paused":
             self._set_status(_t("novel.none"))
             return
-        if getattr(self, "_novel_busy", False):
+        if self._novel_task_busy():
             return
-        self._novel_busy = True
+        self._novel_task_begin()
         until = None
         if getattr(self, "_novel_stepwise", False) and p.cursor \
                 and p.cursor != p.stages[-1].name:
@@ -5322,23 +5443,23 @@ class App:
             self._set_status(_t("novel.usage"))
             self._append("💡 " + _t("novel.usage") + "\n", "meta")
             return
-        if getattr(self, "_novel_busy", False):
+        if self._novel_task_busy():
             return
-        self._novel_busy = True
+        self._novel_task_begin()
         self._novel_pipe = p
         self._novel_last_done = last
 
         def adj_work():
             try:
                 novel_chain.revise_stage(p.state, last, key, feedback)
-                self.root.after(0, lambda: self._append(
+                self._novel_append(
                     "✅ 已按意见调整「" + novel_chain.STAGE_LABELS.get(
-                        last, last) + "」，/novel ok 继续\n", "meta"))
+                        last, last) + "」，/novel ok 继续\n", "meta")
             except Exception as e:          # noqa: BLE001
-                self.root.after(0, lambda: self._append(
-                    "❌ " + str(e) + "\n", "denied"))
+                self._novel_append(
+                    "❌ " + str(e) + "\n", "denied")
             finally:
-                self.root.after(0, lambda: setattr(self, "_novel_busy", False))
+                self._novel_task_end()
         threading.Thread(target=adj_work, daemon=True).start()
 
     def _novel_stage(self, rest: str):
@@ -5348,7 +5469,7 @@ class App:
         改卷战略、世界设定等任意已完成阶段（revise_stage 已支持 7 个阶段）。
         """
         import novel_chain
-        if getattr(self, "_novel_busy", False):
+        if self._novel_task_busy():
             self._set_status(_t("novel.busy"))
             return
         m = re.match(r"^(\S+)\s+(.+)$", rest, re.S)
@@ -5373,7 +5494,7 @@ class App:
             self._append("⚠ 阶段「" + novel_chain.STAGE_LABELS.get(stage, stage)
                          + "」还没有产出，无法调整\n", "denied")
             return
-        self._novel_busy = True
+        self._novel_task_begin()
         self._novel_pipe = p
         self._novel_last_done = stage
         label = novel_chain.STAGE_LABELS.get(stage, stage)
@@ -5381,13 +5502,13 @@ class App:
         def work():
             try:
                 novel_chain.revise_stage(p.state, stage, key, feedback)
-                self.root.after(0, lambda: self._append(
-                    "✅ 已按意见重做「" + label + "」，/novel ok 继续\n", "meta"))
+                self._novel_append(
+                    "✅ 已按意见重做「" + label + "」，/novel ok 继续\n", "meta")
             except Exception as e:          # noqa: BLE001
-                self.root.after(0, lambda: self._append(
-                    "❌ " + str(e) + "\n", "denied"))
+                self._novel_append(
+                    "❌ " + str(e) + "\n", "denied")
             finally:
-                self.root.after(0, lambda: setattr(self, "_novel_busy", False))
+                self._novel_task_end()
         threading.Thread(target=work, daemon=True).start()
 
     def _novel_ledger(self, rest: str):
@@ -5473,7 +5594,7 @@ class App:
     def _novel_drop(self, rest: str):
         """删除章节：/novel drop N [@pid]（后续章号前移，台账同步）。"""
         import novel_chain
-        if getattr(self, "_novel_busy", False):
+        if self._novel_task_busy():
             self._set_status(_t("novel.busy"))
             return
         rest, pid = _split_pid(rest)
@@ -5505,7 +5626,7 @@ class App:
     def _novel_insert(self, rest: str):
         """插入章节：/novel insert N [要点]（原第 N 章及之后整体后移）。"""
         import novel_chain
-        if getattr(self, "_novel_busy", False):
+        if self._novel_task_busy():
             self._set_status(_t("novel.busy"))
             return
         rest, pid = _split_pid(rest)
@@ -5519,7 +5640,7 @@ class App:
             self._append("💡 /novel insert <位置> [本章要点]\n", "meta")
             return
         idx, note = int(m.group(1)), (m.group(2) or "").strip()
-        self._novel_busy = True
+        self._novel_task_begin()
 
         def work():
             try:
@@ -5527,12 +5648,12 @@ class App:
                 p.save()
                 msg = (f"➕ 已插入第 {idx} 章《{chap['title']}》"
                        f"（{len(chap['text']):,} 字），后续章号已后移\n")
-                self.root.after(0, lambda: self._append(msg, "toolresult"))
+                self._novel_append(msg, "toolresult")
             except Exception as e:      # noqa: BLE001
-                self.root.after(0, lambda: self._append(
-                    "❌ " + str(e) + "\n", "denied"))
+                self._novel_append(
+                    "❌ " + str(e) + "\n", "denied")
             finally:
-                self.root.after(0, lambda: setattr(self, "_novel_busy", False))
+                self._novel_task_end()
         threading.Thread(target=work, daemon=True).start()
 
     def _novel_rename(self, rest: str):
@@ -5559,7 +5680,7 @@ class App:
     def _novel_check(self, rest: str):
         """合规自检：/novel check [起-止]（默认全部已完成章节）。"""
         import novel_chain
-        if getattr(self, "_novel_busy", False):
+        if self._novel_task_busy():
             self._set_status(_t("novel.busy"))
             return
         p, err = self._novel_pick("")
@@ -5574,7 +5695,7 @@ class App:
         m = re.match(r"^(\d+)\s*-\s*(\d+)$", rest.strip())
         lo = int(m.group(1)) if m else chapters[0]["idx"]
         hi = int(m.group(2)) if m else chapters[-1]["idx"]
-        self._novel_busy = True
+        self._novel_task_begin()
 
         def work():
             try:
@@ -5584,18 +5705,18 @@ class App:
                         0, lambda: self._append(
                             f"· 第 {e['idx']} 章已检查\n", "meta")))
                 msg = f"✅ 合规检查完成：{out}\n"
-                self.root.after(0, lambda: self._append(msg, "meta"))
+                self._novel_append(msg, "meta")
             except Exception as e:      # noqa: BLE001
-                self.root.after(0, lambda: self._append(
-                    "❌ " + str(e) + "\n", "denied"))
+                self._novel_append(
+                    "❌ " + str(e) + "\n", "denied")
             finally:
-                self.root.after(0, lambda: setattr(self, "_novel_busy", False))
+                self._novel_task_end()
         threading.Thread(target=work, daemon=True).start()
 
     def _novel_compare(self, rest: str):
         """多模型对比出稿：/novel compare N <模型key> <模型key> [...]。"""
         import novel_chain
-        if getattr(self, "_novel_busy", False):
+        if self._novel_task_busy():
             self._set_status(_t("novel.busy"))
             return
         p, err = self._novel_pick("")
@@ -5609,7 +5730,7 @@ class App:
                          "（至少两个模型，key 见模型菜单 provider/model）\n", "meta")
             return
         idx, keys = int(parts[0]), parts[1:]
-        self._novel_busy = True
+        self._novel_task_begin()
 
         def work():
             try:
@@ -5620,18 +5741,18 @@ class App:
                 lines.append("择优后用 /novel rewrite " + str(idx)
                              + " [反馈] 把选定写法落回正稿")
                 msg = "\n".join(lines) + "\n"
-                self.root.after(0, lambda: self._append(msg, "toolresult"))
+                self._novel_append(msg, "toolresult")
             except Exception as e:      # noqa: BLE001
-                self.root.after(0, lambda: self._append(
-                    "❌ " + str(e) + "\n", "denied"))
+                self._novel_append(
+                    "❌ " + str(e) + "\n", "denied")
             finally:
-                self.root.after(0, lambda: setattr(self, "_novel_busy", False))
+                self._novel_task_end()
         threading.Thread(target=work, daemon=True).start()
 
     def _novel_rework(self, mode: str, rest: str):
         """单章润色/扩写/精简：/novel polish|expand|condense N [要求]。"""
         import novel_chain
-        if getattr(self, "_novel_busy", False):
+        if self._novel_task_busy():
             self._set_status(_t("novel.busy"))
             return
         m = re.match(r"^(\d+)(?:\s+(.*))?$", rest.strip())
@@ -5647,25 +5768,25 @@ class App:
             return
         idx, fb = int(m.group(1)), (m.group(2) or "").strip()
         tip = novel_chain._REWORK_TIP.get(mode, mode)
-        self._novel_busy = True
+        self._novel_task_begin()
 
         def work():
             try:
                 chap = novel_chain.rework_chapter(p.state, idx, mode, fb)
                 msg = (f"✅ 第 {chap['idx']} 章《{chap['title']}》{tip}完成"
                        f"（{len(chap['text']):,} 字）\n")
-                self.root.after(0, lambda: self._append(msg, "toolresult"))
+                self._novel_append(msg, "toolresult")
             except Exception as e:          # noqa: BLE001
-                self.root.after(0, lambda: self._append(
-                    "❌ " + str(e) + "\n", "denied"))
+                self._novel_append(
+                    "❌ " + str(e) + "\n", "denied")
             finally:
-                self.root.after(0, lambda: setattr(self, "_novel_busy", False))
+                self._novel_task_end()
         threading.Thread(target=work, daemon=True).start()
 
     def _novel_comic(self, rest: str):
         """漫画分镜：/novel comic 起-止（分镜表+出图提示词）｜ /novel comic cast 角色设定图。"""
         import novel_chain
-        if getattr(self, "_novel_busy", False):
+        if self._novel_task_busy():
             self._set_status(_t("novel.busy"))
             return
         p, err = self._novel_pick("")
@@ -5677,19 +5798,18 @@ class App:
             if not (p.state.get("characters") or "").strip():
                 self._append("⚠ 还没有角色设定（先跑完「角色」阶段）\n", "denied")
                 return
-            self._novel_busy = True
+            self._novel_task_begin()
 
             def cast_work():
                 try:
                     out = novel_chain.comic_cast(p.state)
                     msg = f"🎨 角色设定图提示词：{out}\n"
-                    self.root.after(0, lambda: self._append(msg, "meta"))
+                    self._novel_append(msg, "meta")
                 except Exception as e:      # noqa: BLE001
-                    self.root.after(0, lambda: self._append(
-                        "❌ " + str(e) + "\n", "denied"))
+                    self._novel_append(
+                        "❌ " + str(e) + "\n", "denied")
                 finally:
-                    self.root.after(0, lambda: setattr(
-                        self, "_novel_busy", False))
+                    self._novel_task_end()
             threading.Thread(target=cast_work, daemon=True).start()
             return
         chapters = p.state.get("chapters", []) or []
@@ -5699,7 +5819,7 @@ class App:
                          "/novel comic cast 生成角色设定图提示词\n", "meta")
             return
         lo, hi = int(m.group(1)), int(m.group(2))
-        self._novel_busy = True
+        self._novel_task_begin()
 
         def comic_work():
             try:
@@ -5709,12 +5829,12 @@ class App:
                         0, lambda: self._append(
                             f"🎬 第 {e['idx']} 章分镜完成\n", "meta")))
                 msg = f"✅ 漫画分镜表：{out}\n"
-                self.root.after(0, lambda: self._append(msg, "meta"))
+                self._novel_append(msg, "meta")
             except Exception as e:          # noqa: BLE001
-                self.root.after(0, lambda: self._append(
-                    "❌ " + str(e) + "\n", "denied"))
+                self._novel_append(
+                    "❌ " + str(e) + "\n", "denied")
             finally:
-                self.root.after(0, lambda: setattr(self, "_novel_busy", False))
+                self._novel_task_end()
         threading.Thread(target=comic_work, daemon=True).start()
 
     def _novel_drama_assets(self, arg: str):
@@ -5724,14 +5844,14 @@ class App:
         if not (p and p.state.get("chapters")):
             self._set_status(_t("novel.no_chapters"))
             return
-        if getattr(self, "_novel_busy", False):
+        if self._novel_task_busy():
             self._set_status(_t("novel.busy"))
             return
         a, b = 0, 0
         m = re.match(r"^(\d+)(?:\s*-\s*(\d+))?", arg.strip())
         if m:
             a = int(m.group(1)); b = int(m.group(2) or m.group(1))
-        self._novel_busy = True
+        self._novel_task_begin()
         stop = self._drama_stop_event = threading.Event()
         self._set_status(_t("novel.drama_running"))
         self.badge_busy(_t("novel.badge_generating"))
@@ -5747,20 +5867,17 @@ class App:
                          m=sum(res["chapters"].values()),
                          cs=", ".join(f"{k}:{v}" for k, v in res["chapters"].items())
                          or "—")
-                self.root.after(0, lambda: self._append(
-                    "✅ " + msg + "\n", "meta"))
+                self._novel_append(
+                    "✅ " + msg + "\n", "meta")
                 self.root.after(0, lambda: self._schedule_fs_refresh())
             except novel_chain.StageStopError as e:
-                self.root.after(0, lambda: self._append(
-                    "⏹ " + str(e) + "\n", "meta"))
+                self._novel_append(
+                    "⏹ " + str(e) + "\n", "meta")
             except Exception as e:          # noqa: BLE001
-                self.root.after(0, lambda: self._append(
-                    f"❌ {type(e).__name__}: {e}\n", "denied"))
+                self._novel_append(
+                    f"❌ {type(e).__name__}: {e}\n", "denied")
             finally:
-                self.root.after(0, lambda: setattr(
-                    self, "_novel_busy", False))
-                self.root.after(0, lambda: (self.badge_done(),
-                                            self._set_status(_t("top.ready"))))
+                self._novel_task_end()
         threading.Thread(target=work, daemon=True).start()
 
     def _novel_drama_video(self, arg: str):
@@ -5778,11 +5895,11 @@ class App:
                          + "；用法：/novel drama video 1 或 1-3（追加 redo 全部重做）\n",
                          "denied")
             return
-        if getattr(self, "_novel_busy", False) or self._running:
+        if self._novel_task_busy():
             self._set_status(_t("novel.busy"))
             return
         a, b = int(m.group(1)), int(m.group(2) or m.group(1))
-        self._novel_busy = True
+        self._novel_task_begin()
         stop = self._drama_stop_event = threading.Event()
         self._set_status(_t("novel.drama_running"))
         self.badge_busy(_t("novel.badge_generating"))
@@ -5794,24 +5911,21 @@ class App:
                     on_event=lambda e: self.root.after(
                         0, lambda: self._novel_event(e)))
             except novel_chain.StageStopError as e:
-                self.root.after(0, lambda: self._append(
-                    "⏹ " + str(e) + "\n", "meta"))
+                self._novel_append(
+                    "⏹ " + str(e) + "\n", "meta")
             except Exception as e:          # noqa: BLE001
-                self.root.after(0, lambda: self._append(
-                    f"❌ {type(e).__name__}: {e}\n", "denied"))
+                self._novel_append(
+                    f"❌ {type(e).__name__}: {e}\n", "denied")
             else:
                 self.root.after(0, lambda: self._schedule_fs_refresh())
             finally:
-                self.root.after(0, lambda: setattr(
-                    self, "_novel_busy", False))
-                self.root.after(0, lambda: (self.badge_done(),
-                                            self._set_status(_t("top.ready"))))
+                self._novel_task_end()
         threading.Thread(target=work, daemon=True).start()
 
     def _novel_drama_new(self, rest: str):
         """原创短剧：/novel drama new <灵感> [集数]（设定+分集梗概+第1集剧本）。"""
         import novel_chain
-        if getattr(self, "_novel_busy", False):
+        if self._novel_task_busy():
             self._set_status(_t("novel.busy"))
             return
         m = re.match(r"^(.*?)(?:\s+(\d{1,3}))?$", rest.strip(), re.S)
@@ -5826,7 +5940,7 @@ class App:
             self._append("⚠ " + _t("novel.need_model") + "\n", "denied")
             return
         model_key = self.current_model.key
-        self._novel_busy = True
+        self._novel_task_begin()
 
         def work():
             try:
@@ -5839,12 +5953,12 @@ class App:
                        f"· 设定：{res['setting']}\n"
                        f"· 分集梗概：{res['episodes']}\n"
                        f"· 第 1 集剧本：{res['script']}\n")
-                self.root.after(0, lambda: self._append(msg, "meta"))
+                self._novel_append(msg, "meta")
             except Exception as e:          # noqa: BLE001
-                self.root.after(0, lambda: self._append(
-                    "❌ " + str(e) + "\n", "denied"))
+                self._novel_append(
+                    "❌ " + str(e) + "\n", "denied")
             finally:
-                self.root.after(0, lambda: setattr(self, "_novel_busy", False))
+                self._novel_task_end()
         threading.Thread(target=work, daemon=True).start()
 
     def _novel_run(self, p, until=None):
@@ -5858,16 +5972,26 @@ class App:
             try:
                 p.run(on_event=on_event, until=until)
             except Exception as e:          # noqa: BLE001
-                self.root.after(0, lambda: self._append(
-                    "❌ " + str(e) + "\n", "denied"))
+                self._novel_append(
+                    "❌ " + str(e) + "\n", "denied")
             finally:
-                ok = p.pipeline_status != "failed"
-                self.root.after(0, lambda: (self.badge_done(ok=ok),
-                                            self._set_status(_t("top.ready")),
-                                            setattr(self, "_novel_busy", False)))
+                self._novel_task_end(ok=p.pipeline_status != "failed")
         threading.Thread(target=work, daemon=True).start()
 
     def _novel_event(self, e):
+        """流水线事件 → 聊天区；输出归属发起任务的会话（切走了进 buffer）。"""
+        run = getattr(self, "_novel_run", None)
+        if run is None:
+            self._novel_event_impl(e)
+            return
+        saved = self._rec_run()
+        self._rec.run = run
+        try:
+            self._novel_event_impl(e)
+        finally:
+            self._rec.run = saved
+
+    def _novel_event_impl(self, e):
         """流水线事件 → 聊天区（工具提示同款样式）。"""
         t = e.get("type")
         labels = novel_chain.STAGE_LABELS
@@ -5992,6 +6116,18 @@ class App:
         run = self._run_of(self.session_id) or getattr(self, "_cur_run", None)
         if run is not None and not run.running:
             run = None
+        if run is not None and getattr(run, "kind", "chat") == "novel":
+            # 小说/短剧任务：协作式停止（阶段/镜头边界生效），
+            # 等价 /novel stop + /novel drama stop
+            p = getattr(self, "_novel_pipe", None)
+            if p is not None:
+                p.request_stop()
+            ev = getattr(self, "_drama_stop_event", None)
+            if ev is not None:
+                ev.set()
+            self._set_status(_t("novel.drama_stop_req"))
+            self._append("\n" + _t("ui.stop_req") + "\n", "meta")
+            return
         if run is not None:
             if run.stop:
                 return
@@ -6104,8 +6240,9 @@ class App:
             self.input.delete("1.0", "end")
             self.input.config(fg="black")
             self._placeholder_active = False
-        if self._run_of(self.session_id):
-            return                      # 本会话还在跑：防同一会话重复发送
+        _cur = self._run_of(self.session_id)
+        if _cur is not None and getattr(_cur, "kind", "chat") == "chat":
+            return                      # 本会话聊天还在跑：防同一会话重复发送
         # 其它会话在跑不影响这里——多会话可同时进行（各自独立 run 与输出）
         if self._placeholder_active:
             # 未输入文字、只发附件：清掉占位符
@@ -6301,7 +6438,8 @@ class App:
                     for m in self.messages[-3:]) else self.messages
             sess_mod.save(self.session_id, msgs, self.session_title,
                           workspace=session_ws,
-                          notes=getattr(self, "_dispatch_notes", None))
+                          notes=getattr(self, "_dispatch_notes", None),
+                          ui=self._session_ui_state())
 
         if history is None:          # 首轮：先落盘用户提问
             _persist()
@@ -6683,7 +6821,8 @@ class App:
         if persist:
             try:
                 sess_mod.save(self.session_id, [], self.session_title,
-                              workspace=tools.get_workspace())
+                              workspace=tools.get_workspace(),
+                              ui=self._session_ui_state())
             except Exception:            # noqa: BLE001
                 pass
         self.clear()
@@ -6709,6 +6848,7 @@ class App:
         self.session_id = sid
         self.session_title = data.get("title") or _t("misc.no_title")
         self.messages = data["messages"]
+        self._apply_session_ui(data.get("ui") or {})   # 还原该会的模型/权限
         run = self._run_of(sid)
         self._cur_run = run
         # 运行中的会话：用 run 自己记的工作目录（用户可能已切到别处，

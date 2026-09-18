@@ -1069,6 +1069,7 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "ds.no_out":    {"en": "No output folder yet", "zh": "还没有成片目录"},
     "ds.no_clips":  {"en": "No finished clips to concat", "zh": "没有已完成的镜头片段可合成"},
     "novel.busy":   {"en": "Pipeline already running", "zh": "已有流水线在运行"},
+    "novel.busy_other":   {"en": "This book is already being processed in another session", "zh": "同一本书正在另一个会话处理，等它完成或先切书"},
     "novel.stopped": {"en": "⏹ Stop requested", "zh": "⏹ 已请求停止，当前章完成后暂停"},
     "novel.stage":  {"en": "Stage: {label}", "zh": "阶段：{label}"},
     "novel.chapter": {"en": "📖 Ch.{n}《{t}》done ({w} chars)", "zh": "📖 第 {n} 章《{t}》完成（{w} 字）"},

@@ -183,3 +183,37 @@ def test_retry_on_429_with_long_backoff(monkeypatch):
     monkeypatch.setattr(videogen.time, "sleep", lambda s: sleeps.append(s))
     assert videogen._retry(flaky) == {"ok": 1}
     assert calls["n"] == 2 and sleeps == [20]      # 429 → 20s（不是 4s）
+
+
+def test_download_atomic_no_partial_on_failure(monkeypatch, tmp_path):
+    """下载中途失败：不留半截成片，也不留 .part（重跑才能当作缺失补造）。"""
+    out = str(tmp_path / "1-04.mp4")
+
+    class _BrokenResp:
+        def read(self):
+            raise ConnectionResetError("中断")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(videogen.urllib.request, "urlopen",
+                        lambda url, timeout=0: _BrokenResp())
+    with pytest.raises(videogen.VidError):
+        videogen.download("http://cdn/x.mp4", out)
+    import os
+    assert not os.path.exists(out)
+    assert not os.path.exists(out + ".part")
+
+
+def test_download_replaces_target_atomically(monkeypatch, tmp_path):
+    """成功下载：经 .part 原子改名落盘。"""
+    out = str(tmp_path / "1-05.mp4")
+    monkeypatch.setattr(videogen.urllib.request, "urlopen",
+                        lambda url, timeout=0: _Resp(b"MP4DATA"))
+    assert videogen.download("http://cdn/x.mp4", out) == out
+    assert open(out, "rb").read() == b"MP4DATA"
+    import os
+    assert not os.path.exists(out + ".part")

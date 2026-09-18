@@ -213,13 +213,24 @@ def query(video_id: str) -> dict:
 
 
 def download(url: str, out_path: str) -> str:
-    """下载成片到本地，返回路径。"""
+    """下载成片到本地，返回路径。
+
+    先写 .part 临时文件、成功后原子改名：中途失败不留下半截 mp4
+    （否则重跑会被「文件存在即跳过」误判为已完成，坏片段还会被
+    concat 拼进整集）。
+    """
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    tmp = out_path + ".part"
     try:
         with urllib.request.urlopen(url, timeout=300) as r:
-            with open(out_path, "wb") as f:
+            with open(tmp, "wb") as f:
                 f.write(r.read())
+        os.replace(tmp, out_path)
     except Exception as e:             # noqa: BLE001
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
         raise VidError(f"视频下载失败：{e}") from e
     return out_path
 

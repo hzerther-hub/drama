@@ -105,28 +105,41 @@ def _migrate_legacy(conn: sqlite3.Connection):
 def _upsert(conn: sqlite3.Connection, sid: str, title: str, messages: list,
             created: float | None = None, updated: float | None = None,
             workspace: str = "", overwrite_if_newer: bool = True,
-            notes: list | None = None):
+            notes: list | None = None, ui: dict | None = None):
     """插入或更新一条会话；overwrite_if_newer=False 时仅当新数据更新才覆盖。
 
     created/updated 缺省用当前时间；显式传入时（如旧 JSON 迁移）保留原始时间戳。
+    ui: 会话绑定的界面状态（模型/权限模式）；None = 保留已存的 ui 不动。
     """
     now = time.time()
     created = created if created is not None else now
     updated = updated if updated is not None else now
-    payload = json.dumps({"messages": messages, "notes": notes or []},
-                         ensure_ascii=False)
 
     row = conn.execute(
-        "SELECT created, updated, workspace FROM sessions WHERE id=?",
+        "SELECT created, updated, workspace, messages FROM sessions WHERE id=?",
         (sid,)).fetchone()
+
+    def _payload(old_messages_json: str | None) -> str:
+        old_ui = {}
+        if ui is None and old_messages_json:
+            try:
+                old_data = json.loads(old_messages_json)
+                if isinstance(old_data, dict):
+                    old_ui = old_data.get("ui") or {}
+            except json.JSONDecodeError:
+                pass
+        merged = ui if ui is not None else old_ui
+        return json.dumps({"messages": messages, "notes": notes or [],
+                           "ui": merged}, ensure_ascii=False)
+
     if row is None:
         conn.execute(
             "INSERT INTO sessions (id, title, created, updated, workspace, messages)"
             " VALUES (?,?,?,?,?,?)",
-            (sid, title, created, updated, workspace, payload))
+            (sid, title, created, updated, workspace, _payload(None)))
         return
 
-    _old_created, old_updated, old_ws = row
+    _old_created, old_updated, old_ws, old_messages = row
     if overwrite_if_newer or updated > old_updated:
         # 未传 workspace（空串）时保留原工作目录，便于会话目录过滤不丢
         if not workspace:
@@ -136,7 +149,7 @@ def _upsert(conn: sqlite3.Connection, sid: str, title: str, messages: list,
         conn.execute(
             "UPDATE sessions SET title=?, updated=?, workspace=?, messages=?"
             " WHERE id=?",
-            (title, new_updated, workspace, payload, sid))
+            (title, new_updated, workspace, _payload(old_messages), sid))
 
 
 @contextmanager
@@ -165,15 +178,16 @@ def make_title(text: str) -> str:
 
 
 def save(session_id: str, messages: list, title: str, workspace: str = "",
-         notes: list | None = None):
+         notes: list | None = None, ui: dict | None = None):
     """保存（或创建）会话。workspace 记录工作目录（按目录过滤用）。
 
     notes: 可选，随会话持久化但不发给模型的批注列表（如识图切模型记录）。
+    ui:    可选，会话绑定的界面状态（模型/权限模式）；None = 保留已存值。
     """
     messages = messages or []
     with _tx() as conn:
         _upsert(conn, session_id, title, messages, workspace=workspace,
-                notes=notes)
+                notes=notes, ui=ui)
 
 
 def load(session_id: str):
@@ -188,7 +202,7 @@ def load(session_id: str):
             data = json.loads(msg_json)
         except json.JSONDecodeError:
             data = None
-        # 兼容新格式（dict: messages+notes）与旧格式（list: 纯 messages）
+        # 兼容新格式（dict: messages+notes+ui）与旧格式（list: 纯 messages）
         if isinstance(data, dict):
             messages, notes = data.get("messages"), data.get("notes") or []
         else:
@@ -196,7 +210,9 @@ def load(session_id: str):
         if isinstance(messages, list):
             return {"id": session_id, "title": title, "created": created,
                     "updated": updated, "workspace": workspace or "",
-                    "messages": messages, "notes": notes}
+                    "messages": messages, "notes": notes,
+                    "ui": (data.get("ui") or {}) if isinstance(data, dict)
+                    else {}}
     # 回退：读旧 JSON 文件（尚未迁移时兜底）
     p = os.path.join(_LEGACY_DIR, f"{session_id}.json")
     try:
@@ -204,11 +220,39 @@ def load(session_id: str):
             data = json.load(f)
         if isinstance(data.get("messages"), list):
             data.setdefault("notes", [])
+            data.setdefault("ui", {})
             data.setdefault("id", session_id)
             return data
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         pass
     return None
+
+
+def set_ui(session_id: str, ui: dict) -> bool:
+    """只更新会话绑定的界面状态（模型/权限模式），不动消息与时间戳。
+
+    切模型/切模式时调用（切会话时还原）；不刷新 updated，避免 merely
+    换个模型就把会话顶到侧栏最上面。会话不存在返回 False。
+    """
+    with _tx() as conn:
+        row = conn.execute(
+            "SELECT title, created, updated, workspace, messages"
+            " FROM sessions WHERE id=?", (session_id,)).fetchone()
+        if row is None:
+            return False
+        title, created, updated, workspace, msg_json = row
+        try:
+            data = json.loads(msg_json)
+        except json.JSONDecodeError:
+            data = {}
+        if not isinstance(data, dict):
+            data = {"messages": data if isinstance(data, list) else [],
+                    "notes": []}
+        data["ui"] = dict(ui or {})
+        conn.execute(
+            "UPDATE sessions SET messages=? WHERE id=?",
+            (json.dumps(data, ensure_ascii=False), session_id))
+    return True
 
 
 def delete(session_id: str) -> bool:
