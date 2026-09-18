@@ -461,7 +461,7 @@ def build_cast(state: dict, on_event=None, stop=None) -> dict:
 
 def gen_asset(state: dict, name: str, info: dict, on_event=None,
               image_ref: bool = False, prompt_extra: str = "",
-              custom_prompt: str = "") -> dict:
+              custom_prompt: str = "", fallback_dir: str = "") -> dict:
     """重新生成单个资产的基础形象图；返回更新后的 info（写回 cast.json 由调用方）。
 
     image_ref=False：描述生成（纯文生图，描述大改时用）。
@@ -469,11 +469,12 @@ def gen_asset(state: dict, name: str, info: dict, on_event=None,
     保持主体特征只做微调（更准）。
     custom_prompt：用户自填的完整提示词——非空时取代模板/描述作为主体
     提示词（仍保留风格锚与画幅），想完全自己控制画面时用。
+    fallback_dir：info 无 path 时的输出目录（调用方传自己 store 所在目录，
+    避免章节专属资产错写到全书目录）。
     """
     on_event = on_event or (lambda e: None)
-    base = _global_base(state)
     out = info.get("path") or os.path.join(
-        base, f"{_safe_name(name)}.png")
+        fallback_dir or _global_base(state), f"{_safe_name(name)}.png")
     sec = info.get("type") or "角色"
     tpl, ratio = _ASSET_TPL.get(sec, _ASSET_TPL["角色"])
     style = resolve_style(state)
@@ -497,14 +498,49 @@ def gen_asset(state: dict, name: str, info: dict, on_event=None,
     return info
 
 
+def gen_look(state: dict, name: str, info: dict, era: str,
+             on_event=None, custom_prompt: str = "") -> dict:
+    """重新生成角色某阶段形象（现代/古装…）；返回更新后的 look 字典。
+
+    脸部一致性：以角色主图为参考图做图生图——脸由图像锁定，只换该阶段
+    的服装发型配饰（与 build_cast 补图同一约束）。写回 cast.json 由调用方。
+    """
+    on_event = on_event or (lambda e: None)
+    looks = info.get("looks") or {}
+    lk = looks.get(era) or {}
+    main = info.get("path") or ""
+    out = lk.get("path") or os.path.join(
+        _global_base(state), f"{_safe_name(name)}-{_safe_name(era)}.png")
+    sec = info.get("type") or "角色"
+    tpl, ratio = _ASSET_TPL.get(sec, _ASSET_TPL["角色"])
+    style = resolve_style(state)
+    if custom_prompt.strip():
+        prompt = f"{style}。{custom_prompt.strip()}"
+    else:
+        prompt = (f"{style}。{sec}基础形象·{era}阶段：" +
+                  tpl.format(a=lk.get("appearance")
+                             or info.get("appearance", "")))
+    refs = []
+    if main and os.path.exists(main):
+        refs.append(main)
+        prompt += ("。参考图是同一人物：严格保持参考图的脸型五官、发际线"
+                   "与体格不变，仅更换为本阶段的服装发型与配饰。")
+    on_event({"type": "drama_media", "kind": "cast",
+              "label": f"{name}（{sec}·{era}）"})
+    path, url = imggen.generate_ex(prompt, out, size="1K", ratio=ratio,
+                                   image_refs=refs, want_url=True)
+    lk = dict(lk)
+    lk["path"], lk["url"] = path, url
+    return lk
+
+
 def replace_asset_image(state: dict, name: str, info: dict,
-                        src_path: str) -> dict:
+                        src_path: str, fallback_dir: str = "") -> dict:
     """用本地图片替换资产基础形象（转 PNG 落资产目录）；返回更新后的 info。"""
     if Image is None:
         raise _stop("替换图片需要 PIL（pip install pillow）")
-    base = _global_base(state)
     out = info.get("path") or os.path.join(
-        base, f"{_safe_name(name)}.png")
+        fallback_dir or _global_base(state), f"{_safe_name(name)}.png")
     img = Image.open(src_path)
     if img.mode not in ("RGB", "RGBA"):
         img = img.convert("RGB")
@@ -744,12 +780,16 @@ def _urls_path(state: dict) -> str:
 
 
 def keyframe(state: dict, cast: dict, shot: dict, ch: int, i: int,
-             on_event=None) -> tuple:
-    """镜头关键帧：场景+角色+道具参考图多图合成保持一致。返回 (path, url)。"""
+             on_event=None, force: bool = False) -> tuple:
+    """镜头关键帧：场景+角色+道具参考图多图合成保持一致。返回 (path, url)。
+
+    文件存在即缓存（整批跑断点续造）；force=True 无视缓存重新生成
+    （工作台单镜「生成关键帧」点按即重生成）。
+    """
     on_event = on_event or (lambda e: None)
     base = os.path.join(_book_dir(state), _FRAME_DIR)
     out = os.path.join(base, f"{ch}-{i:02d}.png")
-    if os.path.exists(out):
+    if os.path.exists(out) and not force:
         url = _json_load(_urls_path(state), {}).get(f"{ch}-{i:02d}", "")
         return out, url
     style = resolve_style(state)
@@ -834,8 +874,11 @@ def dub(video_path: str, audio_path: str, out_path: str) -> str:
 
 
 def clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
-         on_event=None) -> str:
+         on_event=None, force: bool = False) -> str:
     """镜头视频：有关键帧 URL 用图生视频（一致性传导），否则文生视频降级。
+
+    文件存在即缓存（断点续造）；force=True 无视缓存重新生成（工作台
+    单镜「生成镜头视频」点按即重生成）。
 
     音频默认用视频模型自带的同步语音（台词写在提示词里，模型自己配）。
     仅当 state["drama_tts"] 打开时才追加 TTS 配音（ffmpeg 混流替换音轨，
@@ -844,7 +887,7 @@ def clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
     on_event = on_event or (lambda e: None)
     base = os.path.join(_book_dir(state), _CLIP_DIR)
     out = os.path.join(base, f"{ch}-{i:02d}.mp4")
-    if os.path.exists(out):
+    if os.path.exists(out) and not force:
         return out
     style = resolve_style(state)
     narration = (shot.get("narration") or "").strip()

@@ -208,7 +208,8 @@ def show(app):
     nav1 = tk.Listbox(f1, width=22, font=(FONT_UI, 10), bg=theme.PANEL,
                       fg=theme.TEXT, relief="flat", highlightthickness=1,
                       highlightbackground=theme.BORDER,
-                      selectbackground=theme.ACCENT_SOFT, exportselection=False)
+                      selectbackground=theme.ACCENT,
+                      selectforeground="#ffffff", exportselection=False)
     nav1.pack(side="left", fill="y", padx=(0, 8))
     for name, _, _ in docs:
         nav1.insert("end", name)
@@ -366,7 +367,7 @@ def show(app):
             st["img_refs"].append(ph)
         tk.Label(card, text=f"{name}", font=(FONT_UI, 11, "bold"),
                  bg=theme.PANEL, fg=theme.TEXT).pack()
-        # 多阶段形象（现代/古装…）：小缩略图行
+        # 多阶段形象（现代/古装…）：小缩略图行，双击重生成该阶段（主图锁脸）
         looks = info.get("looks") or {}
         if len(looks) > 1:
             lrow = tk.Frame(card, bg=theme.PANEL)
@@ -375,11 +376,21 @@ def show(app):
                 cell = tk.Frame(lrow, bg=theme.PANEL)
                 cell.pack(side="left", padx=3)
                 lph = _thumb(lk.get("path") or "", (56, 74))
-                if lph:
-                    tk.Label(cell, image=lph, bg=theme.PANEL).pack()
+                img_lbl = (tk.Label(cell, image=lph, bg=theme.PANEL)
+                           if lph else None)
+                if img_lbl is not None:
+                    img_lbl.pack()
                     st["img_refs"].append(lph)
-                tk.Label(cell, text=era, font=(FONT_UI, 8),
-                         bg=theme.PANEL, fg=theme.MUTED).pack()
+                era_lbl = tk.Label(cell, text=era, font=(FONT_UI, 8),
+                                   bg=theme.PANEL, fg=theme.MUTED)
+                era_lbl.pack()
+                for w in (cell, img_lbl, era_lbl):
+                    if w is not None:
+                        w.bind("<Double-Button-1>",
+                               lambda e, era=era: _regen_look(era))
+            tk.Label(lrow, text="双击阶段图＝重生成（主图锁脸）",
+                     font=(FONT_UI, 7), bg=theme.PANEL,
+                     fg=theme.MUTED).pack()
         ent = tk.Entry(card, width=22, font=(FONT_UI, 9), relief="flat",
                        bg=theme.BG, fg=theme.TEXT)
         ent.insert(0, info.get("appearance", ""))
@@ -418,7 +429,9 @@ def show(app):
             item = c.setdefault(n, {"type": info.get("type", "角色")})
             item.update(info)
             try:
-                dramavideo.replace_asset_image(state, n, item, src)
+                dramavideo.replace_asset_image(
+                    state, n, item, src,
+                    fallback_dir=os.path.dirname(store_path))
             except Exception as e:       # noqa: BLE001
                 status(f"❌ {type(e).__name__}: {e}")
                 return
@@ -437,14 +450,46 @@ def show(app):
 
             def work():
                 try:
-                    dramavideo.gen_asset(state, name, dict(item),
-                                         image_ref=(mode == "i2i"),
-                                         custom_prompt=custom)
+                    new_info = dramavideo.gen_asset(
+                        state, name, dict(item),
+                        image_ref=(mode == "i2i"), custom_prompt=custom,
+                        fallback_dir=os.path.dirname(store_path))
+                except Exception as e:           # noqa: BLE001
+                    win.after(0, lambda: status(f"❌ {type(e).__name__}: {e}"))
+                else:
+                    # 接住返回值：path/url 必须落回 store——无 path 的资产
+                    # 首次生成全靠这里记路，否则图在磁盘、卡片永远不出图
+                    item["path"] = new_info.get("path")
+                    item["url"] = new_info.get("url")
+                    c = _store()
+                    c[name] = item
+                    _dump_json(store_path, c)
+                    win.after(0, lambda: (_refresh_cast(),
+                                          status(_t("ds.ready"))))
+            threading.Thread(target=work, daemon=True).start()
+
+        def _regen_look(era):
+            """双击阶段缩略图：重生成该阶段形象（主图锁脸，只换服装发型）。"""
+            _save_look_to_json(ent)             # 先存描述框改动
+            if st["busy"]:
+                status(_t("ds.busy"), busy=True)
+                return
+            status(_t("ds.generating", n=f"{name}·{era}"), busy=True)
+
+            def work():
+                try:
+                    lk = dramavideo.gen_look(state, name, dict(item), era)
                 except Exception as e:           # noqa: BLE001
                     win.after(0, lambda: status(f"❌ {type(e).__name__}: {e}"))
                 else:
                     c = _store()
-                    c[name] = item
+                    it = c.setdefault(name, {"type": info.get("type", "角色")})
+                    looks = it.setdefault("looks", {})
+                    old = looks.get(era) or {}
+                    old["path"] = lk.get("path")
+                    old["url"] = lk.get("url")
+                    looks[era] = old
+                    it["looks"] = looks
                     _dump_json(store_path, c)
                     win.after(0, lambda: (_refresh_cast(),
                                           status(_t("ds.ready"))))
@@ -515,7 +560,8 @@ def show(app):
              bg=theme.PANEL, fg=theme.MUTED).pack(anchor="w", padx=8, pady=6)
     shots_lb = tk.Listbox(left3, font=(FONT_UI, 10), bg=theme.PANEL,
                           fg=theme.TEXT, relief="flat", highlightthickness=0,
-                          selectbackground=theme.ACCENT_SOFT, exportselection=False)
+                          selectbackground=theme.ACCENT,
+                          selectforeground="#ffffff", exportselection=False)
     shots_lb.pack(fill="both", expand=True, padx=4, pady=(0, 6))
     shots_lb.bind("<<ListboxSelect>>", lambda e: _show_shot())
 
@@ -713,14 +759,16 @@ def show(app):
         cast = _cast()
         shot = _shots()[st["shot"]]
         if kind == "frame":
-            dramavideo.keyframe(state, cast, shot, ch, i)
+            # 点按即（重）生成：force=True 无视「文件存在即跳过」缓存
+            dramavideo.keyframe(state, cast, shot, ch, i, force=True)
         elif kind == "clip":
             frame, _ = _shot_paths(ch, i)
             if not os.path.exists(frame):
                 dramavideo.keyframe(state, cast, shot, ch, i)
             urls = _load_json(os.path.join(book, dramavideo._SHOT_DIR,
                                            "urls.json"), {})
-            dramavideo.clip(state, shot, urls.get(f"{ch}-{i:02d}", ""), ch, i)
+            dramavideo.clip(state, shot, urls.get(f"{ch}-{i:02d}", ""),
+                            ch, i, force=True)
         else:
             n = len(_shots())
             clips = []

@@ -18,7 +18,8 @@ def test_probe_case_insensitive():
     assert r["terminal_running"] is True
 
 
-def test_probe_not_found():
+def test_probe_not_found(monkeypatch):
+    monkeypatch.setattr(qmt, "xtquant_available", lambda: False)  # 隔离真机 SDK
     r = qmt.probe(["explorer.exe", "chrome.exe"])
     assert r["terminal_running"] is False
     assert r["processes"] == []

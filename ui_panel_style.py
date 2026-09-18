@@ -101,7 +101,9 @@ def show(app):
     cat_var = tk.StringVar(value="全部")
     cat_lb = tk.Listbox(body, width=12, font=(FONT_UI, 10), bg=theme.PANEL,
                        fg=theme.TEXT, relief="flat", highlightthickness=1,
-                       highlightbackground=theme.BORDER, exportselection=False)
+                       highlightbackground=theme.BORDER, exportselection=False,
+                       selectbackground=theme.ACCENT,
+                       selectforeground="#ffffff")
     for c in cats:
         cat_lb.insert("end", c)
     cat_lb.selection_set(0)
@@ -110,7 +112,9 @@ def show(app):
     lb = tk.Listbox(body, font=(FONT_UI, 10), bg=theme.PANEL, fg=theme.TEXT,
                    relief="flat", highlightthickness=1,
                    highlightbackground=theme.BORDER, exportselection=False,
-                   selectmode="extended")
+                   selectmode="extended",
+                   selectbackground=theme.ACCENT,
+                   selectforeground="#ffffff")
     lb.pack(side="left", fill="both", expand=True)
 
     def _refresh_list():

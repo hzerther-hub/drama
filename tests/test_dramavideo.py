@@ -775,3 +775,114 @@ def test_chapter_assets_reuse_across_chapters(book, monkeypatch):
         state, {"idx": 5, "title": "x", "text": "y"}, shots, {})
     assert local["散修老者"]["path"] == str(old_png)   # 沿用第2章的图
     assert not asked                                    # 也没问 LLM
+
+
+def test_keyframe_force_regenerates_existing(book, monkeypatch):
+    """force=True 无视「文件存在即缓存」：重出图并更新 urls.json。"""
+    state, tmp = book
+    frame_dir = tmp / dramavideo._FRAME_DIR
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    old = frame_dir / "1-01.png"
+    old.write_bytes(b"OLD")
+    dramavideo._json_dump(dramavideo._urls_path(state), {"1-01": "http://old"})
+    shot = {"title": "", "scene": "", "characters": [],
+            "description": "近景。", "dialogue": "", "duration": 5}
+    calls = []
+
+    def fake_gen(prompt, out, size="", ratio="", image_refs=None,
+                 want_url=False):
+        calls.append(out)
+        with open(out, "wb") as f:
+            f.write(b"NEW")
+        return out, "http://new/frame.png"
+
+    monkeypatch.setattr(dramavideo.imggen, "generate_ex", fake_gen)
+    path, url = dramavideo.keyframe(state, {}, shot, 1, 1, force=True)
+    assert calls == [str(old)]                     # 真的重生成了
+    assert url == "http://new/frame.png"
+    assert old.read_bytes() == b"NEW"
+    assert dramavideo._json_load(
+        dramavideo._urls_path(state), {})["1-01"] == "http://new/frame.png"
+    # 不带 force → 缓存命中，直接返回（path+新 URL）
+    monkeypatch.setattr(dramavideo.imggen, "generate_ex",
+                        lambda *a, **k: pytest.fail("不应再次生成"))
+    path2, url2 = dramavideo.keyframe(state, {}, shot, 1, 1)
+    assert path2 == str(old) and url2 == "http://new/frame.png"
+
+
+def test_clip_force_regenerates_existing(book, monkeypatch):
+    """force=True 无视缓存重出视频；不带 force 命中缓存不再生成。"""
+    state, tmp = book
+    clip_dir = tmp / dramavideo._CLIP_DIR
+    clip_dir.mkdir(parents=True, exist_ok=True)
+    old = clip_dir / "1-01.mp4"
+    old.write_bytes(b"OLD")
+    shot = {"title": "", "scene": "", "characters": [],
+            "description": "中景。", "dialogue": "", "duration": 5}
+    calls = []
+
+    def fake_video(prompt, out, image="", seconds=0, timeout=0):
+        calls.append(out)
+        with open(out, "wb") as f:
+            f.write(b"NEW")
+        return out
+
+    monkeypatch.setattr(dramavideo.videogen, "generate", fake_video)
+    out = dramavideo.clip(state, shot, "", 1, 1, force=True)
+    assert calls == [str(old)]
+    assert old.read_bytes() == b"NEW"
+    monkeypatch.setattr(dramavideo.videogen, "generate",
+                        lambda *a, **k: pytest.fail("不应再次生成"))
+    assert dramavideo.clip(state, shot, "", 1, 1) == out
+
+
+def test_gen_asset_fallback_dir_for_pathless_asset(book, monkeypatch):
+    """无 path 的资产（章节专属）生成到 fallback_dir，而不是全书目录；
+    返回的 info 必须带新 path/url（调用方靠它回写 store）。"""
+    state, tmp = book
+    ch_dir = tmp / dramavideo._ASSET_DIR / "第3章"
+    ch_dir.mkdir(parents=True, exist_ok=True)
+
+    def fake_gen(prompt, out, size="", ratio="", image_refs=None,
+                 want_url=False):
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "wb") as f:
+            f.write(b"PNG")
+        return out, "http://cdn/x.png"
+
+    monkeypatch.setattr(dramavideo.imggen, "generate_ex", fake_gen)
+    info = dramavideo.gen_asset(state, "水桶", {"type": "道具",
+                                                "appearance": "木桶"},
+                                fallback_dir=str(ch_dir))
+    assert os.path.dirname(info["path"]) == str(ch_dir)   # 落在章节目录
+    assert os.path.exists(info["path"]) and info["url"] == "http://cdn/x.png"
+
+
+def test_gen_look_locks_face_to_main_image(book, monkeypatch):
+    """阶段形象重生成：主图作参考图（脸由图像锁定），出图落阶段专属文件。"""
+    state, tmp = book
+    base = tmp / dramavideo._ASSET_DIR / dramavideo._ASSET_GLOBAL
+    base.mkdir(parents=True, exist_ok=True)
+    main = base / "林夏.png"
+    main.write_bytes(b"MAIN")
+    info = {"type": "角色", "appearance": "林夏现代装",
+            "path": str(main), "url": "",
+            "looks": {"现代": {"appearance": "现代装", "path": str(main)},
+                      "古装": {"appearance": "古装}"}}}
+    captured = {}
+
+    def fake_gen(prompt, out, size="", ratio="", image_refs=None,
+                 want_url=False):
+        captured.update(prompt=prompt, refs=image_refs, out=out)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "wb") as f:
+            f.write(b"PNG")
+        return out, "http://cdn/look.png"
+
+    monkeypatch.setattr(dramavideo.imggen, "generate_ex", fake_gen)
+    lk = dramavideo.gen_look(state, "林夏", info, "古装")
+    assert captured["refs"] == [str(main)]            # 主图锁脸
+    assert "古装" in captured["prompt"] and "古装}" in captured["prompt"]
+    assert "脸型五官" in captured["prompt"]            # 锁脸约束提示词
+    assert lk["path"].endswith("林夏-古装.png") and os.path.exists(lk["path"])
+    assert lk["url"] == "http://cdn/look.png"
