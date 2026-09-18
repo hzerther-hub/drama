@@ -886,3 +886,56 @@ def test_gen_look_locks_face_to_main_image(book, monkeypatch):
     assert "脸型五官" in captured["prompt"]            # 锁脸约束提示词
     assert lk["path"].endswith("林夏-古装.png") and os.path.exists(lk["path"])
     assert lk["url"] == "http://cdn/look.png"
+
+
+def test_gen_clip_take_accumulates_and_select(book, monkeypatch):
+    """抽卡：每次生成独立 take（主成片不动）；采用=拷贝覆盖主文件。"""
+    state, tmp = book
+    shot = {"title": "", "scene": "", "characters": [],
+            "description": "中景。", "dialogue": "", "duration": 5}
+    monkeypatch.setattr(dramavideo.videogen, "generate", fake_video_bytes)
+
+    t1 = dramavideo.gen_clip_take(state, shot, "http://cdn/f.png", 1, 4)
+    t2 = dramavideo.gen_clip_take(state, shot, "http://cdn/f.png", 1, 4)
+    assert t1.endswith("1-04-take1.mp4") and t2.endswith("1-04-take2.mp4")
+    takes = dramavideo.list_takes(state, 1, 4)
+    assert [n for n, _ in takes] == [1, 2]
+    canon = os.path.join(tmp, dramavideo._CLIP_DIR, "1-04.mp4")
+    assert not os.path.exists(canon)              # 抽卡不动主成片
+
+    dramavideo.select_clip_take(state, 1, 4, t2)
+    assert os.path.exists(canon)
+    assert open(canon, "rb").read() == open(t2, "rb").read()
+    assert len(dramavideo.list_takes(state, 1, 4)) == 2   # take 保留可回选
+    # 选主文件自身 = 无操作
+    dramavideo.select_clip_take(state, 1, 4, canon)
+
+
+def test_take_thumb_degrades_without_ffmpeg(book, monkeypatch):
+    """无 ffmpeg：缩略图返回空串不抛错（预览降级为文字）。"""
+    monkeypatch.setattr(dramavideo.shutil, "which", lambda n: None)
+    assert dramavideo.take_thumb("x.mp4", "out.png") == ""
+
+
+def test_take_thumb_uses_ffmpeg(book, monkeypatch, tmp_path):
+    ran = {}
+
+    def fake_run(cmd, **kw):
+        ran["cmd"] = cmd
+        with open(cmd[-1], "wb") as f:
+            f.write(b"PNG")
+        return 0
+
+    monkeypatch.setattr(dramavideo.shutil, "which", lambda n: "ffmpeg")
+    monkeypatch.setattr(dramavideo.subprocess, "run", fake_run)
+    out = tmp_path / "thumb.png"
+    assert dramavideo.take_thumb("x.mp4", str(out)) == str(out)
+    assert ran["cmd"][-2:] == ["1", str(out)]     # -frames:v 1
+
+
+def fake_video_bytes(prompt, out, image="", seconds=0, timeout=0):
+    """抽卡测试共用：写盘模拟视频产物，按 out 内容区分。"""
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, "wb") as f:
+        f.write(b"MP4:" + out.encode().split(b"\\")[-1])
+    return out

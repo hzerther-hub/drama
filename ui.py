@@ -1675,6 +1675,12 @@ class App:
         import sessions as sess_mod
         self._sidebar_loading = True
         try:
+            # 先记住现有分组的展开/收起状态：重建后不弹回默认展开
+            prev_open: dict = {}
+            for it in self.sidebar.get_children(""):
+                vals = self.sidebar.item(it, "values")
+                ws = (vals[0] if vals else "") or ""
+                prev_open[ws] = bool(self.sidebar.item(it, "open"))
             self.sidebar.delete(*self.sidebar.get_children())
             all_sessions = sess_mod.list_sessions(limit=1000)
             groups: dict[str, list] = {}
@@ -1688,11 +1694,13 @@ class App:
                 if ws:
                     label = _os.path.basename(ws.rstrip("/\\")) or ws
                     parent = self.sidebar.insert(
-                        "", "end", text=f"📁 {label}", open=True,
+                        "", "end", text=f"📁 {label}",
+                        open=prev_open.get(ws, True),
                         values=(ws,), tags=("group",))
                 else:
                     parent = self.sidebar.insert(
-                        "", "end", text=f"🗂 {_t('sess.ungrouped')}", open=True, values=("",))
+                        "", "end", text=f"🗂 {_t('sess.ungrouped')}",
+                        open=prev_open.get(ws, True), values=("",))
                 for i, s in enumerate(groups[ws]):
                     # 列表只显示标题（不显示时间）；完整标题存 values 供右键重命名用
                     title = (s.get("title") or _t("misc.no_title"))[:22]
@@ -4239,9 +4247,11 @@ class App:
         import sessions as sess_mod
         if self._novel_task_busy():
             return None
+        created = False
         if self.session_id is None:
             self.session_id = sess_mod.new_id()
             self.session_title = sess_mod.make_title("/novel")
+            created = True
             if hasattr(self, "sess_btn"):
                 self.sess_btn.config(text="💬 " + self.session_title[:16])
         pid = ""
@@ -4265,7 +4275,17 @@ class App:
         self._runs[run.sid] = run
         self._cur_run = run
         self._novel_run = run
-        self._novel_task_begin()
+        self._novel_busy = True
+        # 懒创建（或尚未落库）的会话立即写库：侧栏才有这一行，⏳「进行中」
+        # 标记才有处可挂——否则任务在跑、侧栏却找不到这个会话
+        try:
+            if created or sess_mod.load(run.sid) is None:
+                sess_mod.save(run.sid, list(self.messages or []),
+                              self.session_title,
+                              workspace=tools.get_workspace(),
+                              ui=self._session_ui_state())
+        except Exception:              # noqa: BLE001  落库失败不影响任务
+            pass
         self._refresh_sidebar()
         return run
 

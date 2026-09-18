@@ -885,10 +885,15 @@ def clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
     TTS/ffmpeg 不可用或失败则保留模型原声，不阻断）。
     """
     on_event = on_event or (lambda e: None)
-    base = os.path.join(_book_dir(state), _CLIP_DIR)
-    out = os.path.join(base, f"{ch}-{i:02d}.mp4")
+    out = os.path.join(_book_dir(state), _CLIP_DIR, f"{ch}-{i:02d}.mp4")
     if os.path.exists(out) and not force:
         return out
+    return _render_clip(state, shot, frame_url, ch, i, out, on_event)
+
+
+def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
+                 out: str, on_event) -> str:
+    """渲染一条镜头视频到指定路径（clip 与抽卡 gen_clip_take 共用）。"""
     style = resolve_style(state)
     narration = (shot.get("narration") or "").strip()
     dialogue = (shot.get("dialogue") or "").strip()
@@ -939,6 +944,63 @@ def clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
             except OSError:
                 pass
         return out
+
+
+# ---------------- 3.5 抽卡（同镜多候选，择优入片） ----------------
+
+def list_takes(state: dict, ch: int, i: int) -> list:
+    """某镜头已抽的卡：[(take号, 视频路径)]，按号升序。主成片不在列。"""
+    import glob as _glob
+    base = os.path.join(_book_dir(state), _CLIP_DIR)
+    if not os.path.isdir(base):
+        return []
+    out = []
+    for p in _glob.glob(os.path.join(base, f"{ch}-{i:02d}-take*.mp4")):
+        m = re.search(r"take(\d+)\.mp4$", p)
+        if m:
+            out.append((int(m.group(1)), p))
+    return sorted(out)
+
+
+def gen_clip_take(state: dict, shot: dict, frame_url: str, ch: int, i: int,
+                  on_event=None) -> str:
+    """视频抽卡：同一关键帧再生成一条候选，存为独立 take。
+
+    不动当前成片（主文件）——生成模型有随机性，一条不满意就再抽，
+    满意的用 select_clip_take 换成主成片；已有的 take 全部保留可回选。
+    """
+    takes = list_takes(state, ch, i)
+    n = (takes[-1][0] + 1) if takes else 1
+    out = os.path.join(_book_dir(state), _CLIP_DIR,
+                       f"{ch}-{i:02d}-take{n}.mp4")
+    on_event = on_event or (lambda e: None)
+    return _render_clip(state, shot, frame_url, ch, i, out, on_event)
+
+
+def select_clip_take(state: dict, ch: int, i: int, take_path: str) -> str:
+    """把抽到的卡设为当前成片：拷贝覆盖主文件（take 保留，之后还能改选）。
+
+    整集合成（concat）只认主文件，选完卡重新合成即用上新片段。
+    """
+    canon = os.path.join(_book_dir(state), _CLIP_DIR, f"{ch}-{i:02d}.mp4")
+    if os.path.abspath(take_path) == os.path.abspath(canon):
+        return canon
+    os.makedirs(os.path.dirname(canon) or ".", exist_ok=True)
+    shutil.copyfile(take_path, canon)
+    return canon
+
+
+def take_thumb(video_path: str, out_png: str) -> str:
+    """ffmpeg 抽视频首帧做缩略图（take 预览用）；无 ffmpeg/失败返回空串。"""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return ""
+    try:
+        subprocess.run([ffmpeg, "-y", "-i", video_path, "-frames:v", "1",
+                        out_png], capture_output=True, timeout=60, check=True)
+        return out_png if os.path.exists(out_png) else ""
+    except Exception:                   # noqa: BLE001  预览失败降级为文字
+        return ""
 
 
 # ---------------- 4. ffmpeg 合成 ----------------

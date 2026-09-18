@@ -643,6 +643,9 @@ def show(app):
     ui._flat_button(right3, text=_t("ds.gen_clip"), width=18,
                     font=(FONT_UI, 10),
                     command=lambda: _gen("clip")).pack(pady=3)
+    ui._flat_button(right3, text=_t("ds.take"), width=18,
+                    font=(FONT_UI, 10),
+                    command=lambda: _gen("take")).pack(pady=3)
     ui._flat_button(right3, text=_t("ds.concat"), width=18, font=(FONT_UI, 10),
                     command=lambda: _gen("concat")).pack(pady=3)
     ui._flat_button(right3, text=_t("ds.open_out"), width=18,
@@ -651,6 +654,14 @@ def show(app):
                         book, dramavideo._OUT_DIR))
                     if os.path.isdir(os.path.join(book, dramavideo._OUT_DIR))
                     else status(_t("ds.no_out"))).pack(pady=3)
+    # ---- 抽卡选择器：take 列表 + 首帧缩略图预览 + 采用为当前成片 ----
+    take_var = tk.StringVar()
+    take_box = ttk.Combobox(right3, textvariable=take_var, state="readonly",
+                            font=(FONT_UI, 9))
+    take_box.pack(fill="x", padx=10, pady=(6, 0))
+    take_box.bind("<<ComboboxSelected>>", lambda e: _preview_take())
+    ui._flat_button(right3, text=_t("ds.adopt"), width=18,
+                    font=(FONT_UI, 10), command=_adopt_take).pack(pady=3)
     tts_var = tk.BooleanVar(value=bool(state.get("drama_tts")))
 
     def _toggle_tts():
@@ -666,6 +677,74 @@ def show(app):
                    command=_toggle_tts, font=(FONT_UI, 9),
                    bg=theme.PANEL, fg=theme.MUTED,
                    activebackground=theme.PANEL).pack(anchor="w", padx=10)
+
+    # ---- 抽卡动作：列表 / 预览 / 采用（widget 在上方已建） ----
+    def _canonical_clip():
+        return os.path.join(book, dramavideo._CLIP_DIR,
+                            f"{st['ch']}-{st['shot']+1:02d}.mp4")
+
+    def _refresh_takes(sel=None):
+        """重建 take 下拉：当前成片 + take1..N；sel 指定选中项（生成新卡后用）。"""
+        takes = dramavideo.list_takes(state, st["ch"], st["shot"] + 1)
+        cur = _canonical_clip()
+        st["takes"] = [(_t("ds.take_main"), cur)] + [
+            (f"take{n}", p) for n, p in takes]
+        take_box["values"] = [lb for lb, _ in st["takes"]]
+        want = sel or st.get("take_sel") or cur
+        for lb, p in st["takes"]:
+            if p == want:
+                take_var.set(lb)
+                break
+        else:
+            take_var.set(st["takes"][0][0])
+        _preview_take()
+
+    def _selected_take_path():
+        lb = take_var.get()
+        for l, p in st.get("takes", []):
+            if l == lb:
+                return p
+        return st["takes"][0][1] if st.get("takes") else ""
+
+    def _preview_take():
+        """预览选中项：主成片显示关键帧；take 用 ffmpeg 首帧缩略图。"""
+        p = st["take_sel"] = _selected_take_path()
+        cur = _canonical_clip()
+        if p and p != cur and os.path.exists(p):
+            thumbs = os.path.join(book, dramavideo._CLIP_DIR, ".thumbs")
+            os.makedirs(thumbs, exist_ok=True)
+            tp = os.path.join(thumbs, os.path.basename(p) + ".png")
+            if not os.path.exists(tp):
+                tp = dramavideo.take_thumb(p, tp)
+            ph = _thumb(tp, (300, 300)) if tp else None
+            if ph is not None:
+                prev.config(image=ph, text="", width=0, height=0)
+                st["img_refs"].append(ph)
+                return
+        _show_shot_frame()
+
+    def _adopt_take():
+        p = st.get("take_sel") or ""
+        cur = _canonical_clip()
+        if not p or p == cur:
+            status(_t("ds.adopt_none"))
+            return
+        if st["busy"]:
+            status(_t("ds.busy"), busy=True)
+            return
+        dramavideo.select_clip_take(state, st["ch"], st["shot"] + 1, p)
+        status(_t("ds.adopt_done"))
+
+    def _show_shot_frame():
+        """预览区显示当前成片对应的关键帧（主成片态）。"""
+        frame, _ = _shot_paths(st["ch"], st["shot"] + 1)
+        ph = _thumb(frame, (300, 300))
+        if ph:
+            prev.config(image=ph, text="", width=0, height=0)
+            st["img_refs"].append(ph)
+        else:
+            prev.config(image="", text=_t("ds.no_frame"),
+                        width=30, height=14)
 
     # ---- 步骤3 数据与动作 ----
     def _shots_file(ch):
@@ -706,14 +785,8 @@ def show(app):
         desc_t.delete("1.0", "end"); desc_t.insert("1.0", s.get("description", ""))
         narr_e.delete(0, "end"); narr_e.insert(0, s.get("narration", ""))
         dlge.delete(0, "end"); dlge.insert(0, s.get("dialogue", ""))
-        frame, _ = _shot_paths(st["ch"], sel[0] + 1)
-        ph = _thumb(frame, (300, 300))
-        if ph:
-            prev.config(image=ph, text="", width=0, height=0)
-            st["img_refs"].append(ph)
-        else:
-            prev.config(image="", text=_t("ds.no_frame"),
-                        width=30, height=14)
+        st["take_sel"] = ""                # 换镜头：take 选择复位
+        _refresh_takes()
 
     def _save_shot():
         data = _shots()
@@ -754,7 +827,7 @@ def show(app):
 
     def _gen_work(kind):
         ch, i = st["ch"], st["shot"] + 1
-        if kind in ("frame", "clip") and not _shots():
+        if kind in ("frame", "clip", "take") and not _shots():
             return
         cast = _cast()
         shot = _shots()[st["shot"]]
@@ -769,6 +842,16 @@ def show(app):
                                            "urls.json"), {})
             dramavideo.clip(state, shot, urls.get(f"{ch}-{i:02d}", ""),
                             ch, i, force=True)
+        elif kind == "take":
+            # 抽卡：同关键帧再生成一条候选，旧卡与新卡都保留
+            frame, _ = _shot_paths(ch, i)
+            if not os.path.exists(frame):
+                dramavideo.keyframe(state, cast, shot, ch, i)
+            urls = _load_json(os.path.join(book, dramavideo._SHOT_DIR,
+                                           "urls.json"), {})
+            tpath = dramavideo.gen_clip_take(
+                state, shot, urls.get(f"{ch}-{i:02d}", ""), ch, i)
+            win.after(0, lambda tp=tpath: _refresh_takes(tp))
         else:
             n = len(_shots())
             clips = []
@@ -789,7 +872,7 @@ def show(app):
             status(_t("ds.busy"), busy=True)
             return
         names = {"frame": _t("ds.gen_frame"), "clip": _t("ds.gen_clip"),
-                 "concat": _t("ds.concat")}
+                 "take": _t("ds.take"), "concat": _t("ds.concat")}
         status(_t("ds.generating", n=names[kind]), busy=True)
 
         def work():
