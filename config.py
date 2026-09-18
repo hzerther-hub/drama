@@ -647,6 +647,49 @@ def _save_models_data(data: dict):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+def _media_service(env_base: str, env_model: str, env_key: str,
+                   provider_field: str) -> dict:
+    """图像/视频生成服务解析（公共逻辑）。
+
+    环境变量优先（本地 SD/ComfyUI 网关等场景，key 可空）；
+    其次扫描供应商配置里带 provider_field（image_model / video_model）
+    且已填 API Key 的供应商——面板里填上 key 即激活。
+    返回 {"base_url","model","api_key","provider_id"}；未配置返回 {}。
+    """
+    url = os.environ.get(env_base, "").strip().rstrip("/")
+    mdl = os.environ.get(env_model, "").strip()
+    if url and mdl:
+        return {"base_url": url, "model": mdl,
+                "api_key": os.environ.get(env_key, "").strip(),
+                "provider_id": ""}
+    try:
+        providers = _load_models_data().get("providers", [])
+    except Exception:                  # noqa: BLE001  配置损坏时按未配置降级
+        providers = []
+    for p in providers:
+        if not isinstance(p, dict):
+            continue
+        mdl = str(p.get(provider_field, "") or "").strip()
+        key = str(p.get("api_key", "") or "").strip()
+        base = str(p.get("base_url", "") or "").strip().rstrip("/")
+        if mdl and base and key and key != "local-noauth":
+            return {"base_url": base, "model": mdl, "api_key": key,
+                    "provider_id": str(p.get("id", ""))}
+    return {}
+
+
+def image_service() -> dict:
+    """图像生成服务：LAS_IMAGE_* 优先，其次带 image_model 的供应商。"""
+    return _media_service("LAS_IMAGE_BASE_URL", "LAS_IMAGE_MODEL",
+                          "LAS_IMAGE_API_KEY", "image_model")
+
+
+def video_service() -> dict:
+    """视频生成服务：LAS_VIDEO_* 优先，其次带 video_model 的供应商。"""
+    return _media_service("LAS_VIDEO_BASE_URL", "LAS_VIDEO_MODEL",
+                          "LAS_VIDEO_API_KEY", "video_model")
+
+
 def add_custom_model(model_ids, base_url: str, api_key: str,
                      display_names=None, vision: bool = False,
                      reasoning_effort: str = "",

@@ -14,7 +14,7 @@
 
 ## 当前状态
 
-**v0.1 —— 内核平移完成。** 下述创作内核今天全部可用：Agent 对话真实写文件、多根知识库、附件分析、多会话、语音输入、模型管理。路线图中的写作专属面板（章节树、角色卡、节拍模板）尚未开发——见[路线图](#路线图)。
+**v0.1 —— 内核平移 + 短剧成片。** 下述创作内核今天全部可用：Agent 对话真实写文件、多根知识库、附件分析、多会话、语音输入、模型管理。**短剧成片链可端到端跑通**：完稿章节 → 分镜 → 角色资产 → 关键帧 → 镜头视频 → 配音合成整集 MP4（需图像/视频服务 + ffmpeg；见 [docs/novel-setup.md](docs/novel-setup.md)）。路线图中的写作专属面板（章节树、角色卡、节拍模板）尚未开发——见[路线图](#路线图)。
 
 ## 为什么把写作工作室建在 Agent 内核上
 
@@ -32,6 +32,10 @@
 - **多根知识库（RAG）**——把 设定/素材/往期作品 目录建进 SQLite；TF-IDF 检索 + 可选 embedding 增强；`kb_search` 工具 + 可开关的自动注入
 - **附件**——随消息多选文件；txt/md/csv 内联原文，docx/pdf 提取文本，zip/tar.gz 解压附清单；图片缩到 ≤1568px 发识图模型（`"vision": true`）
 - **媒体内嵌**——聊天区直接显示图片/GIF 动画、音频播放条、视频缩略图；文字可选中，Ctrl+C / 右键复制
+- **短剧成片**——完稿章节 → 整集视频：分镜 → 角色形象资产 → 镜头关键帧（多图合成，长相由角色参考图锁定）→ 图生视频 → ffmpeg 拼接。三段式一致性传导让全剧面孔稳定；产物全部落在书籍目录下，重跑自动跳过已有文件，随时断点续造
+- **台词配音（TTS）**——台词用 edge-tts 神经网络语音（可选 pip 安装）或 Windows 本地 SAPI 语音合成，ffmpeg 混流替换音轨；失败自动降级为模型原声，不阻断主链
+- **风格库**——一个视觉风格驱动全部资产生成；每本书独立默认风格 + 可保存的预设（持久化在 `models.json`），首次生成前弹窗确认一次
+- **短剧工作台**——三步面板（`/novel drama`）：剧本大纲 → 资产库 → 分集视频；可改剧本、外貌锚、分镜，单镜重生成，最后合成整集
 - **链接自动取材**——消息里的图片 URL 自动下载识图；网页 URL 自动抓正文给模型（后台线程）
 - **联网搜索**——`web_search` 走 DuckDuckGo，零依赖无需 API Key
 - **智能派发**——`call_model` 工具把重活（大改剧情、识图）委派给更强的已配置模型；简单/高性能/识图三类目标在面板里管理
@@ -58,6 +62,7 @@ mkdir 我的短剧 && python main.py     # 然后把 我的短剧 选为工作�
 2. *“读分集梗概，把第 1 集扩写成 1200 字短剧剧本，存到 剧本/EP01.md，开场 30 秒内放钩子”*
 3. 第二天打开会话继续（已自动保存），或切到另一部作品的目录——会话按项目分组。
 4. 把知识库指向你的 设定集/ 目录，写作时人物设定自动检索。
+5. 章节完稿后跑 `/novel drama video 1-3`——分镜、角色资产、关键帧、图生视频镜头和配音整集 MP4 依次出现在书籍的 `短剧成片/` 目录下（需图像/视频服务 + ffmpeg）。
 
 ## 工具集
 
@@ -74,6 +79,9 @@ mkdir 我的短剧 && python main.py     # 然后把 我的短剧 选为工作�
 | `call_model` | 把子任务委派给另一个已配置模型 | 只读 |
 | `task_plan` | 制定/更新任务计划（界面显示为任务步骤清单） | 只读 |
 | `kb_search` | 检索多根知识库 | 只读 |
+| `image_gen` | 文生图（图像生成服务）→ `media/images/` | 只读 |
+| `video_gen` | 文生视频/图生视频（异步任务，约 1–3 分钟）→ `media/videos/` | 只读 |
+| `video_status` | 轮询进行中的视频生成任务 | 只读 |
 
 （`lsp_diagnostics` 也是内核自带工具；只在代码类项目里有用。）
 
@@ -89,6 +97,8 @@ main.py → ui.launch() → App (Tkinter 主循环；每条消息一个工作线
         ├─ cache.py         LLM/工具缓存（SQLite WAL / 内存）
         ├─ sessions.py      会话库（SQLite，按目录分组）
         ├─ attach.py        docx/pdf/zip 附件分析
+        ├─ dramavideo.py    短剧成片链：分镜 → 资产 → 关键帧 → 镜头 → 整集（ffmpeg）
+        ├─ imggen.py · videogen.py · tts.py   图像 / 视频 / TTS 客户端（agent 工具 + 成片链）
         ├─ voice.py         PortAudio 录音 + faster-whisper
         └─ weblinks.py      消息内链接自动取材
 ```
@@ -133,6 +143,8 @@ D:\miniconda3\Scripts\conda.exe create -n py312 python=3.12 -y
 
 **模型**——首次运行自动生成 `models.json`：默认一个本地 Qwen 端点 + DeepSeek 占位。不跑本地后端的话，打开模型管理（模型菜单 → 添加 provider），填任意 OpenAI 兼容端点和你自己的 Key：DeepSeek、Kimi、GLM、OpenAI 或本地 llama.cpp/vLLM 服务。识图模型标 `"vision": true` 即可收图片附件。
 
+**媒体生成服务**——短剧成片与 `image_gen` / `video_gen` 工具需要外接服务：OpenAI 兼容图像接口（`LAS_IMAGE_*` 环境变量，或在模型管理里给供应商填 `image_model`）和 Agnes 兼容视频接口（`LAS_VIDEO_BASE_URL` / `LAS_VIDEO_MODEL` / `LAS_VIDEO_API_KEY`，或供应商填 `video_model`）。配音混流与整集拼接用 [ffmpeg](https://www.gyan.dev/ffmpeg/builds/)——安装说明见 [docs/novel-setup.md](docs/novel-setup.md)；可选 `pip install edge-tts` 提升配音质量。不配置这些不影响写作主链——成片生成会明确提示缺什么。
+
 **配置与数据目录**——Linux/macOS：`~/.config/local-ai-studio/`；Windows：`%APPDATA%\local-ai-studio\`（共享内核名；旧 `wellfuture-coder` / `qwen-coder` 目录自动迁移）。内含 `models.json`、`cache.json`、`state.json`、`sessions/`、`index/`、`media/`、`extract/`。
 
 ## 打包
@@ -168,7 +180,7 @@ python packaging/build.py novelwriter --clean  # 清缓存重打
 ```bash
 pip install -r requirements-dev.txt
 python -m py_compile *.py            # 语法门禁（与 CI 相同）
-python -m pytest tests/ -q           # 350+ 单元测试；LLM 传输层 mock，HOME/APPDATA 隔离
+python -m pytest tests/ -q           # 540+ 单元测试；LLM 传输层 mock，HOME/APPDATA 隔离
 ```
 
 核心模块只依赖标准库；可选依赖（numpy、faster-whisper、psutil、Pillow、tkinterdnd2）缺失时自动降级。UI 对话框在 `ui_panel_*.py`。代码约定见[`AGENTS.md`](AGENTS.md)。

@@ -347,3 +347,63 @@ class TestGitBranch:
         with open(os.path.join(workspace, ".git"), "w", encoding="utf-8") as f:
             f.write(f"gitdir: {real_git}\n")
         assert tools.git_branch(workspace) == "wt-branch"
+
+
+class TestMediaGenTools:
+    """image_gen / video_gen / video_status：未配置降级 + 正常路径落盘。"""
+
+    def test_image_gen_without_service(self, workspace, monkeypatch):
+        for k in ("LAS_IMAGE_BASE_URL", "LAS_IMAGE_MODEL"):
+            monkeypatch.delenv(k, raising=False)
+        monkeypatch.setattr("imggen._service", lambda: {})
+        out = tools.execute_tool("image_gen", {"prompt": "一只猫"})
+        assert out.startswith("错误") and "图像生成服务" in out
+
+    def test_image_gen_saves_under_media(self, workspace, monkeypatch):
+        monkeypatch.setattr("imggen.available", lambda: True)
+
+        def fake_generate(prompt, out, size=""):
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            with open(out, "wb") as f:
+                f.write(b"PNG")
+            return out
+
+        monkeypatch.setattr("imggen.generate", fake_generate)
+        out = tools.execute_tool("image_gen", {"prompt": "猫",
+                                               "filename": "cat.png"})
+        assert "media" in out and "cat.png" in out
+        assert os.path.exists(os.path.join(workspace, "media", "images",
+                                           "cat.png"))
+
+    def test_video_gen_without_service(self, workspace, monkeypatch):
+        for k in ("LAS_VIDEO_BASE_URL", "LAS_VIDEO_MODEL"):
+            monkeypatch.delenv(k, raising=False)
+        monkeypatch.setattr("videogen._service", lambda: {})
+        out = tools.execute_tool("video_gen", {"prompt": "雨夜"})
+        assert out.startswith("错误") and "视频生成服务" in out
+
+    def test_video_status_downloads_when_completed(self, workspace, monkeypatch):
+        monkeypatch.setattr("videogen._service",
+                            lambda: {"base_url": "https://a.cn/v1"})
+        monkeypatch.setattr("videogen.query",
+                            lambda vid: {"status": "completed",
+                                         "url": "https://cdn/v.mp4",
+                                         "error": ""})
+
+        def fake_download(url, out):
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            with open(out, "wb") as f:
+                f.write(b"MP4")
+            return out
+
+        monkeypatch.setattr("videogen.download", fake_download)
+        out = tools.execute_tool("video_status", {"video_id": "t-1"})
+        assert "已下载" in out or "下载" in out
+        assert os.path.exists(os.path.join(workspace, "media", "videos",
+                                           "t-1.mp4"))
+
+    def test_media_tools_not_write_gated(self):
+        """生成类工具不属于 WRITE_TOOLS（无需批准）。"""
+        assert "image_gen" not in tools.WRITE_TOOLS
+        assert "video_gen" not in tools.WRITE_TOOLS
+        assert "video_status" not in tools.WRITE_TOOLS

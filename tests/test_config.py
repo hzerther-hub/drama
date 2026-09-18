@@ -228,3 +228,38 @@ def test_check_provider_uniqueness_helper():
         data, exclude_id="a", new_id="a") is None
     assert config._check_provider_uniqueness(
         data, exclude_id="a", new_name="Alpha") is None
+
+
+def test_media_service_env_priority(monkeypatch):
+    for k in ("LAS_IMAGE_BASE_URL", "LAS_IMAGE_MODEL", "LAS_IMAGE_API_KEY",
+              "LAS_VIDEO_BASE_URL", "LAS_VIDEO_MODEL", "LAS_VIDEO_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    data = {"providers": [{"id": "agnes", "base_url": "https://a.cn/v1",
+                           "api_key": "sk-1", "image_model": "mi",
+                           "video_model": "mv"}]}
+    monkeypatch.setattr(config, "_load_models_data", lambda: data)
+    # env 覆盖供应商配置
+    monkeypatch.setenv("LAS_IMAGE_BASE_URL", "https://local/v1")
+    monkeypatch.setenv("LAS_IMAGE_MODEL", "sd")
+    svc = config.image_service()
+    assert svc["base_url"] == "https://local/v1" and svc["provider_id"] == ""
+    # 未设 env 的视频服务回退供应商
+    vs = config.video_service()
+    assert vs["provider_id"] == "agnes" and vs["model"] == "mv"
+
+
+def test_media_service_skips_unkeyed_providers(monkeypatch):
+    for k in ("LAS_IMAGE_BASE_URL", "LAS_IMAGE_MODEL"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(config, "_load_models_data", lambda: {"providers": [
+        {"id": "agnes", "base_url": "https://a.cn/v1", "api_key": "",
+         "image_model": "mi"},                        # key 未填 → 跳过
+        {"id": "st", "base_url": "https://s.cn/v1", "api_key": "sk-ok",
+         "image_model": "sensenova-u1.5-lite"},       # 有效
+    ]})
+    svc = config.image_service()
+    assert svc["provider_id"] == "st"
+    # 没有任何可用服务
+    monkeypatch.setattr(config, "_load_models_data", lambda: {"providers": []})
+    assert config.image_service() == {}
+    assert config.video_service() == {}

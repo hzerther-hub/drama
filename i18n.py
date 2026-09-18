@@ -28,6 +28,15 @@ STRINGS: dict = {
     "top.sessions":    {"en": "💬 Sessions", "zh": "💬 会话"},
     "top.dir":         {"en": "Dir", "zh": "目录"},
     "top.ready":       {"en": "Ready", "zh": "就绪"},
+    "novel.drama_running": {"en": "Drama generating… (/novel drama stop to stop)",
+                            "zh": "短剧生成中…（/novel drama stop 可停止）"},
+    "novel.badge_generating": {"en": "Generating", "zh": "生成中"},
+    "ds.style":     {"en": "Style", "zh": "风格"},
+    "ds.style_save": {"en": "Save style", "zh": "存风格"},
+    "ds.style_saved": {"en": "Style saved: {n} (applies to NEW generations)",
+                       "zh": "风格已保存：{n}（对后续新生成生效）"},
+    "ds.style_hint": {"en": "presets or type your own; old outputs keep old style (redo to rebuild)",
+                      "zh": "选预设或自己写；已生成的产物仍是旧风格（redo 重做可统一）"},
     "top.attach":      {"en": "📎 Attach/Vision", "zh": "📎 附件/识图"},
     "top.voice":       {"en": "🎤 Voice input", "zh": "🎤 语音输入"},
     "top.send":        {"en": "➤ Send ⏎", "zh": "➤ 发送 ⏎"},
@@ -37,6 +46,7 @@ STRINGS: dict = {
     "btn.stop":        {"en": "⏹", "zh": "⏹"},
     "btn.clear":       {"en": "🧹", "zh": "🧹"},
     "btn.save_icon":   {"en": "💾", "zh": "💾"},
+    "btn.wrap_icon":   {"en": "↩", "zh": "↩"},
     "btn.close_icon":  {"en": "🗙", "zh": "🗙"},
 
     # —— 输入占位 / 状态 ——
@@ -81,6 +91,10 @@ STRINGS: dict = {
 
     # —— 通用按钮 ——
     "btn.save":        {"en": "Save", "zh": "保存"},
+    "btn.wrap":        {"en": "Toggle word wrap", "zh": "切换自动换行（按宽度折行）"},
+    "img.open_ext":    {"en": "Open with system viewer", "zh": "用系统看图软件打开"},
+    "ed.wrap_on":      {"en": "Word wrap: on", "zh": "自动换行：开"},
+    "ed.wrap_off":     {"en": "Word wrap: off", "zh": "自动换行：关"},
     "btn.close":       {"en": "Close", "zh": "关闭"},
     "font.title":      {"en": "Font size", "zh": "字号"},
     "font.chat":       {"en": "Chat", "zh": "聊天"},
@@ -561,6 +575,7 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
                           "zh": "尚未建索引——添加根目录后建立。"},
     "kb.stats":          {"en": "Files: {files}  ·  Chunks: {chunks}\n{db}",
                           "zh": "文件数：{files}  ·  块数：{chunks}\n{db}"},
+    "kb.build":         {"en": "Build index", "zh": "建立索引"},
     "kb.building":       {"en": "Building index…", "zh": "正在建立索引…"},
     "kb.built":          {"en": "✅ Built: {files} files, {updated} updated ({mode}, {sec}s).",
                           "zh": "✅ 已建立：{files} 个文件，更新 {updated}（{mode}，{sec}s）。"},
@@ -781,6 +796,7 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "todo.processing":{"en": "Processing…", "zh": "处理中…"},
     "todo.updated":  {"en": "Updated {p}", "zh": "已更新 {p}"},
     "q.fail":       {"en": "Command failed: {e}", "zh": "命令执行失败：{e}"},
+    "q.unknown":    {"en": "Unknown command: {c}", "zh": "未知命令：{c}"},
     "cmd.help":     {"en": "Open help", "zh": "打开帮助"},
     "cmd.new":      {"en": "New session", "zh": "新建会话"},
     "cmd.clear":    {"en": "Clear chat (keep session)", "zh": "清空聊天区（不删会话）"},
@@ -892,6 +908,166 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
                      "zh": "当前书：{pid}（{t}）"},
     "novel.no_book": {"en": "Manuscript not found", "zh": "书稿文件不存在"},
     "novel.no_chapters": {"en": "No finished chapters yet", "zh": "还没有已完成的章节"},
+    "novel.drama_video_done": {"en": "Episode video ready: {p}",
+                               "zh": "本集成片完成：{p}"},
+    "novel.help": {
+        "en": "See zh text (zh-only product)",
+        "zh": "📖 /novel 命令手册\n"
+              "\n"
+              "■ 写书主流程\n"
+              "/novel start <灵感> [章数] [auto]   开新书（auto=不逐阶段暂停）\n"
+              "/novel status   查看进度        /novel ok    通过当前阶段继续\n"
+              "/novel adjust <修改意见>  修订当前阶段\n"
+              "/novel stage <阶段名> [意见]  重跑某个阶段\n"
+              "/novel show N   查看第 N 章    /novel ledger  事实账本\n"
+              "/novel stat     全书统计      /novel stop | resume  中断/续跑\n"
+              "/novel use [pid]  切换书      /novel deconstruct <txt>  拆书\n"
+              "\n"
+              "■ 章节修订\n"
+              "/novel rewrite N [反馈]  重写    /novel insert N  在 N 前插章\n"
+              "/novel polish N [要求]  润色    /novel drop N    删除第 N 章\n"
+              "/novel expand N   扩写        /novel rename N <标题>  改标题\n"
+              "/novel condense N 压缩        /novel check N   第 N 章一致性审查\n"
+              "/novel extend N   续写        /novel compare N  修订前后对比\n"
+              "\n"
+              "■ 短剧（AI 成片）\n"
+              "/novel drama            打开短剧工作台（大纲/资产/分镜三步，可编辑）\n"
+              "/novel drama new <灵感> [集数]  原创短剧（不依赖小说）\n"
+              "/novel drama 1-3         第 1-3 章改编短剧剧本\n"
+              "/novel drama video 1     第 1 章成片：角色/场景/道具资产 → 分镜 →\n"
+              "                        关键帧（多图合成）→ 镜头视频（图生视频，\n"
+              "                        台词由模型自带语音说出）→ ffmpeg 合成整集\n"
+              "/novel drama video 1-3 redo  删掉范围内关键帧/片段重做\n"
+              "/novel drama stop       停止生成（产物保留，重跑续造）\n"
+              "/novel drama reset      清空全部短剧产物，从零重做（正文不动）\n"
+              "/novel drama style     弹出风格管理面板（预设+自定义+默认）\n"
+              "/novel drama assets [N | N-M]  只生成资产（含/不含章节专属），先期调整\n"
+              "（断点续造：重跑命令自动跳过已有产物，只补缺失的镜头；\n"
+              "  想换成 TTS 配音：短剧工作台「分集视频」页勾选 TTS 配音）\n"
+              "\n"
+              "■ 漫画\n"
+              "/novel comic 1-3   第 1-3 章漫画分镜表（含出图提示词）\n"
+              "/novel comic cast   角色设定图提示词（跨格形象一致）\n"
+              "\n"
+              "■ 封面与发布\n"
+              "/novel cover          生成书封（图像服务）\n"
+              "/novel publish txt|md|docx|wattpad [起-止]  导出/发布\n"
+              "\n"
+              "■ 前置条件\n"
+              "· 成片/封面需要图像服务：供应商管理给 Agnes 或 商汤 填 API Key\n"
+              "· 配音与整集合成需要 ffmpeg（docs/novel-setup.md）；\n"
+              "  配音质量建议 pip install edge-tts"},
+    "ds.title":     {"en": "Drama Studio · {t}", "zh": "短剧工作台 · {t}"},
+    "ds.ready":     {"en": "Ready", "zh": "就绪"},
+    "ds.busy":      {"en": "Busy — wait for the current job", "zh": "生成中，请稍候"},
+    "ds.saved":     {"en": "Saved: {n}", "zh": "已保存：{n}"},
+    "ds.generating": {"en": "Generating: {n} …", "zh": "生成中：{n} …"},
+    "ds.save_doc":  {"en": "Save & apply", "zh": "保存并生效"},
+    "ds.fill_cast": {"en": "Fill missing looks", "zh": "补齐缺失形象"},
+    "ds.save_look": {"en": "Save desc", "zh": "存描述"},
+    "ds.upload":    {"en": "Upload", "zh": "上传替换"},
+    "ds.pick_image": {"en": "Pick an image", "zh": "选择图片"},
+    "ds.uploaded":  {"en": "Image replaced: {n}", "zh": "已替换形象图：{n}"},
+    "ds.gen_t2i":   {"en": "Gen by desc", "zh": "描述生成"},
+    "ds.gen_i2i":   {"en": "Img2img (precise)", "zh": "图生图"},
+    "ds.prompt":    {"en": "Custom prompt (optional, overrides desc)",
+                     "zh": "提示词（可选·填了则取代描述出图）"},
+    "ds.ch_assets_btn": {"en": "Extract ch.{n} assets", "zh": "提取第{n}章专属资产"},
+    "ds.ch_assets": {"en": "chapter {n} assets", "zh": "第{n}章专属资产"},
+    "ds.need_shots": {"en": "Chapter {n} has no storyboard yet — run /novel drama video first",
+                      "zh": "第{n}章还没有分镜——先跑 /novel drama video 生成该章分镜"},
+    "ds.tts":       {"en": "TTS dubbing (off = model's native voice)",
+                     "zh": "TTS 配音（默认关·用视频自带语音）"},
+    "ds.tts_on":    {"en": "TTS dubbing ON (needs ffmpeg + edge-tts)",
+                     "zh": "TTS 配音已开启（需要 ffmpeg 与 edge-tts）"},
+    "ds.tts_off":   {"en": "Using the video model's native voice",
+                     "zh": "使用视频模型自带的台词语音"},
+    "ds.regen":     {"en": "Regenerate", "zh": "重新生成"},
+    "ds.done_regen": {"en": "Look regenerated: {n}", "zh": "形象已重生成：{n}"},
+    "ds.shots":     {"en": "Shots（▶ 视频 ◈ 关键帧 ○ 未生成）",
+                     "zh": "分镜（▶ 已出视频 ◈ 有关键帧 ○ 未生成）"},
+    "ds.shot_title": {"en": "Title", "zh": "标题"},
+    "ds.scene":     {"en": "Scene", "zh": "场景"},
+    "ds.chars":     {"en": "Characters (、分隔)", "zh": "角色（、分隔）"},
+    "ds.seconds":   {"en": "Sec", "zh": "秒"},
+    "ds.era":       {"en": "Era", "zh": "阶段"},
+    "ds.camera":    {"en": "Camera", "zh": "运镜"},
+    "ds.mood":      {"en": "Mood", "zh": "情绪"},
+    "ds.desc":      {"en": "Shot description (cinematography)",
+                     "zh": "画面描述（机位/运镜/动作）"},
+    "ds.dialogue":  {"en": "Dialogue", "zh": "台词"},
+    "ds.narration": {"en": "Narration (voice-over, spoken by the model)",
+                     "zh": "旁白解说（第三人称·模型语音说出）"},
+    "ds.stop":      {"en": "⏹ Stop generating", "zh": "⏹ 停止生成"},
+    "ds.stop_req":  {"en": "Stop requested — finishing current item…",
+                     "zh": "已请求停止——当前这步完成后停下（产物保留）"},
+    "novel.drama_stop_req": {"en": "Stop requested", "zh": "已请求停止生成"},
+    "novel.drama_stop_idle": {"en": "Nothing is generating", "zh": "当前没有生成中的任务"},
+    "novel.drama_reset_title": {"en": "Reset drama", "zh": "重置短剧"},
+    "novel.drama_reset_confirm": {
+        "en": "Delete ALL drama outputs (assets/storyboards/keyframes/clips/episodes)?\nNovel text is NOT affected. Everything will be regenerated from scratch.",
+        "zh": "删除全部短剧产物（资产/分镜/关键帧/片段/成片）？\n小说正文不受影响；之后 /novel drama video 会从零重建。"},
+    "novel.drama_reset_done": {"en": "Drama reset: {n} files deleted. Run /novel drama video to rebuild.",
+                               "zh": "短剧已重置：删除 {n} 个文件。重跑 /novel drama video 从零重建。"},
+    "sp.title":         {"en": "Drama Style Manager", "zh": "短剧风格管理"},
+    "sp.current_book":  {"en": "Current book style:", "zh": "本书当前风格："},
+    "sp.apply_book":    {"en": "Apply to book", "zh": "应用到此书"},
+    "sp.applied_book":  {"en": "Saved as this book's drama_style",
+                         "zh": "已写入本书 drama_style"},
+    "sp.name_ph":       {"en": "name", "zh": "名称"},
+    "sp.text_ph":       {"en": "prompt text (Chinese or English)",
+                         "zh": "提示词（中文/英文）"},
+    "sp.add":           {"en": "+ Add", "zh": "+ 新增"},
+    "sp.delete":        {"en": "Delete", "zh": "删除"},
+    "sp.set_default":   {"en": "Set default", "zh": "设为默认"},
+    "sp.empty":         {"en": "Name and prompt text are required",
+                         "zh": "名称与提示词都不能为空"},
+    "sp.dup":           {"en": "Same text already exists", "zh": "该提示词已存在"},
+    "sp.added":         {"en": "Style added: {n}", "zh": "已新增风格：{n}"},
+    "sp.deleted":       {"en": "Deleted {n} entries", "zh": "已删除 {n} 项"},
+    "sp.default_saved": {"en": "Default style saved (used for new books)",
+                         "zh": "默认风格已保存，新书自动套用"},
+    "sp.default_saved_book": {"en": "Default saved AND applied to this book: {n}",
+                              "zh": "默认已保存，并已应用到当前书：{n}"},
+    "sp.pick_hint":   {"en": "Confirm the drama style for this book. Default is used if you don't choose — it will be saved and never asked again.",
+                         "zh": "为本书确认短剧风格。不选也可用 Default，记下来后此书不再弹出。"},
+    "sp.pick_or_custom": {"en": "Or type a custom prompt here (overrides preset)",
+                         "zh": "或在此自己写（取代预设）"},
+    "sp.use_default":  {"en": "Use Default", "zh": "用 Default"},
+    "ed.optimize_selection": {"en": "AI optimize selection", "zh": "AI 优化选区"},
+    "ed.optimize_hint": {"en": "Tell me how to improve these {n} characters…",
+                         "zh": "告诉我这段文字（{n} 字）要怎么改……"},
+    "ed.insert_at_cursor": {"en": "Insert at cursor (Ctrl+L)", "zh": "在光标处插入（Ctrl+L）"},
+    "ed.insert_hint": {"en": "Describe the paragraph you want around line {line}…",
+                       "zh": "描述你想加在第 {line} 行附近的那段描写……"},
+    "ed.book_review": {"en": "AI: review full-book logic", "zh": "AI：全书逻辑审查"},
+    "ed.review_done": {"en": "Full-book review ready (appended to file if .md)",
+                       "zh": "全书审查报告完成（.md 文件已追加到末尾）"},
+    "ed.add_code_chat": {"en": "Add selected code to chat", "zh": "选中代码加入聊天"},
+    "ed.empty_sel":   {"en": "No text selected", "zh": "没有选中文字"},
+    "ed.empty_instr": {"en": "Please tell me what to change", "zh": "请输入修改意见"},
+    "ed.original_label": {"en": "Selected text (read-only)", "zh": "选区原文（只读）"},
+    "ed.preview_label":  {"en": "AI preview — click Apply to commit", "zh": "AI 结果预览——确定替换"},
+    "ed.run":         {"en": "Run AI", "zh": "运行"},
+    "ed.apply":       {"en": "Apply (replace)", "zh": "确定替换"},
+    "ed.applied":     {"en": "Applied (Ctrl+Z to undo)", "zh": "已替换（Ctrl+Z 可撤销）"},
+    "ed.generating":  {"en": "AI is working…", "zh": "AI 处理中…"},
+    "ed.preview_ready": {"en": "Preview ready — review then Apply",
+                         "zh": "预览就绪——确认后「确定替换」"},
+    "novel.drama_assets_done": {
+        "en": "Assets generated: {n} global + {m} chapter-specific ({cs})",
+        "zh": "资产生成完成：全书 {n} 个 + 章节专属 {m} 个（{cs}）"},
+    "ds.save_shot": {"en": "Save shot", "zh": "保存分镜"},
+    "ds.drop_media": {"en": "Drop frame/clip (force regen)",
+                      "zh": "删除本镜产物（强制重生成）"},
+    "ds.dropped":   {"en": "Dropped artifacts of shot {n}", "zh": "已删除镜头 {n} 的关键帧/片段"},
+    "ds.no_frame":  {"en": "No keyframe yet", "zh": "还没有关键帧"},
+    "ds.gen_frame": {"en": "Generate keyframe", "zh": "生成关键帧（多图合成）"},
+    "ds.gen_clip":  {"en": "Generate clip (img2vid)", "zh": "生成镜头视频（图生视频）"},
+    "ds.concat":    {"en": "Concat episode (ffmpeg)", "zh": "合成整集（ffmpeg）"},
+    "ds.open_out":  {"en": "Open output folder", "zh": "打开成片目录"},
+    "ds.no_out":    {"en": "No output folder yet", "zh": "还没有成片目录"},
+    "ds.no_clips":  {"en": "No finished clips to concat", "zh": "没有已完成的镜头片段可合成"},
     "novel.busy":   {"en": "Pipeline already running", "zh": "已有流水线在运行"},
     "novel.stopped": {"en": "⏹ Stop requested", "zh": "⏹ 已请求停止，当前章完成后暂停"},
     "novel.stage":  {"en": "Stage: {label}", "zh": "阶段：{label}"},

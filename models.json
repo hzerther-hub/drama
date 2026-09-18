@@ -15,6 +15,44 @@
           "max_tokens": 8192
         }
       ]
+    },
+    {
+      "id": "agnes",
+      "name": "Agnes AI",
+      "base_url": "https://apihub.agnes-ai.com/v1",
+      "api_key": "",
+      "image_model": "agnes-image-2.5-flash",
+      "video_model": "agnes-video-v2.0",
+      "models": [
+        {
+          "id": "agnes-2.5-flash",
+          "name": "Agnes 2.5 Flash"
+        },
+        {
+          "id": "agnes-3.0-flash",
+          "name": "Agnes 3.0 Flash",
+          "reasoning": true
+        }
+      ]
+    },
+    {
+      "id": "sensetime",
+      "name": "商汤日日新",
+      "base_url": "https://token.sensenova.cn/v1",
+      "api_key": "",
+      "image_model": "sensenova-u1.5-lite",
+      "models": [
+        {
+          "id": "sensenova-u1-fast",
+          "name": "SenseNova U1 Fast",
+          "vision": true
+        },
+        {
+          "id": "sensenova-6.8-flash-lite",
+          "name": "SenseNova 6.8 Flash-Lite",
+          "vision": true
+        }
+      ]
     }
   ]
 }

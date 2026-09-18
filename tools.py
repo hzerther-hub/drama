@@ -305,6 +305,61 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "image_gen",
+            "description": "文生图：调用图像生成服务（Agnes / 商汤日日新，在供应商管理里"
+                           "填 API Key 激活）生成一张图片，保存到工作区 media/images/，"
+                           "返回保存路径。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "图像提示词（中文或英文）"},
+                    "filename": {"type": "string",
+                                 "description": "保存文件名（可选，默认时间戳 .png）"},
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "video_gen",
+            "description": "文生视频/图生视频：调用视频生成服务（Agnes Video，异步任务，"
+                           "约 1-3 分钟），完成后下载 MP4 到工作区 media/videos/。"
+                           "生成超时会返回任务 ID，可用 video_status 续查。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "视频内容描述"},
+                    "seconds": {"type": "number",
+                                "description": "时长秒数（可选，默认 5，上限约 18 秒）"},
+                    "image": {"type": "string",
+                              "description": "首帧图片 URL（可选；提供则为图生视频）"},
+                    "filename": {"type": "string",
+                                 "description": "保存文件名（可选，默认时间戳 .mp4）"},
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "video_status",
+            "description": "查询视频生成任务状态；已完成则自动下载 MP4 到工作区 "
+                           "media/videos/。配合 video_gen 超时返回的任务 ID 使用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "video_id": {"type": "string", "description": "任务 ID"},
+                },
+                "required": ["video_id"],
+            },
+        },
+    },
 ]
 
 
@@ -915,6 +970,82 @@ def _call_model(args):
     return _truncate_dispatch(text, DISPATCH_RESULT_KEEP)
 
 
+def _media_out_path(subdir: str, filename: str, default_ext: str,
+                    exts: tuple) -> str:
+    """生成的媒体文件统一落工作区 media/<subdir>/；文件名去路径分隔符防逃逸。"""
+    import time as _time
+    name = os.path.basename((filename or "").strip()) \
+        or (_time.strftime("%Y%m%d-%H%M%S") + default_ext)
+    if not name.lower().endswith(exts):
+        name += default_ext
+    return os.path.join(get_workspace() or os.getcwd(), "media", subdir, name)
+
+
+def _image_gen(args):
+    """image_gen 执行器：文生图，落盘 media/images/。"""
+    import imggen
+    prompt = (args.get("prompt") or "").strip()
+    if not prompt:
+        return "错误：prompt 不能为空"
+    if not imggen.available():
+        return ("错误：未配置图像生成服务。请在「模型与供应商」面板给 Agnes 或 "
+                "商汤日日新填 API Key（条目含 image_model 自动生效），或设环境"
+                "变量 LAS_IMAGE_BASE_URL / LAS_IMAGE_MODEL。")
+    out = _media_out_path("images", args.get("filename"), ".png",
+                          (".png", ".jpg", ".jpeg", ".webp"))
+    try:
+        p = imggen.generate(prompt, out)
+    except imggen.ImgError as e:
+        return f"错误：{e}"
+    return f"已生成图片：{p}"
+
+
+def _video_gen(args):
+    """video_gen 执行器：文生视频（异步任务），完成即下载 media/videos/。"""
+    import videogen
+    prompt = (args.get("prompt") or "").strip()
+    if not prompt:
+        return "错误：prompt 不能为空"
+    if not videogen.available():
+        return ("错误：未配置视频生成服务。请在「模型与供应商」面板给 Agnes 填 "
+                "API Key（条目含 video_model 自动生效），或设环境变量 "
+                "LAS_VIDEO_BASE_URL / LAS_VIDEO_MODEL。")
+    out = _media_out_path("videos", args.get("filename"), ".mp4", (".mp4",))
+    try:
+        seconds = float(args.get("seconds") or 0)
+    except (TypeError, ValueError):
+        seconds = 0
+    try:
+        p = videogen.generate(prompt, out,
+                              image=(args.get("image") or "").strip(),
+                              seconds=seconds, timeout=150.0)
+    except videogen.VidError as e:
+        return f"错误：{e}"
+    return f"已生成视频：{p}"
+
+
+def _video_status(args):
+    """video_status 执行器：查任务状态，完成则下载。"""
+    import videogen
+    vid = (args.get("video_id") or "").strip()
+    if not vid:
+        return "错误：video_id 不能为空"
+    try:
+        st = videogen.query(vid)
+    except videogen.VidError as e:
+        return f"错误：{e}"
+    if st["status"] == "completed" and st["url"]:
+        out = _media_out_path("videos", f"{vid}.mp4", ".mp4", (".mp4",))
+        try:
+            p = videogen.download(st["url"], out)
+        except videogen.VidError as e:
+            return f"错误：{e}"
+        return f"视频已完成并下载：{p}"
+    if st["status"] == "failed":
+        return f"视频生成失败：{st['error'] or '服务端未给出原因'}（任务 {vid}）"
+    return f"任务 {vid} 状态：{st['status']}（仍在生成，请稍后再查。）"
+
+
 def _lsp_diagnostics(args: dict) -> str:
     """lsp_diagnostics 执行器：LSP 检查文件错误/警告（只读）。"""
     path = (args.get("path") or "").strip()
@@ -991,6 +1122,9 @@ _EXECUTORS = {
     "code_graph": _code_graph,
     "run_shell": _run_shell,
     "web_search": _web_search,
+    "image_gen": _image_gen,
+    "video_gen": _video_gen,
+    "video_status": _video_status,
     "lsp_diagnostics": _lsp_diagnostics,
     "call_model": _call_model,
     "task_plan": _task_plan,

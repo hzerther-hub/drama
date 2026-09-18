@@ -514,6 +514,11 @@ def new_pipeline(idea: str, total: int, model_key: str,
              "ledger": [], "foreshadows": [], "arc_summaries": [],
              "pid": pid, "dir": book_dir, "title": title,
              "file": os.path.join(book_dir, _DIR_OUTLINE, _OUTLINE_FILE)}
+    # 强制初始化短剧风格——回退链（用户输入 → 全局默认 → DEFAULT_STYLE），
+    # 让 state 始终携带有效风格，资产生成/工作台/导出都有据可循
+    import dramavideo as _dv
+    state["drama_style"] = _dv.resolve_style(state if (style or "").strip()
+                                             else {**state, "drama_style": ""})
     return Pipeline(pid, idea[:20], STAGES, state)
 
 
@@ -1546,3 +1551,44 @@ def _rebuild_md(state: dict):
         _append_chapter(state, c)
     _sync_review_reports(state)                # 全量对齐，清掉孤儿报告
     _write_readme(state)
+
+
+# ---------------- 工具版改写（编辑器/全文级，按用户指令修改） ----------------
+
+def ai_edit(state: dict, instruction: str, context: str,
+            system: str = "") -> str:
+    """编辑器选区或全文级 AI 改写：用户输入修改意见 + 原文 → 返回新文本。
+
+    system 为空时用「你是网文编辑」通用提示；context 必须包含「选区/全文」
+    原文与位置标记（首尾明示），以便 AI 输出可被定位替换。
+    """
+    from . import StageFail                                  # noqa: F401
+    sys_p = system or ("你是网文编辑。严格按作者的修改意见改写下面这段文本，"
+                       "不要改变剧情事实与时间线，不要复述，只输出改写后的文本。")
+    text = _ask(state, sys_p,
+                f"【修改意见】\n{instruction}\n\n"
+                f"【待改写文本】\n{context}\n\n"
+                "只输出改写后的完整文本，前后不要加任何说明。")
+    if not text.strip():
+        raise Exception("AI 改写结果为空")
+    return text.strip()
+
+
+def book_review_full(state: dict) -> str:
+    """全书逻辑/伏笔/事实一致性审查：返回 markdown 报告。"""
+    chapters = state.get("chapters") or []
+    if not chapters:
+        raise Exception("还没有任何章节可审查")
+    body = []
+    for c in chapters:
+        body.append(f"### 第{c['idx']}章《{c.get('title','')}》\n{c.get('text','')[:1200]}")
+    ledger = state.get("ledger") or []
+    fsh = state.get("foreshadows") or []
+    text = _ask(state,
+                "你是资深网文主编。对全书做逻辑与伏笔审查：①情节矛盾/时间线冲突"
+                "②人物行为前后不一 ③未回收伏笔 ④事实账本冲突 ⑤建议修复点（按章）。"
+                "输出 markdown 报告，按章节罗列问题与建议；不要复述原文。",
+                f"【事实账本】\n{ledger}\n\n"
+                f"【伏笔】\n{fsh}\n\n"
+                f"【章节正文（节选前1200字/章）】\n" + "\n\n".join(body))
+    return text.strip()

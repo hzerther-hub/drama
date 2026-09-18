@@ -57,6 +57,20 @@ setx LAS_EMBED_API_KEY "sk-..."
 - Wattpad：`LAS_PUBLISH_WATTPAD_TOKEN`
 - Webhook：`LAS_PUBLISH_WEBHOOK_URL`（POST `{title, chapters:[{idx,title,text}]}`）
 
+### 5. ffmpeg（短剧配音混流 / 整集合成）— 需要时安装
+
+短剧视频链（`dramavideo.py`）用 ffmpeg 做镜头配音混流（`dub`）与整集 concat 拼接（`concat`），
+按 PATH 上的 `ffmpeg`（`shutil.which`）检测。
+
+- **安装（二选一）**：
+  - `winget install Gyan.FFmpeg`（装完 `where ffmpeg` 验证；老版 winget 可能静默失败）
+  - 手动：下载 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 的 `ffmpeg-release-essentials.zip`，
+    把 `bin\ffmpeg.exe`（建议连 `ffprobe.exe`）放到 `%LOCALAPPDATA%\Programs\ffmpeg\bin`，
+    再将该目录加入用户 PATH（高级系统设置→环境变量）
+- **生效**：PATH 写入用户级后，**新开的终端 / 重启后的应用**才能看到
+- **未安装的降级**：镜头配音自动跳过（保留模型原声、记质量债，不阻断）；
+  整集合成直接停链报错。装好后**重跑同一命令即可续造**（已生成的镜头/图片自动跳过）
+
 ## 三、使用方法
 
 ### 开书

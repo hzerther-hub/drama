@@ -54,3 +54,11 @@ def _scan(ws: str) -> list[str]:
         if len(out) >= _MAX_SCAN:
             break
     return out
+
+
+def signature(ws: str) -> tuple:
+    """工作区结构签名（不走 TTL，每次实扫）：文件树自动刷新用。
+
+    新增/删除/改名任何文件都会改变签名；内容修改不改变（树只看结构）。
+    """
+    return tuple(_scan(os.path.abspath(ws)))

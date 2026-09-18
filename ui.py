@@ -47,6 +47,28 @@ def _feature(key: str, default: bool = True) -> bool:
 
 
 _BUILD_TAG = "0906-3"       # 多实例混用时一眼可辨窗口新旧
+
+# 粘贴文本常夹带的零宽/格式字符：肉眼不可见，但会混进命令名导致
+# 「/novel\u200bstart」≠「/novel」这类未知命令误判。它们本质是软换行点，
+# 统一替换成空格（直接删除会把「/novel」「start」粘成一个词）。
+_ZERO_WIDTH = "\u200b\u200c\u200d\ufeff"
+
+def _normalize_zero_width(text: str) -> str:
+    """零宽/格式字符归一为空格并去首尾空白（纯函数，tests 直接覆盖）。"""
+    for _ch in _ZERO_WIDTH:
+        text = text.replace(_ch, " ")
+    return text.strip()
+
+
+# 双击体验：媒体播放 / 文档用系统默认程序打开，不在编辑器显示二进制源码
+_SYSTEM_OPEN_EXT = {
+    ".mp4", ".avi", ".mkv", ".mov", ".webm", ".flv", ".wmv", ".m4v",   # 视频
+    ".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a", ".wma",           # 音频
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",         # 文档
+    ".zip", ".rar", ".7z", ".tar", ".gz",                              # 压缩包
+    ".exe", ".dll", ".bin", ".pyd", ".so", ".woff", ".woff2", ".ttf",  # 其它二进制
+}
+
 def _app_title() -> str:
     """主窗口标题：跟随激活产品 profile 的 title；缺失时回退 i18n 默认。
 
@@ -1041,6 +1063,8 @@ class App:
         # 启动时探测工作区开发语言，预热对应 LSP 服务器（多语言智能提示）
         self._lsp_warmed = set()
         threading.Thread(target=self._lsp_warm_loop, daemon=True).start()
+        # 文件树自动感知：外部/流水线落盘的新文件 5 秒内出现在目录里
+        self.root.after(5000, self._fs_auto_refresh_tick)
 
     # ================= 构建界面 =================
     def _icon_button(self, parent, icon, hint, command, font_size=None, image=True):
@@ -2385,14 +2409,26 @@ class App:
                             kinds=attach.snippet_chip(att)))
 
     def _code_context_menu(self, event, path, text_widget):
-        """编辑器右键菜单：选中代码可加入聊天（附件带文件路径 + 行号范围）。"""
+        """编辑器右键菜单：选中段→AI 优化；Ctrl+L→在光标处插入文字；全文审查。"""
         has_sel = bool(text_widget.tag_ranges("sel"))
         menu = tk.Menu(self.root, tearoff=0, font=(FONT_UI, 10))
         menu.add_command(
-            label=_t("file.add_code_chat"),
+            label=_t("ed.optimize_selection"),
+            state=("normal" if has_sel else "disabled"),
+            command=(lambda: self._ai_optimize_selection(path, text_widget))
+            if has_sel else (lambda: None))
+        menu.add_command(
+            label=_t("ed.insert_at_cursor") + " (Ctrl+L)",
+            command=lambda: self._ai_insert_at_cursor(path, text_widget))
+        menu.add_command(
+            label=_t("ed.add_code_chat"),
             state=("normal" if has_sel else "disabled"),
             command=(lambda: self._code_sel_to_chat(path, text_widget))
             if has_sel else (lambda: None))
+        menu.add_separator()
+        menu.add_command(
+            label=_t("ed.book_review"),
+            command=lambda: self._book_review(path, text_widget))
         _post_menu(menu, event.x_root, event.y_root)
 
     def _code_sel_to_chat(self, path, text_widget):
@@ -2413,6 +2449,199 @@ class App:
         if not lines:
             return
         self._add_code_to_chat(path, start_line, end_line, "\n".join(lines))
+
+    # ----------- 编辑器 AI：选区优化 / 光标处插入 / 全文审查 -----------
+
+    def _ai_optimize_selection(self, path, text_widget):
+        """右键 → 选区 AI 改写：弹框输意见→AI 出新版本→预览确认→替换。"""
+        sel = text_widget.tag_ranges("sel")
+        if not sel:
+            return
+        first, last = sel[0], sel[1]
+        original = text_widget.get(first, last).strip()
+        if not original:
+            self._set_status(_t("ed.empty_sel"))
+            return
+        self._prompt_and_run(
+            title=_t("ed.optimize_selection"),
+            hint=_t("ed.optimize_hint", n=len(original)),
+            original=original,
+            apply=lambda new_text: self._apply_selection(
+                text_widget, first, last, new_text, path),
+            fallback_task=lambda instr: self._ai_edit_task(
+                self._current_book_state(), instr, original))
+
+    def _ai_insert_at_cursor(self, path, text_widget):
+        """Ctrl+L 或右键：在光标处弹框插入 AI 生成的文字。"""
+        # 光标索引
+        try:
+            pos = text_widget.index(tk.INSERT)
+            line = int(str(pos).split(".")[0])
+        except Exception:            # noqa: BLE001
+            pos = "1.0"; line = 1
+        self._prompt_and_run(
+            title=_t("ed.insert_at_cursor"),
+            hint=_t("ed.insert_hint", line=line),
+            original="",                                  # 不显示原文
+            insert_at=pos,
+            apply=lambda new_text: self._insert_at(
+                text_widget, pos, new_text, path),
+            fallback_task=lambda instr: self._ai_insert_task(
+                self._current_book_state(), instr, line))
+
+    def _book_review(self, path, text_widget):
+        """全文逻辑审查：起后台线程，结束后把报告插入聊天 + 文件末尾。"""
+        state = self._current_book_state()
+        if state is None:
+            self._set_status(_t("novel.none"))
+            return
+        if not state.get("chapters"):
+            self._set_status(_t("novel.no_chapters"))
+            return
+
+        def work():
+            try:
+                report = novel_chain.book_review_full(state)
+            except Exception as e:        # noqa: BLE001
+                self.root.after(0, lambda: self._append(
+                    f"❌ {type(e).__name__}: {e}\n", "denied"))
+                return
+            self.root.after(0, lambda: (
+                self._append("📝 " + _t("ed.review_done") + "\n", "meta"),
+                text_widget.insert("end", "\n\n# 审查报告\n\n" + report)
+                if path.endswith(".md") else None,
+                text_widget.edit_separator() if text_widget.cget("undo") else None))
+
+        def run():
+            threading.Thread(target=work, daemon=True).start()
+
+        self.root.after(0, run)
+
+    def _prompt_and_run(self, *, title, hint, original, apply,
+                         insert_at=None, fallback_task):
+        """统一弹窗：原文本只读 → 用户输指令 → 后台 AI → 弹预览+确认 → apply。"""
+        win = tk.Toplevel(self.root)
+        win.title(title); win.configure(bg=theme.BG); win.geometry("680x560")
+        _make_modal(win, self.root)
+        tk.Label(win, text=hint, font=(FONT_UI, 10), bg=theme.BG,
+                 fg=theme.MUTED, wraplength=640, justify="left"
+                 ).pack(anchor="w", padx=14, pady=(10, 4))
+        instr = tk.Text(win, height=4, font=(FONT_UI, 10), wrap="word",
+                        relief="flat", bg="white", fg=theme.TEXT, padx=8, pady=6)
+        instr.pack(fill="x", padx=14)
+        tk.Label(win, text=_t("ed.original_label"),
+                 font=(FONT_UI, 9), bg=theme.BG, fg=theme.MUTED
+                 ).pack(anchor="w", padx=14, pady=(6, 0))
+        orig_view = tk.Text(win, height=8, font=(FONT_MONO, 9), wrap="word",
+                            relief="flat", bg=theme.BOT_BUBBLE, fg=theme.TEXT,
+                            padx=8, pady=6)
+        orig_view.pack(fill="both", expand=True, padx=14, pady=(2, 6))
+        if original:
+            orig_view.insert("1.0", original)
+        orig_view.config(state="disabled")
+        tk.Label(win, text=_t("ed.preview_label"),
+                 font=(FONT_UI, 9), bg=theme.BG, fg=theme.MUTED
+                 ).pack(anchor="w", padx=14)
+        prev = tk.Text(win, height=8, font=(FONT_UI, 10), wrap="word",
+                       relief="flat", bg="white", fg=theme.TEXT, padx=8, pady=6)
+        prev.pack(fill="both", expand=True, padx=14, pady=(2, 6))
+        prev.config(state="disabled")
+        bar = tk.Frame(win, bg=theme.BG); bar.pack(pady=10)
+
+        status = tk.Label(win, text="", font=(FONT_UI, 9),
+                          bg=theme.BG, fg=theme.MUTED, anchor="w")
+        status.pack(fill="x", padx=14)
+
+        def _ai_run():
+            text = instr.get("1.0", "end-1c").strip()
+            if not text:
+                status.config(text=_t("ed.empty_instr"), fg="#dc2626")
+                return
+            status.config(text=_t("ed.generating"), fg=theme.MUTED)
+            run_btn.config(state="disabled"); ok_btn.config(state="disabled")
+
+            def work():
+                try:
+                    new = fallback_task(text)
+                except Exception as e:    # noqa: BLE001
+                    self.root.after(0, lambda: (
+                        status.config(text=f"❌ {type(e).__name__}: {e}",
+                                       fg="#dc2626"),
+                        run_btn.config(state="normal")))
+                    return
+                self.root.after(0, lambda: _show_preview(new))
+
+            threading.Thread(target=work, daemon=True).start()
+
+        def _show_preview(new_text):
+            prev.config(state="normal")
+            prev.delete("1.0", "end"); prev.insert("1.0", new_text)
+            prev.config(state="disabled")
+            status.config(text=_t("ed.preview_ready"), fg=theme.SUCCESS)
+            ok_btn.config(state="normal")
+
+        def _apply():
+            new_text = prev.get("1.0", "end-1c").strip()
+            if not new_text:
+                return
+            try:
+                apply(new_text)
+            except Exception as e:    # noqa: BLE001
+                self._append(f"❌ {type(e).__name__}: {e}\n", "denied")
+                return
+            win.destroy()
+            self._set_status(_t("ed.applied"))
+
+        def _cancel():
+            win.destroy()
+
+        run_btn = _flat_button(bar, text=_t("ed.run"), width=12,
+                               font=(FONT_UI, 10), command=_ai_run)
+        run_btn.pack(side="left", padx=4)
+        ok_btn = _flat_button(bar, text=_t("ed.apply"), width=12,
+                              font=(FONT_UI, 10), command=_apply, state="disabled")
+        ok_btn.pack(side="left", padx=4)
+        _flat_button(bar, text=_t("btn.cancel"), width=12,
+                     font=(FONT_UI, 10), command=_cancel).pack(side="left", padx=4)
+
+    def _apply_selection(self, text_widget, first, last, new_text, path):
+        """替换选区为新文本。编辑器 undo=True 可一键撤销。"""
+        # 删除原选区并插入新文本（保留首尾换行结构）
+        try:
+            text_widget.delete(first, last)
+        except Exception:            # noqa: BLE001
+            return
+        text_widget.insert(first, new_text)
+        # 选中新插入内容便于继续查看
+        try:
+            new_end = text_widget.index(f"{first}+{len(new_text)}c")
+            text_widget.tag_remove("sel", "1.0", "end")
+            text_widget.tag_add("sel", first, new_end)
+        except Exception:            # noqa: BLE001
+            pass
+
+    def _insert_at(self, text_widget, pos, new_text, path):
+        """在光标处插入 AI 生成文字。"""
+        text_widget.insert(pos, new_text)
+
+    def _current_book_state(self):
+        p = getattr(self, "_novel_pipe", None)
+        if p is not None:
+            return p.state
+        p, _ = self._novel_pick("")
+        return p.state if p else None
+
+    def _ai_edit_task(self, state, instr, original):
+        return novel_chain.ai_edit(state, instr,
+                                  f"<<BEGIN>>\n{original}\n<<END>>")
+
+    def _ai_insert_task(self, state, instr, around_line):
+        return novel_chain.ai_edit(
+            state, instr,
+            f"在第 {around_line} 行附近插入一段文字。下面是上下文片段（可为空）："
+            + "（无）",
+            system="你是网文作者。按作者要求写一段 1-3 段可无缝插入的文字，"
+                   "与所给上下文衔接。只输出要插入的正文，不要说明。")
 
     def _apply_file_filter(self, query: str):
         """按文件名过滤右侧文件树：命中的文件 + 其父目录显示，其余隐藏。"""
@@ -2519,6 +2748,24 @@ class App:
             return
         self._fs_refresh_last = now
         self.root.after(0, self._refresh_file_panel)
+
+    def _fs_auto_refresh_tick(self):
+        """文件树自动感知：定时比对工作区结构签名，变化即刷新。
+
+        兜住一切「不经 write_file 落盘」的来源（流水线直写、外部程序、
+        短剧成片等）——新增/删除 5 秒内出现在文件树。重建保留展开状态。
+        """
+        import os as _os
+        try:
+            ws = tools.get_workspace()
+            if ws and _os.path.isdir(ws):
+                sig = dircache.signature(ws)
+                if sig != getattr(self, "_fs_sig", None):
+                    self._fs_sig = sig
+                    self._refresh_file_panel()
+        except Exception:              # noqa: BLE001  自动刷新永不打断业务
+            pass
+        self.root.after(5000, self._fs_auto_refresh_tick)
 
     def _populate_file_dir(self, iid, path):
         try:
@@ -2670,6 +2917,26 @@ class App:
             self._file_select_view(self._file_tab_by_view[path])
             return
 
+        # 图片：渲染成图而不是二进制源码
+        if _os.path.splitext(path)[1].lower() in (
+                ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+            view_id = path
+            frame = tk.Frame(self.file_content)
+            self._file_views[view_id] = frame
+            self._file_tab_by_view[view_id] = path
+            self._open_image_view(path, view_id, frame)
+            return
+
+        # 媒体/文档/压缩包等二进制：交给系统默认程序（mp4 播放、PPT 打开…），
+        # 不在编辑器里显示乱码源码；文字类文件继续走编辑器
+        if _os.path.splitext(path)[1].lower() in _SYSTEM_OPEN_EXT:
+            try:
+                _os.startfile(path)
+            except Exception as e:           # noqa: BLE001
+                messagebox.showerror(_t("ui.error", e=e), path,
+                                     parent=self.file_content)
+            return
+
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
@@ -2719,11 +2986,21 @@ class App:
 
         if not hasattr(self, "_editor_txt_map"):
             self._editor_txt_map = {}
-        txt = scrolledtext.ScrolledText(frame, wrap="none",
+        txt = scrolledtext.ScrolledText(frame, wrap="word",
                                         font=(FONT_MONO, self._font_editor))
         self._editor_txt_map[path] = txt
         txt.insert("1.0", content)
         txt.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        # 自动换行开关：默认按宽度折行（中文书稿友好）；写代码可一键关闭
+        def _toggle_wrap():
+            on = str(txt.cget("wrap")) != "word"
+            txt.config(wrap=("word" if on else "none"))
+            self._set_status(_t("ed.wrap_on" if on else "ed.wrap_off"))
+        wrap_btn = _flat_button(bar, text=_t("btn.wrap_icon"),
+                                command=_toggle_wrap, width=2,
+                                font=(FONT_MONO, 10))
+        wrap_btn.pack(side="left", before=_save_btn)
+        self._bind_hint(wrap_btn, "btn.wrap")
         _apply_state()
         txt.bind("<Key>", lambda e: state.__setitem__("dirty", True))
         txt.bind("<Control-s>", _save)
@@ -2754,11 +3031,51 @@ class App:
                     1200, lambda: self._lsp_diag_query(txt, frame))
         txt.bind("<KeyRelease>", _on_key_rel)
         txt.bind("<Escape>", lambda e: self._editor_hide_complete())
+        # Ctrl+L：在光标处弹 AI 插入框（不破坏输入框的 Enter/Ctrl+Enter 绑定）
+        txt.bind("<Control-l>",
+                 lambda e, p=path, w=txt: self._ai_insert_at_cursor(p, w))
         # 右键：选中代码区 → 加入聊天（附件带文件路径 + 行号范围，供 AI 分析）
         txt.bind("<Button-3>",
                  lambda e, p=path, w=txt: self._code_context_menu(e, p, w))
 
         # 加蓝色标签（文件名 + ✕）
+        self._file_add_tab(view_id, _os.path.basename(path), closable=True)
+        self._file_select_view(view_id)
+
+    def _open_image_view(self, path, view_id, frame):
+        """图片预览视图：PIL 优先（等比缩放），无 PIL 时 PNG/GIF 用 tk 原生。"""
+        import os as _os
+        bar = tk.Frame(frame)
+        bar.pack(fill="x", padx=6, pady=5)
+        _open_btn = _flat_button(bar, text="📂", width=2,
+                                 command=lambda: _os.startfile(path),
+                                 font=(FONT_MONO, 10))
+        _open_btn.pack(side="left")
+        self._bind_hint(_open_btn, "img.open_ext")
+        _close_btn = _flat_button(bar, text=_t("btn.close_icon"),
+                                  command=lambda: self._file_close_view(view_id),
+                                  width=2, font=(FONT_MONO, 10))
+        _close_btn.config(fg="#dc2626")
+        _close_btn.pack(side="left", padx=(4, 0))
+        self._bind_hint(_close_btn, "btn.close")
+
+        holder = tk.Frame(frame, bg="#f3f4f6")
+        holder.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        try:
+            try:
+                from PIL import Image, ImageTk      # 优先 PIL：全格式+等比缩放
+                img = Image.open(path)
+                img.thumbnail((1100, 720))
+                photo = ImageTk.PhotoImage(img)
+            except ImportError:
+                photo = tk.PhotoImage(file=path)    # 退化：仅 PNG/GIF
+        except Exception as e:                      # noqa: BLE001
+            tk.Label(holder, text=f"{type(e).__name__}: {e}",
+                     font=(FONT_UI, 10), fg="#dc2626").pack(pady=20)
+        else:
+            lbl = tk.Label(holder, image=photo, bg="#f3f4f6")
+            lbl.pack(fill="both", expand=True)
+            frame._img_ref = photo                 # 防 GC 回收
         self._file_add_tab(view_id, _os.path.basename(path), closable=True)
         self._file_select_view(view_id)
 
@@ -4336,10 +4653,12 @@ class App:
     def _run_command(self, text):
         """本地执行以 / 开头的命令；返回 True 表示已处理（不发给模型）。"""
         import re as _re
-        text = text.strip()
+        text = _normalize_zero_width(text.strip())
         if not text.startswith("/"):
             return False
-        m = _re.match(r"^(/\S+)\s*(.*)$", text)
+        # DOTALL：多行粘贴（如 /novel start + 多行设定）时参数须跨行捕获，
+        # 否则 $ 不匹配字符串中部换行 → 整段文本被判成未知命令。
+        m = _re.match(r"^(/\S+)\s*(.*)$", text, _re.DOTALL)
         cmd = (m.group(1) if m else text).lower()
         arg = (m.group(2).strip() if m else "")
         echo = text if len(text) <= 80 else text[:77] + "..."
@@ -4632,19 +4951,32 @@ class App:
         stage <阶段> <意见> | ledger | stat | show N | stop | resume [pid] | status |
         drama 起-止 | rewrite N [反馈] | polish|expand|condense N [要求] | extend N |
         cover | publish 格式 | deconstruct <txt>。
-        各命令可用 [pid] 指定操作哪本书（省略=当前书）；默认逐阶段暂停供调定。"""
+        各命令可用 [pid] 指定操作哪本书（省略=当前书）；默认逐阶段暂停供调定。
+        drama 子命令（video / assets / reset）运行前首次自动弹出风格确认；
+        选完或用 Default 后此书不再弹出。"""
         import novel_chain
         import pipeline as _pl
         sub = (arg or "").split(None, 1)
         head = sub[0] if sub else "status"
         rest = sub[1] if len(sub) > 1 else ""
         # _novel_pipe 是内存态，重启后丢失；需要它的命令在此自动载入最近一本书。
-        if head not in ("start", "status", "deconstruct", "use", "resume") \
+        if head not in ("start", "status", "help", "deconstruct", "use", "resume") \
                 and not getattr(self, "_novel_pipe", None):
             p, _err = self._novel_pick("")
             if p is None:
                 self._set_status(_t("novel.none"))
                 return
+        # 首次跑 drama 类生成/管理命令时弹一次风格确认；选完记 state，
+        # 后续 drama 命令不再弹。help/show/stop/cover 等不影响此状态
+        if head == "drama" and rest.strip().split():
+            sub_head = rest.strip().split()[0].lower()
+            if sub_head in ("video", "assets", "reset"):
+                import ui_panel_style_pick as _spick
+                if not _spick.ensure_picked(self, self.root):
+                    return                       # 用户关窗取消
+        if head == "help":
+            self._append(_t("novel.help") + "\n", "meta")
+            return
         if head == "use":
             p, err = self._novel_pick(rest)
             if err:
@@ -4726,6 +5058,48 @@ class App:
         elif head == "drama":
             if rest.strip().startswith("new"):
                 self._novel_drama_new(rest.strip()[3:].strip())
+                return
+            if rest.strip().startswith("video"):
+                self._novel_drama_video(rest.strip()[5:].strip())
+                return
+            if rest.strip().startswith("assets"):
+                self._novel_drama_assets(rest.strip()[6:].strip())
+                return
+            if rest.strip() == "style":
+                import ui_panel_style
+                ui_panel_style.show(self)
+                return
+            if rest.strip() == "stop":
+                ev = getattr(self, "_drama_stop_event", None)
+                if getattr(self, "_novel_busy", False) and ev is not None:
+                    ev.set()
+                    self._set_status(_t("novel.drama_stop_req"))
+                else:
+                    self._set_status(_t("novel.drama_stop_idle"))
+                return
+            if rest.strip() == "reset":
+                from tkinter import messagebox
+                p0 = getattr(self, "_novel_pipe", None)
+                if p0 is None:
+                    self._set_status(_t("novel.none"))
+                    return
+                if getattr(self, "_novel_busy", False):
+                    self._set_status(_t("novel.busy"))
+                    return
+                if not messagebox.askyesno(
+                        _t("novel.drama_reset_title"),
+                        _t("novel.drama_reset_confirm"), parent=self.root):
+                    return
+                import dramavideo
+                n = dramavideo.reset(p0.state)
+                self._append("♻️ " + _t("novel.drama_reset_done", n=n)
+                             + "\n", "meta")
+                self._schedule_fs_refresh()
+                return
+            if not rest.strip():
+                # /novel drama：打开短剧工作台（三步：大纲/资产/分集视频）
+                import ui_panel_drama
+                ui_panel_drama.show(self)
                 return
             p = getattr(self, "_novel_pipe", None)
             m = re.match(r"^(\d+)\s*-\s*(\d+)$", rest.strip())
@@ -5343,6 +5717,97 @@ class App:
                 self.root.after(0, lambda: setattr(self, "_novel_busy", False))
         threading.Thread(target=comic_work, daemon=True).start()
 
+    def _novel_drama_assets(self, arg: str):
+        """/novel drama assets [N | N-M]：只生成资产（全书 + 可选章节专属），先期调整。"""
+        import dramavideo
+        p = getattr(self, "_novel_pipe", None)
+        if not (p and p.state.get("chapters")):
+            self._set_status(_t("novel.no_chapters"))
+            return
+        if getattr(self, "_novel_busy", False):
+            self._set_status(_t("novel.busy"))
+            return
+        a, b = 0, 0
+        m = re.match(r"^(\d+)(?:\s*-\s*(\d+))?", arg.strip())
+        if m:
+            a = int(m.group(1)); b = int(m.group(2) or m.group(1))
+        self._novel_busy = True
+        stop = self._drama_stop_event = threading.Event()
+        self._set_status(_t("novel.drama_running"))
+        self.badge_busy(_t("novel.badge_generating"))
+
+        def work():
+            try:
+                res = dramavideo.run_assets(
+                    p.state, a, b, stop=stop,
+                    on_event=lambda e: self.root.after(
+                        0, lambda: self._novel_event(e)))
+                msg = _t("novel.drama_assets_done",
+                         n=res["cast"],
+                         m=sum(res["chapters"].values()),
+                         cs=", ".join(f"{k}:{v}" for k, v in res["chapters"].items())
+                         or "—")
+                self.root.after(0, lambda: self._append(
+                    "✅ " + msg + "\n", "meta"))
+                self.root.after(0, lambda: self._schedule_fs_refresh())
+            except novel_chain.StageStopError as e:
+                self.root.after(0, lambda: self._append(
+                    "⏹ " + str(e) + "\n", "meta"))
+            except Exception as e:          # noqa: BLE001
+                self.root.after(0, lambda: self._append(
+                    f"❌ {type(e).__name__}: {e}\n", "denied"))
+            finally:
+                self.root.after(0, lambda: setattr(
+                    self, "_novel_busy", False))
+                self.root.after(0, lambda: (self.badge_done(),
+                                            self._set_status(_t("top.ready"))))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _novel_drama_video(self, arg: str):
+        """/novel drama video N | N-M [redo]：形象资产→分镜→关键帧→镜头视频→整集合成。
+
+        追加 redo 参数：删除该章关键帧/片段后全部重新生成（形象与分镜保留）。
+        """
+        import dramavideo
+        p = getattr(self, "_novel_pipe", None)
+        redo = bool(re.search(r"\bredo|重做|强制重生成\b", arg, re.I))
+        m = re.match(r"^(\d+)(?:\s*-\s*(\d+))?\b", arg.strip())
+        if not (p and p.state.get("chapters")) or not m:
+            self._set_status(_t("novel.no_chapters"))
+            self._append("⚠ " + _t("novel.no_chapters")
+                         + "；用法：/novel drama video 1 或 1-3（追加 redo 全部重做）\n",
+                         "denied")
+            return
+        if getattr(self, "_novel_busy", False) or self._running:
+            self._set_status(_t("novel.busy"))
+            return
+        a, b = int(m.group(1)), int(m.group(2) or m.group(1))
+        self._novel_busy = True
+        stop = self._drama_stop_event = threading.Event()
+        self._set_status(_t("novel.drama_running"))
+        self.badge_busy(_t("novel.badge_generating"))
+
+        def work():
+            try:
+                outs = dramavideo.run(
+                    p.state, a, b, redo=redo, stop=stop,
+                    on_event=lambda e: self.root.after(
+                        0, lambda: self._novel_event(e)))
+            except novel_chain.StageStopError as e:
+                self.root.after(0, lambda: self._append(
+                    "⏹ " + str(e) + "\n", "meta"))
+            except Exception as e:          # noqa: BLE001
+                self.root.after(0, lambda: self._append(
+                    f"❌ {type(e).__name__}: {e}\n", "denied"))
+            else:
+                self.root.after(0, lambda: self._schedule_fs_refresh())
+            finally:
+                self.root.after(0, lambda: setattr(
+                    self, "_novel_busy", False))
+                self.root.after(0, lambda: (self.badge_done(),
+                                            self._set_status(_t("top.ready"))))
+        threading.Thread(target=work, daemon=True).start()
+
     def _novel_drama_new(self, rest: str):
         """原创短剧：/novel drama new <灵感> [集数]（设定+分集梗概+第1集剧本）。"""
         import novel_chain
@@ -5446,6 +5911,21 @@ class App:
         elif t == "pipeline_failed":
             self._append("❌ " + _t("novel.failed_msg",
                                     e=e.get("detail", "")) + "\n", "denied")
+        elif t == "drama_media":
+            kind = e.get("kind")
+            if kind == "done":
+                self._append("🎬 " + _t("novel.drama_video_done",
+                                        p=e.get("path", "")) + "\n", "meta")
+            elif kind == "debt":
+                self._append("⚠ " + (e.get("label") or "") + "\n", "denied")
+            elif kind == "redo":
+                self._append("♻️ " + (e.get("label") or "") + "\n", "meta")
+            else:
+                self._append("🎬 " + (e.get("label") or e.get("kind", ""))
+                             + " 生成中…\n", "toolresult")
+            # 流水线直接写磁盘（不经 write_file），每个产物落盘都刷新文件树，
+            # 否则生成的形象图/关键帧/片段在目录里看不到
+            self._schedule_fs_refresh()
     def _expand_at_refs(self, text: str) -> str:
         """发送前把 @相对路径 展开为绝对路径（仅存在的文件才替换），
         交给 attach.extract_file_refs 自动转附件；目录/未知引用原样保留。"""
@@ -5631,7 +6111,7 @@ class App:
             # 未输入文字、只发附件：清掉占位符
             self.input.delete("1.0", "end")
             self._placeholder_active = False
-        text = self.input.get("1.0", "end").strip()
+        text = _normalize_zero_width(self.input.get("1.0", "end").strip())
         if text.startswith("/") and self._run_command(text):
             self.input.delete("1.0", "end")   # 本地执行命令，清空输入
             self._pending_attachments = []

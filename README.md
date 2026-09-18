@@ -14,7 +14,7 @@ Everything runs on your machine: no account, no bundled cloud service. Your manu
 
 ## Current status
 
-**v0.1 — kernel migration.** The full creation kernel below works today: agent chat that writes real files, multi-root knowledge base, attachments, sessions, voice input, model management. The writing-specific panels from the roadmap (chapter tree, character cards, beat templates) are not built yet — [Roadmap](#roadmap).
+**v0.1 — kernel migration + drama-video production.** The full creation kernel below works today: agent chat that writes real files, multi-root knowledge base, attachments, sessions, voice input, model management. The **drama-video chain runs end-to-end**: finished chapters → storyboard → character assets → keyframes → clips → dubbed episode MP4s (needs an image/video service + ffmpeg; see [docs/novel-setup.md](docs/novel-setup.md)). The writing-specific panels from the roadmap (chapter tree, character cards, beat templates) are not built yet — [Roadmap](#roadmap).
 
 ## Why a writing studio on an agent kernel
 
@@ -32,6 +32,10 @@ Most AI writing tools confine you to a chat box and a copy button. Here the agen
 - **Multi-root knowledge base (RAG)** — index 设定/素材/往期作品 directories into SQLite; TF-IDF retrieval with optional embedding boost; `kb_search` tool + optional auto-inject into context
 - **Attachments** — multi-select files with a message; txt/md/csv inlined, docx/pdf text-extracted, zip/tar.gz extracted with a file manifest; images downscaled to ≤1568px and sent to vision models (`"vision": true`)
 - **Inline media** — images/GIFs displayed, audio player, video thumbnails in chat; text selectable, Ctrl+C / right-click copy
+- **Drama video production (短剧成片)** — finished chapters → episode videos: storyboard → character image assets → shot keyframes (multi-image composition, appearance locked by character reference) → image-to-video → ffmpeg concat. Three-stage consistency keeps faces steady across shots; everything lands under the book's directory and re-runs skip existing files, so the chain resumes anywhere
+- **Dialogue dubbing (TTS)** — dialogue lines are spoken with edge-tts neural voices (optional pip) or the Windows SAPI offline fallback, then muxed onto clips with ffmpeg; failure degrades to the model's original audio and never blocks the chain
+- **Style library** — one visual style drives every generated asset; per-book default plus saved presets (persisted in `models.json`), picked once via a first-run dialog
+- **Drama workbench** — three-step panel (`/novel drama`): script outline → asset library → episode videos; edit scripts, appearance anchors and storyboards, regenerate any single shot, then concat the episode
 - **Auto link fetching** — image URLs in a message are downloaded for vision; web pages are fetched and summarized for the model (background thread)
 - **Web search** — `web_search` over DuckDuckGo, zero deps, no API key
 - **Smart dispatch** — `call_model` tool delegates a heavy subtask (a brutal plot surgery, image understanding) to a stronger configured model; targets (simple / high-end / vision) managed in a panel
@@ -58,6 +62,7 @@ mkdir 我的短剧 && python main.py     # then pick 我的短剧 as the workspa
 2. *“读分集梗概，把第 1 集扩写成 1200 字短剧剧本，存到 剧本/EP01.md，开场 30 秒内放钩子”*
 3. Next day, open the session again (auto-saved), or switch to another work's directory — sessions are grouped per project.
 4. Point the KB at your 设定集/ folder so character settings are retrieved automatically while writing.
+5. When the chapters are done, run `/novel drama video 1-3` — storyboard, character assets, keyframes, image-to-video clips and dubbed episode MP4s appear under the book's `短剧成片/` directory (needs an image/video service + ffmpeg).
 
 ## Tools
 
@@ -74,6 +79,9 @@ mkdir 我的短剧 && python main.py     # then pick 我的短剧 as the workspa
 | `call_model` | Delegate a subtask to another configured model | read |
 | `task_plan` | Create/update the task checklist shown in the plan panel | read |
 | `kb_search` | Retrieve fragments from the multi-root knowledge base | read |
+| `image_gen` | Text-to-image via the configured image service → `media/images/` | read |
+| `video_gen` | Text/image-to-video (async task, ~1–3 min) → MP4 in `media/videos/` | read |
+| `video_status` | Poll a running video-generation task | read |
 
 (`lsp_diagnostics` also ships as a kernel tool; it only matters for code-like projects.)
 
@@ -89,6 +97,8 @@ main.py → ui.launch() → App (Tkinter mainloop; one worker thread per message
         ├─ cache.py         LLM/tool cache (SQLite WAL / memory)
         ├─ sessions.py      session DB (SQLite, per-directory grouping)
         ├─ attach.py        docx/pdf/zip attachment analysis
+        ├─ dramavideo.py    drama-video chain: storyboard → assets → keyframes → clips → episode (ffmpeg)
+        ├─ imggen.py · videogen.py · tts.py   image / video / TTS clients (agent tools + drama chain)
         ├─ voice.py         PortAudio capture + faster-whisper
         └─ weblinks.py      auto-fetch links from messages
 ```
@@ -133,6 +143,8 @@ D:\miniconda3\Scripts\conda.exe create -n py312 python=3.12 -y
 
 **Models** — first run seeds `models.json` with a local Qwen endpoint as default plus a DeepSeek placeholder. If you don't run a local backend, open model management (模型 menu → add provider) and enter any OpenAI-compatible endpoint with your own key: DeepSeek, Kimi, GLM, OpenAI, or a local llama.cpp/vLLM server. Mark vision models with `"vision": true` to use image attachments.
 
+**Media generation services** — drama-video production and the `image_gen` / `video_gen` tools need external services: an OpenAI-compatible image API (`LAS_IMAGE_*` env or a provider with `image_model` filled in model management) and an Agnes-compatible video API (`LAS_VIDEO_BASE_URL` / `LAS_VIDEO_MODEL` / `LAS_VIDEO_API_KEY`, or a provider with `video_model`). [ffmpeg](https://www.gyan.dev/ffmpeg/builds/) handles dubbing mux and episode concat — install notes in [docs/novel-setup.md](docs/novel-setup.md); optional `pip install edge-tts` upgrades dubbing quality. Without these, the writing chain is unaffected — drama-video generation reports exactly what's missing.
+
 **Config & data directory** — Linux/macOS: `~/.config/local-ai-studio/`; Windows: `%APPDATA%\local-ai-studio\` (shared kernel name; legacy `wellfuture-coder` / `qwen-coder` dirs auto-migrate). Holds `models.json`, `cache.json`, `state.json`, `sessions/`, `index/`, `media/`, `extract/`.
 
 ## Packaging
@@ -168,7 +180,7 @@ From [`PLAN-五产品矩阵.md`](PLAN-五产品矩阵.md) (product 3; market ana
 ```bash
 pip install -r requirements-dev.txt
 python -m py_compile *.py            # syntax gate (same as CI)
-python -m pytest tests/ -q           # 350+ unit tests; LLM transport mocked, HOME/APPDATA isolated
+python -m pytest tests/ -q           # 540+ unit tests; LLM transport mocked, HOME/APPDATA isolated
 ```
 
 Core modules import stdlib only; optional deps (numpy, faster-whisper, psutil, Pillow, tkinterdnd2) degrade gracefully. UI dialogs live in `ui_panel_*.py`. Conventions in [`AGENTS.md`](AGENTS.md).

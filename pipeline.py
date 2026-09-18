@@ -238,6 +238,13 @@ class Pipeline:
             p.status.setdefault(s.name, "pending")
         if p.pipeline_status == "running":   # 进程中断时正在跑 → 回退待恢复
             p.pipeline_status = "paused"
+        # 旧书没存 drama_style：补齐默认，让后续资产生成/工作台无空值
+        if "drama_style" not in p.state or not p.state["drama_style"]:
+            try:
+                import dramavideo as _dv
+                p.state["drama_style"] = _dv.resolve_style(p.state)
+            except Exception:          # noqa: BLE001
+                pass
         return p
 
 

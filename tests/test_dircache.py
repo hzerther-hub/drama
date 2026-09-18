@@ -14,6 +14,23 @@ def test_list_files_walks_and_marks_dirs(tmp_path):
     assert "README.md" in files
 
 
+def test_signature_changes_on_add_and_delete(tmp_path):
+    """文件树自动刷新依据：新增/删除/改名都要改变签名。"""
+    s0 = dircache.signature(str(tmp_path))
+    p = tmp_path / "新图.png"
+    p.write_bytes(b"PNG")
+    s1 = dircache.signature(str(tmp_path))
+    assert s1 != s0 and "新图.png" in s1
+    p.unlink()
+    assert dircache.signature(str(tmp_path)) == s0
+    # 纯内容修改（同名同结构）不改签名——树只看结构
+    q = tmp_path / "note.md"
+    q.write_text("v1", encoding="utf-8")
+    s2 = dircache.signature(str(tmp_path))
+    q.write_text("v2 完全不同内容", encoding="utf-8")
+    assert dircache.signature(str(tmp_path)) == s2
+
+
 def test_ttl_cache_hides_changes_until_invalidate(tmp_path):
     (tmp_path / "a.txt").write_text("x", encoding="utf-8")
     files1 = dircache.list_files(str(tmp_path))
