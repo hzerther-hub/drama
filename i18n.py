@@ -1091,7 +1091,7 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "novel.drama_range": {"en": "Chapter range", "zh": "章节范围"},
     "novel.drama_go": {"en": "Adapt", "zh": "改编"},
     "novel.drama_ch": {"en": "🎬 Ch.{n} adapted", "zh": "🎬 第 {n} 章剧本完成"},
-    "novel.drama_done": {"en": "✅ Drama script: {file}", "zh": "✅ 短剧剧本：{file}"},
+    "novel.drama_done": {"en": "✅ Drama script & storyboard: {file} (videos: /novel drama video)", "zh": "✅ 短剧剧本+分镜表：{file}（出片用 /novel drama video）"},
     "cmd.undo":     {"en": "Undo last file overwrite (checkpoint)", "zh": "回滚最近一次文件覆盖（检查点）"},
     "cmd.init":     {"en": "Analyze workspace & create AGENTS.md", "zh": "分析项目并生成 AGENTS.md"},
     "cmd.brainstorm": {"en": "Brainstorm ideas for a topic (/brainstorm 主题)",

@@ -5287,7 +5287,7 @@ class App:
                         "❌ " + str(e) + "\n", "denied")
                 else:
                     self._novel_append(
-                        "✅ " + _t("novel.drama_done", file=out) + "\n", "meta")
+                        _t("novel.drama_done", file=out) + "\n", "meta")
                 finally:
                     self._novel_task_end()
             threading.Thread(target=drama_work, daemon=True).start()
@@ -5351,7 +5351,7 @@ class App:
                 try:
                     out = publisher.cover(p.state)
                     self._novel_append(
-                        "✅ " + _t("novel.cover_done", file=out) + "\n", "meta")
+                        _t("novel.cover_done", file=out) + "\n", "meta")
                 except Exception as e:          # noqa: BLE001
                     self._novel_append(
                         "❌ " + str(e) + "\n", "denied")
@@ -5377,17 +5377,17 @@ class App:
                     if fmt == "wattpad":
                         msg = publisher.publish_wattpad(p.state, a, b)
                         self._novel_append(
-                            "✅ " + _t("novel.wattpad_done", msg=msg)
+                            _t("novel.wattpad_done", msg=msg)
                             + "\n", "meta")
                     elif fmt == "webhook":
                         msg = publisher.publish_webhook(p.state, a, b)
                         self._novel_append(
-                            "✅ " + _t("novel.webhook_done", msg=msg)
+                            _t("novel.webhook_done", msg=msg)
                             + "\n", "meta")
                     elif fmt in ("txt", "md", "epub", "html"):
                         out = getattr(publisher, "export_" + fmt)(p.state)
                         self._novel_append(
-                            "✅ " + _t("novel.export_done", file=out)
+                            _t("novel.export_done", file=out)
                             + "\n", "meta")
                     else:
                         self._novel_append(
@@ -5414,7 +5414,7 @@ class App:
                         "❌ " + str(e) + "\n", "denied")
                 else:
                     self._novel_append(
-                        "✅ " + _t("novel.deconstruct_done", file=out) + "\n",
+                        _t("novel.deconstruct_done", file=out) + "\n",
                         "meta")
                 finally:
                     self._novel_task_end()
@@ -6055,7 +6055,7 @@ class App:
         elif t == "pipeline_done":
             p = getattr(self, "_novel_pipe", None)
             file = p.state.get("file", "") if p else ""
-            self._append("✅ " + _t("novel.done_msg",
+            self._append(_t("novel.done_msg",
                                     file=file) + "\n", "meta")
             self._schedule_fs_refresh()
         elif t == "pipeline_paused":
