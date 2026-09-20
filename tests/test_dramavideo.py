@@ -130,6 +130,41 @@ def test_build_shots_clamps_duration_and_caches(book, monkeypatch):
     assert shots2 == shots and not calls
 
 
+def test_three_view_uses_portrait_ref_and_caches(book, monkeypatch):
+    """三视图：以定妆照为参考图锁脸，16:9 白底版面；已存在即复用。"""
+    state, tmp = book
+    base = tmp / dramavideo._ASSET_DIR / dramavideo._ASSET_GLOBAL
+    base.mkdir(parents=True, exist_ok=True)
+    portrait = base / "王安平.png"
+    portrait.write_bytes(b"P")
+    info = {"type": "角色", "appearance": "程序员", "path": str(portrait)}
+    calls = []
+
+    def fake_gen(prompt, out, size="", ratio="", image_refs=None, want_url=False):
+        calls.append((prompt, ratio, image_refs))
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "wb") as f:
+            f.write(b"T")
+        return out, "u"
+
+    monkeypatch.setattr(dramavideo.imggen, "generate_ex", fake_gen)
+    out = dramavideo.three_view(state, "王安平", info)
+    assert os.path.basename(out) == "王安平-三视图.png"
+    assert calls and calls[0][1] == "16:9"
+    assert str(portrait) in calls[0][2]
+    assert "正面、侧面、背面" in calls[0][0]
+    # 缓存：第二次不再调模型
+    out2 = dramavideo.three_view(state, "王安平", info)
+    assert out2 == out and len(calls) == 1
+    # 无定妆照 → 明确报错
+    import pipeline as _pl
+    try:
+        dramavideo.three_view(state, "路人甲", {"type": "角色"})
+        raise AssertionError("should raise")
+    except _pl.StageStopError:
+        pass
+
+
 def test_build_shots_locks_era_vocab_to_cast_looks(book, monkeypatch):
     """传入 cast 时：era 词表发给 LLM，分镜阶段名对齐资产形象阶段。"""
     state, tmp = book
@@ -137,7 +172,8 @@ def test_build_shots_locks_era_vocab_to_cast_looks(book, monkeypatch):
     seen = {}
 
     def fake_ask(st, sys, user):
-        seen["sys"] = sys
+        if "分镜表" in sys:
+            seen["sys"] = sys
         return json.dumps([{"title": "a", "scene": "s", "era": "仙侠",
                             "characters": ["王安平"],
                             "description": "d", "narration": "n",
@@ -150,7 +186,59 @@ def test_build_shots_locks_era_vocab_to_cast_looks(book, monkeypatch):
     dramavideo.build_shots(state, chapter, cast=cast)
     assert "现代" in seen["sys"] and "仙侠" in seen["sys"]
     assert "必须优先" in seen["sys"]
-    assert "4 字/秒" in seen["sys"]          # 时长按语速给足的提示
+    assert "4.5字每秒" in seen["sys"]        # 台词时长下限硬规则
+
+
+def test_build_shots_two_stage_video_prompt(book, monkeypatch):
+    """两段式（火宝规范）：拆分镜后二次生成 3 秒分段 video_prompt 并缓存；
+    clip() 优先用它，无 video_prompt 的旧分镜回退老模板。"""
+    state, tmp = book
+    chapter = {"idx": 1, "title": "t", "text": "正文" * 400}
+    asks = []
+
+    def fake_ask(st, sys, user):
+        asks.append(sys)
+        if "分镜表" in sys:                # 第一段：拆分镜
+            return json.dumps([{
+                "title": "噩梦惊醒", "scene": "出租屋", "era": "",
+                "characters": ["江玄微"],
+                "description": "【镜头1】近景，江玄微睁眼。"
+                               "【镜头2】特写，手机屏幕亮起。",
+                "camera": "固定", "mood": "紧张",
+                "narration": "深夜来电打破平静。",
+                "dialogue": "喂？", "duration": 9}], ensure_ascii=False)
+        return json.dumps({"1": "0-3秒：全景，出租屋夜景，江玄微躺床上。\n"
+                                "3-6秒：特写，手机亮起，他接听。"
+                                "6-9秒：近景，江玄微说：「喂？」"},
+                          ensure_ascii=False)
+
+    monkeypatch.setattr(dramavideo, "_ask", fake_ask)
+    shots = dramavideo.build_shots(state, chapter)
+    assert len(asks) == 2                    # 拆分镜 + video_prompt 两段
+    assert "节拍" in asks[0] and "500字每分钟" in asks[0]
+    assert "【镜头1】" in shots[0]["description"]
+    assert "0-3秒" in shots[0]["video_prompt"]
+    # 缓存里带 video_prompt
+    cached = json.loads((tmp / dramavideo._SHOT_DIR / "第1章.json")
+                        .read_text(encoding="utf-8"))
+    assert "video_prompt" in cached[0]
+
+    seen = {}
+
+    def fake_gen(prompt, out, image=None, seconds=0, timeout=0):
+        seen["prompt"] = prompt
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "wb") as f:
+            f.write(b"V")
+        return out
+
+    monkeypatch.setattr(dramavideo.videogen, "generate", fake_gen)
+    dramavideo.clip(state, shots[0], "u://f", 1, 1)
+    assert "按时间分段执行" in seen["prompt"] and "0-3秒" in seen["prompt"]
+    # 旧分镜（无 video_prompt）回退老模板
+    old_shot = dict(shots[0]); old_shot.pop("video_prompt")
+    dramavideo.clip(state, old_shot, "u://f", 1, 2)
+    assert "画面：" in seen["prompt"] and "按时间分段执行" not in seen["prompt"]
 
 
 def test_speech_seconds_and_clip_uses_it(book, monkeypatch):

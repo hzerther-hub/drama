@@ -1,15 +1,21 @@
 # -*- coding: utf-8 -*-
-"""视频生成：Agnes 兼容异步任务 API（stdlib urllib）。
+"""视频生成：多供应商异步任务 API（stdlib urllib）。
+
+支持两种端点（按 base_url/model 自动识别）：
+- 火山方舟 Ark（doubao-seedance 系列）：
+    POST {base}/contents/generations/tasks   建任务（content 数组：文本+首帧图）
+    GET  {base}/contents/generations/tasks/{id}  轮询
+    succeeded 后从 content.video_url 下载；参数以 --resolution/--dur 等
+    文本指令写入 prompt 头部，--audio true 启用原生音频（台词口型）。
+- Agnes 兼容（默认）：
+    POST {base}/videos                       建任务（文生视频/图生视频）
+    GET  {root}/agnesapi?video_id=<ID>       轮询（root = base 去掉尾部 /v1；
+                                              旧路径 GET {base}/videos/<ID> 兜底）
+    status=completed 后从 metadata.url 下载 MP4。
 
 服务来源（优先级从高到低）：
 1. 环境变量 LAS_VIDEO_BASE_URL / LAS_VIDEO_MODEL / LAS_VIDEO_API_KEY
-2. 供应商管理里带 "video_model" 字段且已填 API Key 的供应商（Agnes）
-
-流程（Agnes Video 文档口径）：
-  POST {base}/videos                    建任务（文生视频/图生视频）
-  GET  {root}/agnesapi?video_id=<ID>    轮询（root = base 去掉尾部 /v1；
-                                        旧路径 GET {base}/videos/<ID> 兜底）
-  status=completed 后从 metadata.url 下载 MP4。
+2. 供应商管理里带 "video_model" 字段且已填 API Key 的供应商（列表序取先）
 
 失败抛 VidError（内部错误，工具层转为中文错误字符串）。
 """
@@ -159,13 +165,71 @@ def _parse_size(size: str) -> tuple[int, int]:
         return 1152, 768
 
 
+def _is_ark(svc: dict) -> bool:
+    """火山方舟 Ark 端点识别：模型名 doubao-* 或地址含 volces.com。"""
+    return ("volces.com" in str(svc.get("base_url", ""))
+            or str(svc.get("model", "")).startswith("doubao-"))
+
+
+def _ark_flags(seconds: float) -> str:
+    """Seedance 文本指令头：时长钳 4-15s、竖屏 9:16、关水印、开原生音频。"""
+    try:
+        dur = int(round(float(seconds))) if seconds else 5
+    except (TypeError, ValueError):
+        dur = 5
+    dur = max(4, min(15, dur))
+    return (f"--resolution 720p --ratio 9:16 --dur {dur} "
+            "--fps 24 --watermark false --audio true")
+
+
+def _ark_create(prompt: str, image: str, seconds: float, svc: dict) -> str:
+    content = [{"type": "text", "text": _ark_flags(seconds) + "\n" + prompt}]
+    if image:
+        content.append({"type": "image_url", "image_url": {"url": image}})
+    data = _post(f"{svc['base_url']}/contents/generations/tasks",
+                 {"model": svc["model"], "content": content},
+                 svc.get("api_key", ""))
+    vid = str(data.get("id", "") or "").strip()
+    if not vid:
+        raise VidError(f"Ark 未返回任务 ID：{json.dumps(data, ensure_ascii=False)[:300]}")
+    return vid
+
+
+def _ark_query(video_id: str, svc: dict) -> dict:
+    data = _get(f"{svc['base_url']}/contents/generations/tasks/{video_id}",
+                svc.get("api_key", ""))
+    status = str(data.get("status", "") or "").strip().lower()
+    err = ""
+    e = data.get("error")
+    if isinstance(e, dict):
+        err = str(e.get("message") or e.get("code") or "")
+    elif e:
+        err = str(e)
+    url = ""
+    c = data.get("content")
+    if isinstance(c, dict):
+        url = str(c.get("video_url", "") or "").strip()
+    if status == "succeeded" and url:
+        return {"status": "completed", "url": url, "error": ""}
+    if status == "failed":
+        return {"status": "failed", "url": "", "error": err or "服务端未给出原因"}
+    return {"status": status or "unknown", "url": "", "error": err}
+
+
 def create(prompt: str, image: str = "", size: str = "",
            seconds: float = 0, frame_rate: int = _DEFAULT_FPS) -> str:
     """建任务，返回任务 ID；失败抛 VidError。"""
     svc = _service()
     if not (svc.get("base_url") and svc.get("model")):
         raise VidError("未配置视频生成服务（LAS_VIDEO_BASE_URL / LAS_VIDEO_MODEL，"
-                       "或在供应商管理里给 Agnes 填 API Key）")
+                       "或在供应商管理里给视频供应商填 API Key）")
+    if _is_ark(svc):
+        try:
+            return _ark_create(prompt, image, seconds, svc)
+        except VidError:
+            raise
+        except Exception as e:         # noqa: BLE001
+            raise VidError(f"视频任务创建失败：{e}") from e
     w, h = _parse_size(size)
     body = {"model": svc["model"], "prompt": prompt,
             "width": w, "height": h,
@@ -189,6 +253,11 @@ def query(video_id: str) -> dict:
     svc = _service()
     if not svc.get("base_url"):
         raise VidError("未配置视频生成服务")
+    if _is_ark(svc):
+        try:
+            return _ark_query(video_id, svc)
+        except Exception as e:         # noqa: BLE001
+            raise VidError(f"视频任务查询失败：{e}") from e
     q = urllib.parse.urlencode({"video_id": video_id})
     url = f"{_root(svc['base_url'])}/agnesapi?{q}"
     try:

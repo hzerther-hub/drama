@@ -782,6 +782,12 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "file.add_chat_short": {"en": "➕ Chat", "zh": "➕ 对话"},
     "file.open":    {"en": "Open", "zh": "打开"},
     "file.delete":  {"en": "Delete", "zh": "删除"},
+    "file.delete_multi": {"en": "Delete selected ({n})", "zh": "删除选中（{n} 个）"},
+    "file.del_multi": {"en": "Delete these {n} items?\n{names}",
+                       "zh": "删除这 {n} 项？\n{names}"},
+    "file.and_more": {"en": "…and {n} in total", "zh": "…等共 {n} 项"},
+    "file.del_multi_done": {"en": "Deleted {ok}, failed {fail}",
+                            "zh": "已删除 {ok} 项，失败 {fail} 项"},
     "file.deleted": {"en": "Deleted: {p}", "zh": "已删除：{p}"},
     "q.empty":      {"en": "Queued messages (Ctrl+Enter sends all)", "zh": "排队消息（Ctrl+Enter 发送全部）"},
     "q.queue":      {"en": "🕐 Queue", "zh": "🕐 排队"},
@@ -913,6 +919,27 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
                      "zh": "当前书：{pid}（{t}）"},
     "novel.no_book": {"en": "Manuscript not found", "zh": "书稿文件不存在"},
     "novel.no_chapters": {"en": "No finished chapters yet", "zh": "还没有已完成的章节"},
+    "novel.cfg_current": {"en": "Current video engine: {n} ({m})",
+                          "zh": "当前视频引擎：{n}（{m}）"},
+    "novel.cfg_usage": {"en": "Switch: /novel drama config <id> (fuzzy; auto = list order)",
+                        "zh": "切换：/novel drama config <id或名称片段>（模糊匹配；auto 恢复自动）"},
+    "novel.cfg_switched": {"en": "Video engine switched: {n} ({m})",
+                           "zh": "视频引擎已切换：{n}（{m}）"},
+    "novel.cfg_notfound": {"en": "No matching video provider",
+                           "zh": "没有匹配的视频供应商"},
+    "novel.cfg_env": {"en": "env override", "zh": "环境变量"},
+    "novel.cfg_no_video_provider": {"en": "No provider has video_model configured",
+                                    "zh": "还没有供应商配置 video_model"},
+    "novel.cfg_img_current":    {"en": "Current image engine: {n} ({m})",
+                                 "zh": "当前图像引擎：{n}（{m}）"},
+    "novel.cfg_img_switched":   {"en": "Image engine switched: {n} ({m})",
+                                 "zh": "图像引擎已切换：{n}（{m}）"},
+    "novel.cfg_img_notfound":   {"en": "No matching image provider",
+                                 "zh": "没有匹配的图像供应商"},
+    "novel.cfg_no_image_provider": {"en": "No provider has image_model configured",
+                                    "zh": "还没有供应商配置 image_model"},
+    "novel.cfg_img_usage":      {"en": "Switch: /novel drama config image <id> (fuzzy; auto = list order)",
+                                 "zh": "切换：/novel drama config image <id或名称片段>（模糊匹配；auto 恢复自动）"},
     "novel.drama_video_done": {"en": "Episode video ready: {p}",
                                "zh": "本集成片完成：{p}"},
     "novel.help": {
@@ -949,6 +976,7 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
               "/novel drama reset      清空全部短剧产物，从零重做（正文不动）\n"
               "/novel drama style     弹出风格管理面板（预设+自定义+默认）\n"
               "/novel drama assets [N | N-M]  只生成资产（含/不含章节专属），先期调整\n"
+              "/novel drama config [名]  查看/切换视频引擎（agnes/火山/auto）\n"
               "（断点续造：重跑命令自动跳过已有产物，只补缺失的镜头；\n"
               "  想换成 TTS 配音：短剧工作台「分集视频」页勾选 TTS 配音）\n"
               "\n"
@@ -1101,6 +1129,9 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
                               "每章 <words> | /novel set",
                         "zh": "用法：/novel set 风格 <写法要求> ｜ "
                               "/novel set 每章 <字数> ｜ /novel set 查看"},
+    "ds.three_view": {"en": "Three-view sheet", "zh": "三视图"},
+    "ds.need_face": {"en": "{n} has no portrait yet — generate it first",
+                     "zh": "{n} 还没有定妆照，先「描述生成」出图"},
     "ds.adopt":     {"en": "✅ Use this take", "zh": "✅ 采用选中的卡"},
     "ds.take_main": {"en": "Current clip", "zh": "当前成片"},
     "ds.adopt_none": {"en": "Select a take first", "zh": "先在下拉里选一条卡"},
@@ -1307,6 +1338,7 @@ Tip: append @pid to target a specific book, e.g. /novel extend 30 @novel-2026090
     "file.exists":     {"en": "Target name already exists", "zh": "目标名称已存在"},
     "file.renamed":    {"en": "Renamed: {old} → {new}", "zh": "已重命名：{old} → {new}"},
     "file.open_dir":   {"en": "Open in file manager", "zh": "在资源管理器中打开"},
+    "file.refresh":    {"en": "Refresh", "zh": "刷新"},
     "file.dir_added":  {"en": "Directory reference inserted: {rel}/",
                         "zh": "已插入目录引用：{rel}/"},
     "file.preview":   {"en": "Preview", "zh": "预览"},

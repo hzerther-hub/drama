@@ -648,12 +648,14 @@ def _save_models_data(data: dict):
 
 
 def _media_service(env_base: str, env_model: str, env_key: str,
-                   provider_field: str) -> dict:
+                   provider_field: str, prefer_global: str = "") -> dict:
     """图像/视频生成服务解析（公共逻辑）。
 
     环境变量优先（本地 SD/ComfyUI 网关等场景，key 可空）；
     其次扫描供应商配置里带 provider_field（image_model / video_model）
     且已填 API Key 的供应商——面板里填上 key 即激活。
+    prefer_global 非空时读 globals[prefer_global]（供应商 id）命中的优先
+    （/novel drama config 切视频引擎用），其余按列表序。
     返回 {"base_url","model","api_key","provider_id"}；未配置返回 {}。
     """
     url = os.environ.get(env_base, "").strip().rstrip("/")
@@ -663,10 +665,16 @@ def _media_service(env_base: str, env_model: str, env_key: str,
                 "api_key": os.environ.get(env_key, "").strip(),
                 "provider_id": ""}
     try:
-        providers = _load_models_data().get("providers", [])
+        data = _load_models_data()
+        providers = data.get("providers", [])
+        prefer = (str((data.get("globals") or {}).get(prefer_global, "")
+                       or "").strip() if prefer_global else "")
     except Exception:                  # noqa: BLE001  配置损坏时按未配置降级
-        providers = []
-    for p in providers:
+        providers, prefer = [], ""
+    ordered = [p for p in providers if isinstance(p, dict)
+               and str(p.get("id", "")).strip() == prefer]
+    ordered += [p for p in providers if p not in ordered]
+    for p in ordered:
         if not isinstance(p, dict):
             continue
         mdl = str(p.get(provider_field, "") or "").strip()
@@ -679,15 +687,23 @@ def _media_service(env_base: str, env_model: str, env_key: str,
 
 
 def image_service() -> dict:
-    """图像生成服务：LAS_IMAGE_* 优先，其次带 image_model 的供应商。"""
+    """图像生成服务：LAS_IMAGE_* 优先，其次带 image_model 的供应商。
+
+    globals.image_provider 指定的供应商优先（/novel drama config image 切换）。
+    """
     return _media_service("LAS_IMAGE_BASE_URL", "LAS_IMAGE_MODEL",
-                          "LAS_IMAGE_API_KEY", "image_model")
+                          "LAS_IMAGE_API_KEY", "image_model",
+                          prefer_global="image_provider")
 
 
 def video_service() -> dict:
-    """视频生成服务：LAS_VIDEO_* 优先，其次带 video_model 的供应商。"""
+    """视频生成服务：LAS_VIDEO_* 优先，其次带 video_model 的供应商。
+
+    globals.video_provider 指定的供应商优先（/novel drama config 切换）。
+    """
     return _media_service("LAS_VIDEO_BASE_URL", "LAS_VIDEO_MODEL",
-                          "LAS_VIDEO_API_KEY", "video_model")
+                          "LAS_VIDEO_API_KEY", "video_model",
+                          prefer_global="video_provider")
 
 
 def add_custom_model(model_ids, base_url: str, api_key: str,

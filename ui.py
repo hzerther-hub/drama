@@ -1950,6 +1950,7 @@ class App:
         self.file_tree.bind("<<TreeviewSelect>>", self._on_file_select)
         self.file_tree.bind("<Button-1>", self._on_file_click)
         self.file_tree.bind("<Button-3>", self._on_file_right)
+        self.file_tree.bind("<Delete>", self._delete_selected_tree)
         self._bind_file_tree_drag()   # 文件树条目可拖拽加入对话
 
         # 记录启动宽度基准（点开编辑自动扩到半屏的比较用，见 _editor_auto_expand）
@@ -2264,7 +2265,22 @@ class App:
         if not path:
             _post_menu(menu, event.x_root, event.y_root)
             return
+        # 多选（Ctrl/Shift）且右键命中选区 → 批量删除入口（文件+目录混选）
+        sel = self.file_tree.selection()
+        if iid in sel and len(sel) > 1:
+            paths = []
+            for s in sel:
+                v = self.file_tree.item(s, "values")
+                if v and v[0]:
+                    paths.append(str(v[0]))
+            if len(paths) > 1:
+                menu.add_command(
+                    label=_t("file.delete_multi", n=len(paths)),
+                    command=lambda ps=paths: self._delete_selected_files(ps))
+                menu.add_separator()
         if is_dir:
+            menu.add_command(label=_t("file.refresh"),
+                             command=self._refresh_file_panel)
             menu.add_command(label=_t("file.open_dir"),
                              command=lambda p=path: self._open_in_explorer(p))
             menu.add_command(label=_t("file.add_chat"),
@@ -2360,6 +2376,67 @@ class App:
             self._refresh_file_panel()
         except OSError as e:
             messagebox.showerror(_t("msg.save_fail"), str(e), parent=self.root)
+
+    def _delete_selected_files(self, paths):
+        """批量删除文件树选中项（文件+目录混选）；逐项容错并汇报结果。
+
+        工作区根目录本身不可删；确认框列出前几个名字防误删。
+        """
+        import shutil
+        from tkinter import messagebox
+        ws = (tools.get_workspace() or "").rstrip("/\\")
+        items = []
+        for p in paths or []:
+            if not p:
+                continue
+            rp = os.path.abspath(p).rstrip("/\\").lower()
+            if ws and rp == os.path.abspath(ws).lower():
+                continue
+            items.append(p)
+        if not items:
+            return
+        names = "、".join(os.path.basename(p.rstrip("/\\"))
+                          for p in items[:5])
+        if len(items) > 5:
+            names += " " + _t("file.and_more", n=len(items))
+        if not messagebox.askyesno(
+                _t("file.delete"),
+                _t("file.del_multi", n=len(items), names=names),
+                parent=self.root):
+            return
+        ok = fail = 0
+        for p in items:
+            try:
+                if os.path.isdir(p):
+                    shutil.rmtree(p)
+                else:
+                    os.remove(p)
+                ok += 1
+            except OSError:
+                fail += 1
+        self._refresh_file_panel()
+        self._set_status(_t("file.del_multi_done", ok=ok, fail=fail))
+
+    def _delete_selected_tree(self, _e=None):
+        """Delete 键：删文件树当前多选（无多选则删焦点项）。"""
+        sel = self.file_tree.selection()
+        if not sel:
+            return "break"
+        paths = []
+        for s in sel:
+            v = self.file_tree.item(s, "values")
+            if v and v[0]:
+                paths.append(str(v[0]))
+        if len(paths) == 1:
+            v = self.file_tree.item(sel[0], "values")
+            is_dir = len(v) >= 2 and str(v[1]).strip().lower() == "true"
+            if is_dir:
+                self._delete_tree_item(paths[0], True)
+            else:
+                self._delete_file(paths[0])
+            return "break"
+        self._delete_selected_files(paths)
+        return "break"
 
     def _on_file_select(self, _e=None):
         """选中文件（用于右键定位）；无底部标签板了，占位保留。"""
@@ -5201,13 +5278,20 @@ class App:
         cover | publish 格式 | deconstruct <txt>。
         各命令可用 [pid] 指定操作哪本书（省略=当前书）；默认逐阶段暂停供调定。
         drama 子命令（video / assets / reset）运行前首次自动弹出风格确认；
-        选完或用 Default 后此书不再弹出。"""
+        选完或用 Default 后此书不再弹出；
+        drama config [image] [名] = 切换视频/图像生成引擎（全局）。"""
         import novel_chain
         import pipeline as _pl
         sub = (arg or "").split(None, 1)
         head = sub[0] if sub else "status"
         rest = sub[1] if len(sub) > 1 else ""
         # _novel_pipe 是内存态，重启后丢失；需要它的命令在此自动载入最近一本书。
+        # drama config 是全局设置（视频/图像引擎切换），不依赖任何书——提前于闸门分发。
+        _drama_sub = (rest.strip().split()[0].lower()
+                      if head == "drama" and rest.strip().split() else "")
+        if _drama_sub == "config":
+            self._novel_drama_config(rest.strip()[6:].strip())
+            return
         if head not in ("start", "status", "help", "deconstruct", "use", "resume") \
                 and not getattr(self, "_novel_pipe", None):
             p, _err = self._novel_pick("")
@@ -6015,8 +6099,92 @@ class App:
                 self._novel_task_end()
         threading.Thread(target=comic_work, daemon=True).start()
 
+    def _novel_drama_config(self, arg: str):
+        """/novel drama config [image] [名]：查看/切换视频/图像生成引擎（全局，不需书）。
+
+        - /novel drama config            → 视频引擎（向后兼容）
+        - /novel drama config image      → 图像引擎（修图模型）
+
+        无参：列出所有对应供应商与当前生效者；
+        传 id/名称片段（如 agnes / volcengine / 火山 / auto）切换；
+        auto = 清除偏好，回到列表序第一个命中。
+        """
+        import config as _cfg
+        arg = (arg or "").strip()
+        if arg.lower().startswith("image"):
+            name = arg[5:].strip()                  # /novel drama config image [名]
+            kind = "image"
+            prov_field, prov_global = "image_model", "image_provider"
+            i18n_no, i18n_nf = ("novel.cfg_no_image_provider",
+                                "novel.cfg_img_notfound")
+            i18n_cur, i18n_swi = ("novel.cfg_img_current",
+                                  "novel.cfg_img_switched")
+            i18n_usage, svc_fn = ("novel.cfg_img_usage", _cfg.image_service)
+            icon = "🎨"
+        else:
+            name = arg                              # 默认 = video（向后兼容）
+            kind = "video"
+            prov_field, prov_global = "video_model", "video_provider"
+            i18n_no, i18n_nf = ("novel.cfg_no_video_provider",
+                                "novel.cfg_notfound")
+            i18n_cur, i18n_swi = ("novel.cfg_current", "novel.cfg_switched")
+            i18n_usage, svc_fn = ("novel.cfg_usage", _cfg.video_service)
+            icon = "🎬"
+        try:
+            data = _cfg._load_models_data()
+            providers = data.get("providers", [])
+        except Exception as e:              # noqa: BLE001
+            self._append(f"❌ 配置读取失败：{e}\n", "denied")
+            return
+        cands = [p for p in providers if isinstance(p, dict)
+                 and str(p.get(prov_field, "") or "").strip()]
+        if not cands:
+            self._append("⚠ " + _t(i18n_no) + "\n", "denied")
+            return
+        svc = svc_fn()
+        cur = svc.get("provider_id", "") or _t("novel.cfg_env")
+        if not name:
+            lines = [f"· {p.get('id')}（{p.get('name', '')}"
+                     f" · {p.get(prov_field, '')}）"
+                     + (" ✅ 当前" if p.get("id") == cur else "")
+                     for p in cands]
+            self._append(f"{icon} " + _t(i18n_cur, n=cur,
+                                         m=svc.get("model", "")) + "\n"
+                         + "\n".join(lines) + "\n"
+                         + "💡 " + _t(i18n_usage) + "\n", "meta")
+            return
+        if name.lower() in ("auto", "自动"):
+            (data.setdefault("globals", {}) or {}).pop(prov_global, None)
+        else:
+            hit = next((p for p in cands
+                        if name.lower() in (str(p.get("id", "")).lower()
+                                            + str(p.get("name", "")).lower()
+                                            + ("火山volcesark方舟seedance豆包"
+                                               if "volces" in str(p.get("base_url", ""))
+                                               or str(p.get(prov_field, ""))
+                                               .startswith("doubao-") else "")
+                                            + ("agnes"
+                                               if "agnes" in str(p.get("base_url", ""))
+                                               .lower() else ""))), None)
+            if hit is None:
+                self._set_status(_t(i18n_nf))
+                return
+            (data.setdefault("globals", {}) or {})[prov_global] = hit["id"]
+        try:
+            _cfg._save_models_data(data)
+        except Exception as e:              # noqa: BLE001
+            self._append(f"❌ 配置保存失败：{e}\n", "denied")
+            return
+        svc = svc_fn()
+        self._append("✅ " + _t(i18n_swi,
+                                n=svc.get("provider_id", "") or _t("novel.cfg_env"),
+                                m=svc.get("model", "")) + "\n", "meta")
+
     def _novel_drama_assets(self, arg: str):
-        """/novel drama assets [N | N-M]：只生成资产（全书 + 可选章节专属），先期调整。"""
+        """/novel drama assets [N | N-M] [redo]：只生成资产，先期调整。
+
+        redo=已有图的资产也重新生成并覆盖原图（默认跳过已有图省钱）。
+        """
         import dramavideo
         p = getattr(self, "_novel_pipe", None)
         if not (p and p.state.get("chapters")):
@@ -6025,6 +6193,8 @@ class App:
         if self._novel_task_busy():
             self._set_status(_t("novel.busy"))
             return
+        redo = "redo" in arg.lower()
+        arg = re.sub(r"\bredo\b", "", arg, flags=re.I).strip()
         a, b = 0, 0
         m = re.match(r"^(\d+)(?:\s*-\s*(\d+))?", arg.strip())
         if m:
@@ -6037,7 +6207,7 @@ class App:
         def work():
             try:
                 res = dramavideo.run_assets(
-                    p.state, a, b, stop=stop,
+                    p.state, a, b, stop=stop, redo=redo,
                     on_event=lambda e: self.root.after(
                         0, lambda: self._novel_event(e)))
                 msg = _t("novel.drama_assets_done",

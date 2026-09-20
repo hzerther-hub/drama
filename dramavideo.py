@@ -255,6 +255,22 @@ def _safe_name(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|\s]+', "", str(name or ""))[:24] or "角色"
 
 
+def _anchored_appearance(ap: str) -> str:
+    """面孔锚：默认补「中国人面孔（东亚）」，防模型默认出西方面孔。
+
+    通用规则（非针对某本书）：中文网文角色绝大多数为华人；描述已写明
+    人种/面孔特征（无论中外）时不重复添加，尊重原文设定。
+    """
+    t = str(ap or "")
+    if re.search(r"西方|欧美|白人|金发|碧眼|高鼻|深目|外国人|美国|欧洲|俄国"
+                 r"|混合血统|混血", t):
+        return t
+    if re.search(r"中国人|华人|华裔|东亚|东方面孔|国字脸|鹅蛋脸|瓜子脸"
+                 r"|亚洲面孔|面孔|长相", t):
+        return t
+    return (t + "，" if t else "") + "中国人面孔（东亚）"
+
+
 def _json_load(path: str, default):
     try:
         with open(path, encoding="utf-8") as f:
@@ -290,9 +306,15 @@ _ASSET_SECTIONS = ("角色", "场景", "道具")
 
 # 各类资产的基础形象提示词与画幅：角色立绘 / 场景空镜 / 道具特写
 _ASSET_TPL = {
-    "角色": ("{a}。正面半身立绘，纯色背景，人物居中，形象清晰，"
-             "气质与职业身份相符（服饰配件按描述，不要脑补成其它职业）。", "3:4"),
-    "场景": ("{a}。场景空镜，无人物，环境细节与空间关系清晰，光线统一。", "16:9"),
+    # 角色参考指令包角色档案标准：正面站立全身、白底、头身比、从头到脚
+    "角色": ("{a}。角色设定图：正面站立全身像，头到脚完整无裁切，自然直立"
+             "站姿无动作，纯白色背景无杂物；头身比例标准，五官清晰，"
+             "从发型到鞋袜的完整穿搭；气质与职业身份相符（服饰配件按描述，"
+             "不要脑补成其它职业）。", "3:4"),
+    # 场景参考指令包场景设计标准：无人纯场景 + 环境/时间/氛围/视觉特征
+    "场景": ("{a}。无人纯场景空镜，画面中不能出现任何人物；环境类型、"
+             "时间时段光线状态、空间氛围、材质与标志性陈设缺一可辨，"
+             "前中后景层次清晰，光线统一。", "16:9"),
     "道具": ("{a}。道具特写，纯色背景，道具居中，材质细节清晰。", "1:1"),
 }
 
@@ -305,8 +327,9 @@ _SECTION_SYS = {
              "健壮/单薄）——四者都要与该职业一致，禁止套用与原文身份不符的"
              "形象；③若人物跨时代/阶段出现（以原文为准，阶段名自定，如 现代/"
              "古代/校园/仙侠/童年/老年），必须按阶段分别描述服装外貌，"
-             "不能混。输出：每阶段 30-60 字确定性描述（性别年龄感、发型脸型、"
-             "体型、该阶段的职业化服装与标志配件）。"
+             "不能混。输出：每阶段 30-60 字确定性描述（性别年龄感、面孔人种"
+             "与脸型——中文网文角色默认中国人东亚面孔，除非原文明确是"
+             "外国人、发型、体型、该阶段的职业化服装与标志配件）。"
              '只输出 JSON：{"人物名": {"阶段名": "外貌服装描述", ...}, ...}'
              "（单阶段人物也用单键字典，如 {\"现代\": \"…\"}）；"
              "只要人物，不要场景/道具。"),
@@ -335,7 +358,47 @@ def _migrate_flat_cast(cast: dict) -> dict:
     return out
 
 
-def build_cast(state: dict, on_event=None, stop=None) -> dict:
+def find_asset(state: dict, name: str):
+    """按名字找资产：先全书 cast，再各章 assets.json。
+
+    返回 (info, store_path)；找不到返回 None。聊天改图覆盖原图用。
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+    gp = _global_cast_path(state)
+    info = _json_load(gp, {}).get(name)
+    if isinstance(info, dict):
+        return info, gp
+    import glob as _glob
+    for p in sorted(_glob.glob(os.path.join(
+            _book_dir(state), _ASSET_DIR, "第*章", "assets.json"))):
+        info = _json_load(p, {}).get(name)
+        if isinstance(info, dict):
+            return info, p
+    return None
+
+
+def edit_asset(state: dict, name: str, instruction: str) -> str:
+    """按指令编辑已有资产并覆盖原图（图生图：原图为参考 + 修改指令）。
+
+    供聊天 image_gen 工具的 asset_name 参数调用；返回新图路径。
+    """
+    found = find_asset(state, name)
+    if not found:
+        raise _stop(f"资产库中找不到「{name}」")
+    info, store_path = found
+    has_original = bool(info.get("path") and os.path.exists(info["path"]))
+    new_info = gen_asset(state, name, dict(info), custom_prompt=instruction,
+                         image_ref=has_original)
+    info["path"], info["url"] = new_info.get("path"), new_info.get("url")
+    store = _json_load(store_path, {})
+    store[name] = info
+    _json_dump(store_path, store)
+    return info["path"]
+
+
+def build_cast(state: dict, on_event=None, stop=None, redo: bool = False) -> dict:
     """资产库：提取 角色 / 场景 / 道具 三类基础形象并生成参考图。
 
     cast.json 结构：{名: {"type","appearance","path","url"}} + "_done_<类>"
@@ -408,20 +471,23 @@ def build_cast(state: dict, on_event=None, stop=None) -> dict:
         if name.startswith("_") or not isinstance(info, dict):
             continue
         looks = info.get("looks") or {}
-        looks_todo = [lk for lk in looks.values() if not lk.get("path")]
-        if info.get("path") and not looks_todo:
+        looks_todo = ([lk for lk in looks.values()]
+                      if redo else
+                      [lk for lk in looks.values() if not lk.get("path")])
+        if info.get("path") and not looks_todo and not redo:
             continue                      # 主图+各阶段图齐全
         if stop is not None and stop.is_set():
             raise _stop("已手动停止：已生成的形象保留，重跑命令自动续造")
         sec = info.get("type") or "角色"
         tpl, ratio = _ASSET_TPL.get(sec, _ASSET_TPL["角色"])
         _, out = _resolve_asset_path(state, name, info)   # 全书/目录
-        if not info.get("path"):                          # 主图缺失才生成
+        if not info.get("path") or redo:                  # redo=覆盖原图
             on_event({"type": "drama_media", "kind": "cast",
                       "label": f"{name}（{sec}）"})
             path, url = imggen.generate_ex(
                 f"{style}。{sec}基础形象：" +
-                tpl.format(a=info.get("appearance", "")),
+                tpl.format(a=_anchored_appearance(
+                    info.get("appearance", ""))),
                 out, size="1K", ratio=ratio)
             info["path"], info["url"] = path, url
             _json_dump(cast_path, cast)
@@ -444,7 +510,8 @@ def build_cast(state: dict, on_event=None, stop=None) -> dict:
             try:
                 lp, lu = imggen.generate_ex(
                     f"{style}。{sec}基础形象·{era}阶段：" +
-                    tpl.format(a=lk.get("appearance", "")) +
+                    tpl.format(a=_anchored_appearance(
+                        lk.get("appearance", ""))) +
                     ("。参考图是同一人物：严格保持参考图的脸型五官、发际线"
                      "与体格不变，仅更换为本阶段的服装发型与配饰。"
                      if refs else
@@ -457,6 +524,34 @@ def build_cast(state: dict, on_event=None, stop=None) -> dict:
                           "label": f"{name}·{era} 形象生成跳过：{e}"})
             _json_dump(cast_path, cast)
     return cast
+
+
+def three_view(state: dict, name: str, info: dict, on_event=None) -> str:
+    """角色三视图设定图：左 1/3 面部特写 + 右 2/3 正/侧/背全身（16:9 白底）。
+
+    以定妆照为参考图锁脸（同一人），给后续关键帧多一个高一致性参考源；
+    产物存 全书/{name}-三视图.png，存在即复用。
+    """
+    on_event = on_event or (lambda e: None)
+    base = _global_base(state)
+    out = os.path.join(base, f"{_safe_name(name)}-三视图.png")
+    if os.path.exists(out):
+        return out
+    src = info.get("path") or ""
+    if not src or not os.path.exists(src):
+        raise _stop("先有该角色的形象图，才能生成三视图"
+                    f"（{name} 还没有定妆照）")
+    style = resolve_style(state)
+    on_event({"type": "drama_media", "kind": "cast",
+              "label": f"{name} 三视图"})
+    imggen.generate_ex(
+        f"{style}。角色三视图设定图：以参考图角色为同一人；16:9 版面，"
+        "左侧三分之一为该角色面部特写，右侧三分之二从左到右依次为"
+        "正面、侧面、背面全身立像；自然直立站姿无动作，纯白色背景，"
+        "人物比例与头身比严格一致，三个视图的服装发型配饰完全相同，"
+        "线条清晰流畅，视觉焦点集中在角色身上。",
+        out, size="1K", ratio="16:9", image_refs=[src])
+    return out
 
 
 def gen_asset(state: dict, name: str, info: dict, on_event=None,
@@ -482,7 +577,8 @@ def gen_asset(state: dict, name: str, info: dict, on_event=None,
         prompt = f"{style}。{custom_prompt.strip()}"
     else:
         prompt = (f"{style}。{sec}基础形象：" +
-                  tpl.format(a=info.get("appearance", "")))
+                  tpl.format(a=_anchored_appearance(
+                      info.get("appearance", ""))))
     refs = []
     if image_ref and os.path.exists(out):
         refs.append(out)
@@ -518,8 +614,9 @@ def gen_look(state: dict, name: str, info: dict, era: str,
         prompt = f"{style}。{custom_prompt.strip()}"
     else:
         prompt = (f"{style}。{sec}基础形象·{era}阶段：" +
-                  tpl.format(a=lk.get("appearance")
-                             or info.get("appearance", "")))
+                  tpl.format(a=_anchored_appearance(
+                      lk.get("appearance")
+                      or info.get("appearance", ""))))
     refs = []
     if main and os.path.exists(main):
         refs.append(main)
@@ -601,7 +698,7 @@ def _reuse_existing_assets(state: dict, need: dict) -> dict:
 
 
 def chapter_assets(state: dict, chapter: dict, shots: list, cast: dict,
-                   on_event=None) -> dict:
+                   on_event=None, redo: bool = False) -> dict:
     """章节专属（暂时）资产：分镜引用了、但全书资产里没有的名字。
 
     类型按引用位置自动判定（scene 字段→场景、characters→角色、props→
@@ -653,7 +750,8 @@ def chapter_assets(state: dict, chapter: dict, shots: list, cast: dict,
     base = os.path.join(_book_dir(state), _ASSET_DIR,
                         _chapter_asset_subdir(chapter["idx"]))
     for name, info in list(local.items()):
-        if name.startswith("_") or not isinstance(info, dict) or info.get("path"):
+        if (name.startswith("_") or not isinstance(info, dict)
+                or (info.get("path") and not redo)):
             continue
         sec = info.get("type") or "道具"
         tpl, ratio = _ASSET_TPL.get(sec, _ASSET_TPL["道具"])
@@ -663,7 +761,7 @@ def chapter_assets(state: dict, chapter: dict, shots: list, cast: dict,
         try:
             p, url = imggen.generate_ex(
                 f"{style}。{sec}基础形象：" + tpl.format(
-                    a=info.get("appearance", "")),
+                    a=_anchored_appearance(info.get("appearance", ""))),
                 out, size="1K", ratio=ratio)
             info["path"], info["url"] = p, url
         except Exception as e:          # noqa: BLE001  单个失败不阻断
@@ -723,26 +821,41 @@ def build_shots(state: dict, chapter: dict, on_event=None,
            if era_names else ""))
     text = _ask(
         state,
-        "你是短剧导演。把小说章节改编为竖屏短剧分镜表。每个镜头 4-15 秒，"
+        "你是短剧导演。把小说章节改编为竖屏短剧分镜表（参考火宝短剧规范）。"
+        "一个镜头=一个分镜段落=一次视频生成任务，全程只发生在一个场景内。"
         f"全书统一画面风格（description 必须体现其质感与光影词汇）：{style}。"
-        "description 用专业影视语言：景别机位（近景/中景/特写、平视/过肩）、"
-        "与该风格匹配的光线色调、人物动作细节、落幅画面（运镜不写在这，"
-        "单独放 camera 字段）。"
-        "camera 写本镜运镜（推近/拉远/横移/摇/跟拍/固定），mood 写本镜"
+        "【拆段规则】先识别叙事节拍（地点转移/规则揭示/情绪爆发/反转是强制"
+        "切段点），一条因果链（铺垫-发生-反应）不拆散到不同段落；"
+        "总量锚定：目标镜头数 ≈ 章节字数÷500字每分钟÷12秒，允许±20%。"
+        "【段落时长分层】过渡段（赶路/空镜/转场）8-10 秒；叙事段（常规剧情/"
+        "对话）10-15 秒；爆点段（特写/反转/情感爆发）12-15 秒。"
+        "【description 子镜头化】每段内含 2-4 个子镜头，按"
+        "「【镜头1】…【镜头2】…」逐个写：每个 2-6 秒聚焦一个画面单元"
+        "（一个动作/一个反应/一个特写），景别优先近景/特写/中近景（竖屏"
+        "小屏少用远景），子镜头间可切镜（换景别/角度/对象，硬切）；"
+        "台词写在对应【镜头N】内，格式「角色名说：「台词」」，"
+        "旁白写「旁白：…」；情绪转可见描写（不写「他很紧张」，写"
+        "「手指攥紧杯沿」）。"
+        "相邻镜头必须承接：动作从上一镜结束状态自然延续，时间/地点/光线/"
+        "道具状态一致，不重复上一镜已用过的镜头设计。"
+        "原文血腥暴力等敏感描写自动改为中性表达（如「喷血」→「衣襟染上"
+        "暗色痕迹」），剧情不变。"
+        "camera 写本镜主导运镜（推近/拉远/横移/摇/跟拍/固定），mood 写本镜"
         "情绪氛围（如 紧张/温馨/压抑/燃），供配音语气与表演参考。"
-        "duration 必须够把话说完：中文语速约 4 字/秒，"
-        "有旁白或台词的镜头按（旁白字数+台词字数）÷4 再加 2 秒余量取整，"
-        "宁可长一点，人物没说完话就切镜是重大缺陷。"
+        "duration 硬规则：≥（旁白字数+台词字数）÷4.5字每秒 + 2 秒表演余量，"
+        "装不下的台词拆到下一镜，人物没说完话就切镜是重大缺陷；"
+        "但节奏要明快，无台词镜头不超 10 秒，拖沓慢镜是短剧大忌。"
         + era_rule +
         "每个镜头再写一句 narration 旁白解说词（第三人称说书人口吻，"
         "15-40 字，交代前情/心理/转折，让观众听得懂剧情；纯对白镜也要有）。"
         '只输出 JSON 数组：[{"title": "镜头小标题", "scene": "场景名", '
         '"era": "时代阶段", '
         '"characters": ["出场角色名"], "props": ["出场关键道具名"], '
-        '"description": "镜头描述", "camera": "运镜", "mood": "情绪氛围", '
+        '"description": "【镜头1】…【镜头2】…", "camera": "运镜", '
+        '"mood": "情绪氛围", '
         '"narration": "旁白解说词", '
-        '"dialogue": "关键台词（可为空）", "duration": 秒数}]，'
-        "每章 8-14 个镜头。scene/characters/props 用简短通用名"
+        '"dialogue": "关键台词（可为空）", "duration": 秒数}]。'
+        "scene/characters/props 用简短通用名"
         "（同物同名，别一章里出现「手机」「电话」两种叫法）。",
         f"小说正文（第 {chapter['idx']} 章《{chapter['title']}》）：\n"
         f"{chapter['text']}")
@@ -772,8 +885,51 @@ def build_shots(state: dict, chapter: dict, on_event=None,
         })
     if not clean:
         raise _stop(f"第 {chapter['idx']} 章分镜解析为空")
+    _video_prompts(state, chapter, clean)      # 二次生成：3秒分段时间轴
     _json_dump(path, clean)
     return clean
+
+
+def _video_prompts(state: dict, chapter: dict, shots: list):
+    """给每个分镜段落二次生成 video_prompt（火宝规范）：按 3 秒分段。
+
+    每镜结构：信息头（出场人物+场景+道具）+ 连续时间分段行；第一段建立
+    空间，切镜用「切到/切回」衔接，台词分配到对应段，情绪转可见描写。
+    失败静默跳过（clip() 回退旧模板），成功则写进各 s["video_prompt"]。
+    """
+    todo = [i for i, s in enumerate(shots) if s.get("description")]
+    if not todo:
+        return
+    try:
+        lines = []
+        for i in todo:
+            s = shots[i]
+            lines.append(
+                f"镜头{i + 1}（{int(s['duration'])}秒，场景「{s['scene']}」，"
+                f"角色{'、'.join(s['characters']) or '无'}，"
+                f"道具{'、'.join(s['props']) or '无'}）：\n{s['description']}")
+        text = _ask(
+            state,
+            "你是视频提示词工程师（火宝规范）。把每个分镜段落的 description"
+            "转成按时间分段的视频生成提示词。规则："
+            "段数=时长÷3秒向上取整，各段时间连续无重叠；"
+            "每段一行「N-M秒：景别运镜，主体+具体动作与表情，台词或旁白」；"
+            "第一段必须建立空间（场景+机位+角色位置）；子镜头切镜处用"
+            "「切到/切回」衔接并重述景别；台词写「角色名说：「台词」」"
+            "从 description 的对应【镜头N】提取，3 秒念不完拆多段，"
+            "不得创作 description 之外的新台词；情绪转可见动作描写；"
+            "一个段落只发生在一个场景。"
+            '只输出 JSON：{"1": "第一镜 video_prompt", "2": "..."}'
+            "（键=镜头号，字符串内用换行分隔时间段）。",
+            "\n\n".join(lines))
+        data = _extract_json(text)
+        if isinstance(data, dict):
+            for i in todo:
+                v = data.get(str(i + 1)) or data.get(i + 1)
+                if isinstance(v, str) and v.strip():
+                    shots[i]["video_prompt"] = _clean_text(v)
+    except Exception:                      # noqa: BLE001 失败不阻断，回退模板
+        pass
 
 
 # ---------------- 3. 关键帧 + 镜头视频 ----------------
@@ -836,6 +992,7 @@ def keyframe(state: dict, cast: dict, shot: dict, ch: int, i: int,
                 refs.append(p)
             ap = (vis.get("appearance") or info.get("appearance") or "")
             if ap:
+                ap = _anchored_appearance(ap)
                 who.append(f"{name}·{era}（{ap}）" if era else f"{name}（{ap}）")
         elif sec == "场景" and scene_name and not scene_ref:
             p = _img(info)
@@ -919,19 +1076,39 @@ def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
     # 风格与分镜术语（机位/焦段/运镜）绝不能被读出来，且锁死中文普通话。
     # 屏显文字一律禁止：模型烧录的字幕中英夹杂、汉字常渲染成乱码，
     # 解说信息由配音承担，画面保持纯净
-    prompt = (f"{style}。画面：{shot['description']}。"
-              "画面中不要出现任何字幕、文字、标题、水印或字母字符。")
-    if camera:
-        prompt += f"镜头运动：{camera}。"
+    vp = (shot.get("video_prompt") or "").strip()
+    if vp:
+        # 火宝式 3 秒分段时间轴：段内已含切镜衔接与台词分配，直接用
+        prompt = (f"{style}。按时间分段执行以下画面：\n{vp}\n"
+                  "画面中不要出现任何字幕、文字、标题、水印或字母字符；"
+                  "分段之间用硬切，全程不跨场景。")
+        if camera:
+            prompt += f"主导运镜：{camera}。"
+    else:
+        prompt = (f"{style}。画面：{shot['description']}。"
+                  "画面中不要出现任何字幕、文字、标题、水印或字母字符。")
+        if camera:
+            prompt += f"镜头运动：{camera}。"
+        elif dialogue:
+            prompt += "镜头运动：固定（台词段镜头必须稳定，不切换不推拉）。"
     if mood:
         prompt += f"本镜情绪氛围：{mood}。"
+    # 节奏控制：短剧忌王家卫式慢镜头——动作干脆、运镜流畅、不留凝滞
+    prompt += ("表演与节奏：人物动作干脆利落、目标明确，"
+               "不要慢动作、不要长时间静止凝视或发呆式停顿。")
+    # 声音设计（借鉴漫剧指令包）：环境音服务剧情，禁止背景音乐
+    prompt += ("\n环境音：按画面写真实环境音与动作音效（风声/脚步声/水声/"
+               "衣物摩擦等，2-3 种即可，服务剧情不堆砌）；禁止背景音乐。")
     prompt += ("\n配音要求：成片语音只朗读下面标注的内容，画面描述、风格说明"
                "等其它文字一律不要朗读、不要复述；全程中文普通话，"
                "不要出现英语或任何其它语言；台词要完整说完、旁白要完整读完，"
-               "人物说到一半不得结束镜头")
+               "人物说到一半不得结束镜头。"
+               "只有说话的角色才有张嘴和口型动作，口型与台词严格同步；"
+               "画外音旁白期间画面人物保持沉默，只有眼神、表情和细微动作；"
+               "台词使用中文引号“”。")
     if mood:
-        prompt += f"；语气贴合「{mood}」的情绪"
-    prompt += "。\n"
+        prompt += f"语气贴合「{mood}」的情绪。"
+    prompt += "\n"
     if narration:
         prompt += f"旁白（第三人称解说，整句朗读）：{narration}\n"
     if dialogue:
@@ -941,7 +1118,10 @@ def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
     sec = max(float(shot.get("duration") or _MIN_SEC), _speech_seconds(shot))
     on_event({"type": "drama_media", "kind": "clip",
               "label": f"第{ch}章 镜头{i}", "sec": sec})
-    want_dub = bool(state.get("drama_tts")) and (shot.get("dialogue") or "").strip()
+    # TTS 配音（需 drama_tts 开关 + ffmpeg）：有台词配台词，纯旁白镜配旁白
+    # ——Seedance 1.0 系列视频无原生语音，靠这条补声
+    spoken = dialogue or narration
+    want_dub = bool(state.get("drama_tts")) and spoken
     # 超时按时长缩放：长视频（15s/441帧）云端常超 4 分钟，240s 固定值会误杀
     raw = videogen.generate(prompt, out if not want_dub else out + ".raw.mp4",
                             image=frame_url, seconds=sec,
@@ -952,7 +1132,7 @@ def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
     try:
         on_event({"type": "drama_media", "kind": "dub",
                   "label": f"第{ch}章 镜头{i} 配音"})
-        audio = tts.speak(shot["dialogue"].strip(),
+        audio = tts.speak(spoken.strip(),
                           out.replace(".mp4", ".dub.mp3"))
         dub(raw, audio, out)
         os.remove(raw)
@@ -1056,14 +1236,14 @@ def concat(clips: list, out_path: str) -> str:
 
 
 def run_assets(state: dict, ch_start: int = 0, ch_end: int = 0,
-               on_event=None, stop=None) -> dict:
+               on_event=None, stop=None, redo: bool = False) -> dict:
     """只做资产生成（不出关键帧/视频），供先期调整形象。
 
     ch_start=0：仅全书资产；给出范围则顺带生成该范围各章的分镜
     （LLM 拆分镜，缓存）与章节专属资产。返回各类计数。
     """
     on_event = on_event or (lambda e: None)
-    cast = build_cast(state, on_event, stop=stop)
+    cast = build_cast(state, on_event, stop=stop, redo=redo)
     n_cast = sum(1 for k, v in cast.items()
                  if not k.startswith("_") and isinstance(v, dict)
                  and v.get("path"))
@@ -1075,7 +1255,8 @@ def run_assets(state: dict, ch_start: int = 0, ch_end: int = 0,
             if stop is not None and stop.is_set():
                 raise _stop("已手动停止：已生成资产保留，重跑续造")
             shots = build_shots(state, c, on_event, cast=cast)
-            local = chapter_assets(state, c, shots, cast, on_event)
+            local = chapter_assets(state, c, shots, cast, on_event,
+                                   redo=redo)
             out["chapters"][c["idx"]] = sum(
                 1 for k, v in local.items()
                 if not k.startswith("_") and isinstance(v, dict) and v.get("path"))

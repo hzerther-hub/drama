@@ -383,6 +383,8 @@ def show(app):
             dramavideo._chapter_assets_path(state, ch), {})
 
     def _build_cast_card(card, name, info, store_path):
+        dramavideo._resolve_asset_image(
+            state, name, info, base=os.path.dirname(store_path))
         ph = _thumb(info.get("path") or "", (150, 200))
         if ph:
             lbl = tk.Label(card, image=ph, bg=theme.PANEL)
@@ -533,6 +535,36 @@ def show(app):
                         ).pack(side="left", padx=2)
         ui._flat_button(row2, text=_t("ds.gen_i2i"), width=9,
                         font=(FONT_UI, 9), command=lambda: _regen_by("i2i")
+                        ).pack(side="left", padx=2)
+
+        def _three_view():
+            """三视图设定图（面特+正/侧/背，锁脸）：关键帧的高一致参考源。"""
+            item2 = _save_look_to_json(ent)     # 先把描述框的改动存进去
+            if st["busy"]:
+                status(_t("ds.busy"), busy=True)
+                return
+            if not (item2.get("path") or ""):
+                status(_t("ds.need_face", n=name))
+                return
+            status(_t("ds.generating", n=f"{name} 三视图"), busy=True)
+
+            def work():
+                try:
+                    tp = dramavideo.three_view(state, name, dict(item2))
+                except Exception as e:       # noqa: BLE001
+                    win.after(0, lambda err=e: status(
+                        f"❌ {type(err).__name__}: {err}"))
+                else:
+                    def done():
+                        status(_t("ds.ready"))
+                        if os.path.exists(tp):
+                            os.startfile(tp)
+                    win.after(0, done)
+            threading.Thread(target=work, daemon=True).start()
+
+        ui._flat_button(row2, text=_t("ds.three_view"), width=9,
+                        font=(FONT_UI, 9),
+                        command=lambda: _three_view()
                         ).pack(side="left", padx=2)
 
     ui._flat_button(foot2, text=_t("ds.fill_cast"), width=14,
