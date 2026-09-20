@@ -533,13 +533,14 @@ def _load_bundled_fonts() -> bool:
         return False
 
 
-def _flat_button(parent, text, command, width=12, font=(FONT_UI, 10)):
+def _flat_button(parent, text, command, width=12, font=(FONT_UI, 10),
+                 state="normal"):
     """扁平按钮（令牌底色 + 悬停浅主题色反馈，无边框浮雕）。"""
     btn = tk.Button(parent, text=text, command=command, width=width,
                     font=font, relief="flat", cursor="hand2", padx=8, pady=4,
                     bg=theme.BG, fg=theme.TEXT, bd=0, highlightthickness=0,
                     activebackground=theme.ACCENT_FAINT,
-                    activeforeground=theme.TEXT)
+                    activeforeground=theme.TEXT, state=state)
 
     def _hover(on):
         if str(btn.cget("state")) == "normal":
@@ -2424,17 +2425,13 @@ class App:
                             kinds=attach.snippet_chip(att)))
 
     def _code_context_menu(self, event, path, text_widget):
-        """编辑器右键菜单：选中段→AI 优化；Ctrl+L→在光标处插入文字；全文审查。"""
+        """编辑器右键菜单：AI 编辑（选中=替换·光标=插入）；加聊天；全文审查。"""
         has_sel = bool(text_widget.tag_ranges("sel"))
         menu = tk.Menu(self.root, tearoff=0, font=(FONT_UI, 10))
         menu.add_command(
-            label=_t("ed.optimize_selection"),
-            state=("normal" if has_sel else "disabled"),
-            command=(lambda: self._ai_optimize_selection(path, text_widget))
-            if has_sel else (lambda: None))
-        menu.add_command(
-            label=_t("ed.insert_at_cursor") + " (Ctrl+L)",
-            command=lambda: self._ai_insert_at_cursor(path, text_widget))
+            label=(_t("ed.optimize_selection") if has_sel else
+                   _t("ed.insert_at_cursor") + " (Ctrl+L)"),
+            command=lambda: self._ai_edit_here(path, text_widget))
         menu.add_command(
             label=_t("ed.add_code_chat"),
             state=("normal" if has_sel else "disabled"),
@@ -2467,6 +2464,14 @@ class App:
 
     # ----------- 编辑器 AI：选区优化 / 光标处插入 / 全文审查 -----------
 
+    def _ai_edit_here(self, path, text_widget):
+        """编辑器 AI 统一入口：有选中→替换选中（预览确认）；
+        光标无选中→插入（生成完直接落笔）。"""
+        if text_widget.tag_ranges("sel"):
+            self._ai_optimize_selection(path, text_widget)
+        else:
+            self._ai_insert_at_cursor(path, text_widget)
+
     def _ai_optimize_selection(self, path, text_widget):
         """右键 → 选区 AI 改写：弹框输意见→AI 出新版本→预览确认→替换。"""
         sel = text_widget.tag_ranges("sel")
@@ -2488,12 +2493,19 @@ class App:
 
     def _ai_insert_at_cursor(self, path, text_widget):
         """Ctrl+L 或右键：在光标处弹框插入 AI 生成的文字。"""
-        # 光标索引
+        # 光标索引 + 前后真实原文（性别/场景锚定，防止 AI 瞎编）
         try:
             pos = text_widget.index(tk.INSERT)
             line = int(str(pos).split(".")[0])
         except Exception:            # noqa: BLE001
             pos = "1.0"; line = 1
+        try:
+            before = text_widget.get(f"{max(1, line - 15)}.0",
+                                     f"{line}.end")
+            after = text_widget.get(f"{line + 1}.0",
+                                    f"{line + 10}.end")
+        except Exception:            # noqa: BLE001
+            before = after = ""
         self._prompt_and_run(
             title=_t("ed.insert_at_cursor"),
             hint=_t("ed.insert_hint", line=line),
@@ -2502,7 +2514,8 @@ class App:
             apply=lambda new_text: self._insert_at(
                 text_widget, pos, new_text, path),
             fallback_task=lambda instr: self._ai_insert_task(
-                self._current_book_state(), instr, line))
+                self._current_book_state(), instr, line, before, after),
+            auto_apply=True)                              # 生成完直接插入
 
     def _book_review(self, path, text_widget):
         """全文逻辑审查：起后台线程，结束后把报告插入聊天 + 文件末尾。"""
@@ -2533,8 +2546,13 @@ class App:
         self.root.after(0, run)
 
     def _prompt_and_run(self, *, title, hint, original, apply,
-                         insert_at=None, fallback_task):
-        """统一弹窗：原文本只读 → 用户输指令 → 后台 AI → 弹预览+确认 → apply。"""
+                        insert_at=None, fallback_task, auto_apply=False):
+        """统一弹窗：原文本只读 → 用户输指令 → 后台 AI → 预览+确认 → apply。
+
+        auto_apply=True（插入模式）：生成完成直接落笔、关窗——结果在
+        编辑器里看，省一次确认（插入无破坏，undo 可撤销）；替换模式
+        仍走预览→「确定替换」，因为动的是用户选中的原文。
+        """
         win = tk.Toplevel(self.root)
         win.title(title); win.configure(bg=theme.BG); win.geometry("680x560")
         _make_modal(win, self.root)
@@ -2544,16 +2562,16 @@ class App:
         instr = tk.Text(win, height=4, font=(FONT_UI, 10), wrap="word",
                         relief="flat", bg="white", fg=theme.TEXT, padx=8, pady=6)
         instr.pack(fill="x", padx=14)
-        tk.Label(win, text=_t("ed.original_label"),
-                 font=(FONT_UI, 9), bg=theme.BG, fg=theme.MUTED
-                 ).pack(anchor="w", padx=14, pady=(6, 0))
-        orig_view = tk.Text(win, height=8, font=(FONT_MONO, 9), wrap="word",
-                            relief="flat", bg=theme.BOT_BUBBLE, fg=theme.TEXT,
-                            padx=8, pady=6)
-        orig_view.pack(fill="both", expand=True, padx=14, pady=(2, 6))
-        if original:
+        if original:                     # 无选区（Ctrl+L 插入）不放原文框
+            tk.Label(win, text=_t("ed.original_label"),
+                     font=(FONT_UI, 9), bg=theme.BG, fg=theme.MUTED
+                     ).pack(anchor="w", padx=14, pady=(6, 0))
+            orig_view = tk.Text(win, height=8, font=(FONT_MONO, 9), wrap="word",
+                                relief="flat", bg=theme.BOT_BUBBLE, fg=theme.TEXT,
+                                padx=8, pady=6)
+            orig_view.pack(fill="both", expand=True, padx=14, pady=(2, 6))
             orig_view.insert("1.0", original)
-        orig_view.config(state="disabled")
+            orig_view.config(state="disabled")
         tk.Label(win, text=_t("ed.preview_label"),
                  font=(FONT_UI, 9), bg=theme.BG, fg=theme.MUTED
                  ).pack(anchor="w", padx=14)
@@ -2561,11 +2579,43 @@ class App:
                        relief="flat", bg="white", fg=theme.TEXT, padx=8, pady=6)
         prev.pack(fill="both", expand=True, padx=14, pady=(2, 6))
         prev.config(state="disabled")
-        bar = tk.Frame(win, bg=theme.BG); bar.pack(pady=10)
+        # 状态条紧贴按钮上方：进度/错误必须显眼，不能挤在窗口底边被裁掉
+        status = tk.Label(win, text="", font=(FONT_UI, 10), wraplength=640,
+                          justify="left", bg=theme.BG, fg=theme.MUTED,
+                          anchor="w")
+        status.pack(fill="x", padx=14, pady=(0, 2))
+        bar = tk.Frame(win, bg=theme.BG); bar.pack(pady=(2, 10))
 
-        status = tk.Label(win, text="", font=(FONT_UI, 9),
-                          bg=theme.BG, fg=theme.MUTED, anchor="w")
-        status.pack(fill="x", padx=14)
+        spin = {"i": 0, "after": None, "t0": None}
+
+        def _spin(on):
+            """盲文点字等待动画：生成中逐帧转+计时，结束定格并停表。"""
+            if spin["after"]:
+                try:
+                    win.after_cancel(spin["after"])
+                except Exception:      # noqa: BLE001
+                    pass
+                spin["after"] = None
+            if on:
+                spin["t0"] = time.time()
+                _spin_step()
+
+        def _spin_step():
+            if not win.winfo_exists():
+                return
+            f = theme.SPINNER[spin["i"] % len(theme.SPINNER)]
+            spin["i"] += 1
+            el = int(time.time() - spin["t0"]) if spin["t0"] else 0
+            txt = f"{f} " + _t("ed.generating") + f" · {el}s"
+            # 大预览框同步显示进度——它才是用户盯着的地方
+            status.config(text=txt)
+            try:
+                prev.config(state="normal")
+                prev.delete("1.0", "end"); prev.insert("1.0", txt)
+                prev.config(state="disabled")
+            except Exception:          # noqa: BLE001
+                pass
+            spin["after"] = win.after(120, _spin_step)
 
         def _ai_run():
             text = instr.get("1.0", "end-1c").strip()
@@ -2579,21 +2629,32 @@ class App:
                 try:
                     new = fallback_task(text)
                 except Exception as e:    # noqa: BLE001
-                    self.root.after(0, lambda: (
-                        status.config(text=f"❌ {type(e).__name__}: {e}",
-                                       fg="#dc2626"),
+                    # except 块退出即删 e，延迟 lambda 须用默认参固化当前值
+                    self.root.after(0, lambda err=e: (
+                        _spin(False),
+                        status.config(text=f"❌ {type(err).__name__}: {err}",
+                                      fg="#dc2626"),
                         run_btn.config(state="normal")))
                     return
                 self.root.after(0, lambda: _show_preview(new))
 
             threading.Thread(target=work, daemon=True).start()
+            _spin(True)
 
         def _show_preview(new_text):
+            _spin(False)
+            if not win.winfo_exists():
+                # 等待期间弹窗被关：结果无法落笔，至少让用户知道为什么没反应
+                self._set_status(_t("ed.result_discarded"))
+                return
             prev.config(state="normal")
             prev.delete("1.0", "end"); prev.insert("1.0", new_text)
             prev.config(state="disabled")
             status.config(text=_t("ed.preview_ready"), fg=theme.SUCCESS)
-            ok_btn.config(state="normal")
+            if auto_apply:
+                _apply()                     # 生成即落笔，同时看到结果
+            else:
+                ok_btn.config(state="normal")
 
         def _apply():
             new_text = prev.get("1.0", "end-1c").strip()
@@ -2650,13 +2711,19 @@ class App:
         return novel_chain.ai_edit(state, instr,
                                   f"<<BEGIN>>\n{original}\n<<END>>")
 
-    def _ai_insert_task(self, state, instr, around_line):
+    def _ai_insert_task(self, state, instr, around_line,
+                        before: str = "", after: str = ""):
+        ctx = (f"插入位置：第 {around_line} 行附近。\n"
+               f"【插入点之前的原文（上文，人称/场景必须衔接）】\n"
+               f"{before.strip() or '（无）'}\n\n"
+               f"【插入点之后的原文（下文，必须衔接）】\n"
+               f"{after.strip() or '（无）'}")
         return novel_chain.ai_edit(
-            state, instr,
-            f"在第 {around_line} 行附近插入一段文字。下面是上下文片段（可为空）："
-            + "（无）",
+            state, instr, ctx,
             system="你是网文作者。按作者要求写一段 1-3 段可无缝插入的文字，"
-                   "与所给上下文衔接。只输出要插入的正文，不要说明。")
+                   "与所给上下文衔接。人名、性别、称呼、所处场景必须与"
+                   "上下文及角色设定一致，禁止发明新人物或换地点。"
+                   "只输出要插入的正文，不要说明。")
 
     def _apply_file_filter(self, query: str):
         """按文件名过滤右侧文件树：命中的文件 + 其父目录显示，其余隐藏。"""
@@ -3016,6 +3083,21 @@ class App:
                                 font=(FONT_MONO, 10))
         wrap_btn.pack(side="left", before=_save_btn)
         self._bind_hint(wrap_btn, "btn.wrap")
+
+        # 动态统计：行数与字符数，打字/删改实时刷新（右侧对齐）
+        cnt_lbl = tk.Label(bar, text="", font=(FONT_UI, 9), bg=theme.BG,
+                           fg=theme.MUTED)
+        cnt_lbl.pack(side="right")
+
+        def _update_count(_e=None):
+            content = txt.get("1.0", "end-1c")
+            lines = content.count("\n") + 1 if content else 0
+            chars = len(content)
+            cnt_lbl.config(text=_t("ed.count", n=lines, c=chars))
+        txt.bind("<<Modified>>", lambda e: (txt.edit_modified(False),
+                                            _update_count()))
+        _update_count()
+
         _apply_state()
         txt.bind("<Key>", lambda e: state.__setitem__("dirty", True))
         txt.bind("<Control-s>", _save)
@@ -3046,9 +3128,9 @@ class App:
                     1200, lambda: self._lsp_diag_query(txt, frame))
         txt.bind("<KeyRelease>", _on_key_rel)
         txt.bind("<Escape>", lambda e: self._editor_hide_complete())
-        # Ctrl+L：在光标处弹 AI 插入框（不破坏输入框的 Enter/Ctrl+Enter 绑定）
+        # Ctrl+L：AI 编辑——有选中=替换选中，无选中=光标处插入
         txt.bind("<Control-l>",
-                 lambda e, p=path, w=txt: self._ai_insert_at_cursor(p, w))
+                 lambda e, p=path, w=txt: self._ai_edit_here(p, w))
         # 右键：选中代码区 → 加入聊天（附件带文件路径 + 行号范围，供 AI 分析）
         txt.bind("<Button-3>",
                  lambda e, p=path, w=txt: self._code_context_menu(e, p, w))
@@ -5179,6 +5261,8 @@ class App:
             self._novel_ok()
         elif head == "adjust":
             self._novel_adjust(rest.strip())   # 内部自取当前书（重启后可用）
+        elif head == "set":
+            self._novel_set(rest.strip())
         elif head == "stage":
             self._novel_stage(rest.strip())
         elif head == "ledger":
@@ -5466,6 +5550,44 @@ class App:
                 and p.cursor != p.stages[-1].name:
             until = p.cursor
         self._novel_run(p, until=until)
+
+    def _novel_set(self, rest: str):
+        """/novel set：查看/设定当前书的 写法风格 与 每章字数。
+
+        /novel set                     查看当前设定
+        /novel set 风格 <写法要求>      设文风（注入每章「写法要求」）
+        /novel set 每章 <N>            设每章字数目标（下一章起生效）
+        """
+        p, err = self._novel_pick("")
+        if p is None:
+            self._set_status(_t("novel.none"))
+            return
+        st = p.state
+        m = re.match(r"^(?:风格|style)\s*[:：]?\s*(.+)$", rest, re.I | re.S)
+        if m:
+            st["style"] = m.group(1).strip()
+            p.save()
+            self._append("✅ " + _t("novel.set_style") + "\n", "meta")
+            self._set_status(_t("novel.set_style"))
+            return
+        m = re.match(r"^(?:每章|字数|words)\s*[:：]?\s*(\d{3,5})\s*字?\s*$",
+                     rest, re.I)
+        if m:
+            st["ch_words"] = max(500, min(int(m.group(1)), 20000))
+            p.save()
+            self._append("✅ " + _t("novel.set_words",
+                                    n=st["ch_words"]) + "\n", "meta")
+            self._set_status(_t("novel.set_words", n=st["ch_words"]))
+            return
+        if rest:
+            self._set_status(_t("novel.set_usage"))
+            self._append("💡 " + _t("novel.set_usage") + "\n", "meta")
+            return
+        self._append("ℹ " + _t(
+            "novel.set_show",
+            sty=st.get("style") or _t("novel.unset"),
+            n=st.get("ch_words") or _t("novel.set_default_words")) + "\n",
+            "meta")
 
     def _novel_adjust(self, feedback: str, p=None):
         """按作者意见调整刚完成的规划阶段产出，之后可 /novel ok 继续。

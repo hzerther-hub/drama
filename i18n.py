@@ -934,6 +934,8 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
               "/novel expand N   扩写        /novel rename N <标题>  改标题\n"
               "/novel condense N 压缩        /novel check N   第 N 章一致性审查\n"
               "/novel extend N   续写        /novel compare N  修订前后对比\n"
+              "/novel set 风格 <写法要求>  设文风（下一章起每章注入）\n"
+              "/novel set 每章 <N>  设每章字数目标    /novel set  查看当前\n"
               "\n"
               "■ 短剧（AI 成片）\n"
               "/novel drama            打开短剧工作台（大纲/资产/分镜三步，可编辑）\n"
@@ -1079,6 +1081,26 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
                                  "adoption still work)",
                            "zh": "预览首帧需要 ffmpeg（不影响生成与采用）"},
     "ds.speech_hint": {"en": "speech needs ≥{n}s", "zh": "读完需≥{n}秒"},
+    "ed.result_discarded": {"en": "Generation finished, but the dialog was "
+                                "already closed — result discarded",
+                            "zh": "生成完成，但弹窗已关闭——结果已丢弃"},
+    "ed.count":     {"en": "{n} lines · {c} chars", "zh": "行 {n} · 字 {c}"},
+    "novel.set_style": {"en": "Writing style updated — applies from the "
+                              "next chapter",
+                        "zh": "写法风格已更新，从下一章起生效"},
+    "novel.set_words": {"en": "Per-chapter target set: ~{n} words "
+                              "(from next chapter)",
+                        "zh": "每章字数目标已设为约 {n} 字，从下一章起生效"},
+    "novel.set_show": {"en": "Current settings — style: {sty}; per chapter: "
+                             "{n}",
+                       "zh": "当前设定——风格：{sty}；每章：{n}"},
+    "novel.unset":  {"en": "(not set)", "zh": "（未设置）"},
+    "novel.set_default_words": {"en": "default 1500-2500 words",
+                                "zh": "默认 1500-2500 字"},
+    "novel.set_usage": {"en": "Usage: /novel set 风格 <style> | /novel set "
+                              "每章 <words> | /novel set",
+                        "zh": "用法：/novel set 风格 <写法要求> ｜ "
+                              "/novel set 每章 <字数> ｜ /novel set 查看"},
     "ds.adopt":     {"en": "✅ Use this take", "zh": "✅ 采用选中的卡"},
     "ds.take_main": {"en": "Current clip", "zh": "当前成片"},
     "ds.adopt_none": {"en": "Select a take first", "zh": "先在下拉里选一条卡"},

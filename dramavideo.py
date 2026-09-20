@@ -942,9 +942,10 @@ def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
     on_event({"type": "drama_media", "kind": "clip",
               "label": f"第{ch}章 镜头{i}", "sec": sec})
     want_dub = bool(state.get("drama_tts")) and (shot.get("dialogue") or "").strip()
+    # 超时按时长缩放：长视频（15s/441帧）云端常超 4 分钟，240s 固定值会误杀
     raw = videogen.generate(prompt, out if not want_dub else out + ".raw.mp4",
                             image=frame_url, seconds=sec,
-                            timeout=240.0)
+                            timeout=max(240.0, sec * 30.0))
     if not want_dub:
         return raw
     import tts
