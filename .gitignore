@@ -37,3 +37,4 @@ popup_debug.log
 novels/
 # 根目录手工导出/发布测试产物（正式导出落在 novels/，已忽略）
 /*.epub
+_seedance_test.mp4
