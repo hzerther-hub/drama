@@ -361,21 +361,40 @@ def _migrate_flat_cast(cast: dict) -> dict:
 def find_asset(state: dict, name: str):
     """按名字找资产：先全书 cast，再各章 assets.json。
 
+    精确未命中时做包含式模糊匹配（如「大前门香烟」→「香烟」），
+    唯一命中才采用，多个/零个候选抛错并列出名字。
     返回 (info, store_path)；找不到返回 None。聊天改图覆盖原图用。
     """
-    name = (name or "").strip()
-    if not name:
+    key = (name or "").strip()
+    if not key:
         return None
-    gp = _global_cast_path(state)
-    info = _json_load(gp, {}).get(name)
-    if isinstance(info, dict):
-        return info, gp
     import glob as _glob
+    stores = [(_global_cast_path(state),
+               _json_load(_global_cast_path(state), {}))]
     for p in sorted(_glob.glob(os.path.join(
             _book_dir(state), _ASSET_DIR, "第*章", "assets.json"))):
-        info = _json_load(p, {}).get(name)
-        if isinstance(info, dict):
-            return info, p
+        stores.append((p, _json_load(p, {})))
+    exact, partial = [], []
+    for sp, store in stores:
+        for k, info in store.items():
+            if k.startswith("_") or not isinstance(info, dict):
+                continue
+            if k == key:
+                exact.append((info, sp))
+            elif len(key) >= 2 and (key in k or k in key):
+                partial.append((k, info, sp))
+    if exact:
+        return exact[0]
+    names = sorted({k for k, _i, _sp in partial})
+    if len(names) == 1:
+        k = names[0]
+        for sp, store in stores:
+            if isinstance(store.get(k), dict):
+                return store[k], sp
+        return None
+    if len(names) > 1:
+        raise _stop(f"「{key}」模糊匹配到多个资产：{'、'.join(names)}"
+                    "——请说明是哪一个")
     return None
 
 

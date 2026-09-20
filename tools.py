@@ -319,9 +319,13 @@ TOOL_SCHEMAS = [
                     "filename": {"type": "string",
                                  "description": "保存文件名（可选，默认时间戳 .png）"},
                     "asset_name": {"type": "string",
-                                   "description": "短剧资产名（可选）。用户要求修改/重画某个"
-                                                  "短剧资产（角色/场景/道具）时填资产名："
-                                                  "以原图为参考按 prompt 修改并覆盖资产原图"},
+                                   "description": "短剧资产名（可选，但修改短剧资产的图时"
+                                                  "必须填）。用户要求修改/重画/替换某张短剧"
+                                                  "资产图（角色/场景/道具，如 香烟/铁门/某角色）"
+                                                  "时，必须传资产名而不是另存新图：支持模糊"
+                                                  "匹配（如「大前门香烟」→「香烟」），生成结果"
+                                                  "直接覆盖资产原图。不确定资产名时先读 "
+                                                  "短剧资产/全书/cast.json 确认。"},
                 },
                 "required": ["prompt"],
             },
@@ -615,6 +619,7 @@ def _run_shell(args):
     try:
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
             timeout=config.TOOL_EXEC_TIMEOUT, cwd=WORKSPACE)
         out = (r.stdout or "").strip()
         err = (r.stderr or "").strip()
