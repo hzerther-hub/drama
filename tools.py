@@ -318,6 +318,14 @@ TOOL_SCHEMAS = [
                     "prompt": {"type": "string", "description": "图像提示词（中文或英文）"},
                     "filename": {"type": "string",
                                  "description": "保存文件名（可选，默认时间戳 .png）"},
+                    "asset_name": {"type": "string",
+                                   "description": "短剧资产名（可选，但修改短剧资产的图时"
+                                                  "必须填）。用户要求修改/重画/替换某张短剧"
+                                                  "资产图（角色/场景/道具，如 香烟/铁门/某角色）"
+                                                  "时，必须传资产名而不是另存新图：支持模糊"
+                                                  "匹配（如「大前门香烟」→「香烟」），生成结果"
+                                                  "直接覆盖资产原图。不确定资产名时先读 "
+                                                  "短剧资产/全书/cast.json 确认。"},
                 },
                 "required": ["prompt"],
             },
@@ -611,6 +619,7 @@ def _run_shell(args):
     try:
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
             timeout=config.TOOL_EXEC_TIMEOUT, cwd=WORKSPACE)
         out = (r.stdout or "").strip()
         err = (r.stderr or "").strip()
@@ -838,6 +847,20 @@ def _media_out_path(subdir: str, filename: str, default_ext: str,
     return os.path.join(get_workspace() or os.getcwd(), "media", subdir, name)
 
 
+def _latest_book_state():
+    """最近一本书的 state（image_gen 编辑短剧资产用）；没有书返回 None。"""
+    try:
+        import pipeline as _pl
+        import novel_chain
+        rows = _pl.list_pipelines()
+        if not rows:
+            return None
+        p = _pl.load(rows[0]["pid"], novel_chain.STAGES)
+        return p.state if p else None
+    except Exception:                  # noqa: BLE001
+        return None
+
+
 def _image_gen(args):
     """image_gen 执行器：文生图，落盘 media/images/。"""
     import imggen
@@ -848,6 +871,16 @@ def _image_gen(args):
         return ("错误：未配置图像生成服务。请在「模型与供应商」面板给 Agnes 或 "
                 "商汤日日新填 API Key（条目含 image_model 自动生效），或设环境"
                 "变量 LAS_IMAGE_BASE_URL / LAS_IMAGE_MODEL。")
+    asset_name = (args.get("asset_name") or "").strip()
+    if asset_name:
+        # 短剧资产编辑：原图为参考按指令修改，直接覆盖资产原图（同步 cast.json）
+        try:
+            import dramavideo
+            state = _latest_book_state()
+            p = dramavideo.edit_asset(state, asset_name, prompt)
+        except Exception as e:         # noqa: BLE001
+            return f"错误：{e}"
+        return f"已修改并覆盖资产「{asset_name}」原图：{p}"
     out = _media_out_path("images", args.get("filename"), ".png",
                           (".png", ".jpg", ".jpeg", ".webp"))
     try:

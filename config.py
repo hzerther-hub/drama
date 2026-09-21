@@ -154,15 +154,20 @@ SYSTEM_PROMPT = (
     "也不要声称把任务派给了别的模型。"
     "始终精炼作答：只给结论与必要依据，绝不输出大段文件内容或重复列表。"
     "修改/增强代码文件时，必须调用 write_file 把改动真正写回文件（不要只把新内容输出在回复里）；"
-    "写完再用 read_file 抽查确认。"
+    "写完允许用 read_file 抽查一次，但不要反复读回、逐段重读或改后又疑神疑鬼地推倒重来。"
     "完成纪律（必须遵守）："
     "1) 多步任务动手前必须先调用 task_plan 建立计划（3~8 步，每步写『做什么、达成什么』"
     "的功能描述，不要罗列工具名/文件名），之后每完成一步就调用 task_plan 更新状态"
     "（已完成步骤文本前加 '[x] '），全部步骤完成后再给最终答复；"
     "2) 改完必须用 lsp_diagnostics 或运行相关测试/脚本验证，发现问题就修，直到通过；"
     "3) 只有当所有步骤完成且验证通过、目标真正达成时，才给出最终答复；"
-    "绝不在半途（改了一部分、还没验证通过）就草草结束。"
-    "请始终基于真实工具结果作答，不要编造文件内容。"
+    "绝不在半途（改了一部分、还没验证通过）就草草结束；"
+    "4) 完成即停：用户可见目标达成后立即给最终答复，禁止继续调用工具"
+    "反复自检（例如对图片逐像素扫描、对同一结果反复采样确认）；"
+    "验证最多一次且用最直接的方式（读回文件/跑一次脚本）；"
+    "自检通过后再出现新的怀疑也不得继续，直接汇报结果；"
+    "工具调用轮次接近上限时必须立即收尾作答。"
+    "请始终基于真实工具/委派结果作答，不要编造文件内容。"
     "用户消息可能附带本地媒体文件（图片/音频/视频）路径：图片直接以视觉输入提供；"
     "音频/视频可用 run_shell 调 ffmpeg（ffprobe）提取信息后再分析。"
 )
@@ -667,12 +672,14 @@ def _save_models_data(data: dict):
 
 
 def _media_service(env_base: str, env_model: str, env_key: str,
-                   provider_field: str) -> dict:
+                   provider_field: str, prefer_global: str = "") -> dict:
     """图像/视频生成服务解析（公共逻辑）。
 
     环境变量优先（本地 SD/ComfyUI 网关等场景，key 可空）；
     其次扫描供应商配置里带 provider_field（image_model / video_model）
     且已填 API Key 的供应商——面板里填上 key 即激活。
+    prefer_global 非空时读 globals[prefer_global]（供应商 id）命中的优先
+    （/novel drama config 切视频引擎用），其余按列表序。
     返回 {"base_url","model","api_key","provider_id"}；未配置返回 {}。
     """
     url = os.environ.get(env_base, "").strip().rstrip("/")
@@ -682,10 +689,16 @@ def _media_service(env_base: str, env_model: str, env_key: str,
                 "api_key": os.environ.get(env_key, "").strip(),
                 "provider_id": ""}
     try:
-        providers = _load_models_data().get("providers", [])
+        data = _load_models_data()
+        providers = data.get("providers", [])
+        prefer = (str((data.get("globals") or {}).get(prefer_global, "")
+                       or "").strip() if prefer_global else "")
     except Exception:                  # noqa: BLE001  配置损坏时按未配置降级
-        providers = []
-    for p in providers:
+        providers, prefer = [], ""
+    ordered = [p for p in providers if isinstance(p, dict)
+               and str(p.get("id", "")).strip() == prefer]
+    ordered += [p for p in providers if p not in ordered]
+    for p in ordered:
         if not isinstance(p, dict):
             continue
         mdl = str(p.get(provider_field, "") or "").strip()
@@ -698,15 +711,23 @@ def _media_service(env_base: str, env_model: str, env_key: str,
 
 
 def image_service() -> dict:
-    """图像生成服务：LAS_IMAGE_* 优先，其次带 image_model 的供应商。"""
+    """图像生成服务：LAS_IMAGE_* 优先，其次带 image_model 的供应商。
+
+    globals.image_provider 指定的供应商优先（/novel drama config image 切换）。
+    """
     return _media_service("LAS_IMAGE_BASE_URL", "LAS_IMAGE_MODEL",
-                          "LAS_IMAGE_API_KEY", "image_model")
+                          "LAS_IMAGE_API_KEY", "image_model",
+                          prefer_global="image_provider")
 
 
 def video_service() -> dict:
-    """视频生成服务：LAS_VIDEO_* 优先，其次带 video_model 的供应商。"""
+    """视频生成服务：LAS_VIDEO_* 优先，其次带 video_model 的供应商。
+
+    globals.video_provider 指定的供应商优先（/novel drama config 切换）。
+    """
     return _media_service("LAS_VIDEO_BASE_URL", "LAS_VIDEO_MODEL",
-                          "LAS_VIDEO_API_KEY", "video_model")
+                          "LAS_VIDEO_API_KEY", "video_model",
+                          prefer_global="video_provider")
 
 
 def add_custom_model(model_ids, base_url: str, api_key: str,

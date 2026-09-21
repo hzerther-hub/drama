@@ -330,6 +330,56 @@ def _a1111_generate(svc: dict, prompt: str, out_path: str, size: str,
         f.write(base64.b64decode(imgs[0]))
     return out_path, ""
 
+def _is_ark(svc: dict) -> bool:
+    """火山方舟 Ark 端点识别（Seedream 系列中文文字渲染最强）。"""
+    return ("volces.com" in str(svc.get("base_url", ""))
+            or str(svc.get("model", "")).startswith("doubao-"))
+
+
+def _ark_generate(svc: dict, prompt: str, out_path: str, size: str,
+                  ratio: str, image_refs: list, want_url: bool) -> tuple:
+    """火山方舟 Seedream（同步接口）：中文字渲染正确，支持参考图 i2i。
+
+    POST {base}/images/generations {model, prompt, size: WxH 或 1K/2K/4K,
+    response_format: url, watermark: false, image: [参考图]}。
+    """
+    w, h = _dims(size, ratio)
+
+    def _do_post():
+        body = {"model": svc["model"], "prompt": prompt,
+                "size": f"{w}x{h}", "watermark": False,
+                "response_format": "url" if want_url else "b64_json"}
+        if image_refs:
+            body["image"] = [r if r.startswith("data:") else data_uri(r)
+                             for r in image_refs]
+        req = urllib.request.Request(
+            f"{svc['base_url']}/images/generations",
+            data=json.dumps(body).encode("utf-8"), method="POST")
+        req.add_header("Content-Type", "application/json")
+        if svc.get("api_key"):
+            req.add_header("Authorization", f"Bearer {svc['api_key']}")
+        with urllib.request.urlopen(req, timeout=300) as r:
+            return json.loads(r.read().decode("utf-8"))
+
+    data = _retry(_do_post)
+    item = (data.get("data") or [{}])[0]
+    remote = str(item.get("url") or "").strip()
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    if item.get("b64_json"):
+        with open(out_path, "wb") as f:
+            f.write(base64.b64decode(item["b64_json"]))
+        return out_path, remote
+    if remote:
+        try:
+            with urllib.request.urlopen(remote, timeout=120) as r:
+                with open(out_path, "wb") as f:
+                    f.write(r.read())
+            return out_path, remote
+        except Exception as e:         # noqa: BLE001
+            raise ImgError(f"图像下载失败：{e}") from e
+    raise ImgError("Ark 未返回图像数据")
+
+
 def generate_ex(prompt: str, out_path: str, size: str = "", ratio: str = "",
                 image_refs: list = None, want_url: bool = False) -> tuple:
     """增强生成：支持图生图/多图合成与 URL 回传。
@@ -349,6 +399,9 @@ def generate_ex(prompt: str, out_path: str, size: str = "", ratio: str = "",
         return _comfy_generate(svc, prompt, out_path, size, ratio)
     if _kind == "a1111":
         return _a1111_generate(svc, prompt, out_path, size, ratio, image_refs)
+    if _is_ark(svc):
+        return _ark_generate(svc, prompt, out_path, size, ratio,
+                             image_refs, want_url)
     if not svc.get("model"):
         raise ImgError("未配置图像模型（LAS_IMAGE_MODEL 或供应商的 image_model）")
     body = {"model": svc["model"], "prompt": prompt, "n": 1,

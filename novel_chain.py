@@ -1165,6 +1165,10 @@ def _chapter_prompt(state: dict, idx: int) -> str:
     recall = rag_recall(state, task_line or prev_text, 3)
     recall_text = f"\n相关前文片段（RAG 召回）：\n{recall}\n" if recall else ""
     genre = f"题材：{state.get('genre', '')}。" if state.get("genre") else ""
+    words = int(state.get("ch_words") or 0)
+    words_line = (f"请写第 {idx} 章，约 {max(500, min(words, 20000))} 字："
+                  if words else
+                  f"请写第 {idx} 章，1500-2500 字：")
     return (f"{genre}\n书名与主线：\n{state['outline']}\n{_contract_block(state)}"
             f"世界：\n{state['world']}\n角色：\n{state['characters']}\n"
             f"卷战略：\n{state['volume']}\n{_style_block(state)}"
@@ -1172,8 +1176,8 @@ def _chapter_prompt(state: dict, idx: int) -> str:
             f"前情提要：\n{prev_text}\n事实台账：\n{led_text}\n"
             f"{_open_foreshadow_block(state)}{recall_text}{task_line}"
             f"{title_line}"
-            f"请写第 {idx} 章，1500-2500 字：承接前情与台账，"
-            "遵守硬约束，不得与事实矛盾，结尾留钩子。")
+            f"{words_line}"
+            "承接前情与台账，遵守硬约束，不得与事实矛盾，结尾留钩子。")
 
 
 def _review(state: dict, text: str, idx: int):
@@ -1563,11 +1567,13 @@ def ai_edit(state: dict, instruction: str, context: str,
     system 为空时用「你是网文编辑」通用提示；context 必须包含「选区/全文」
     原文与位置标记（首尾明示），以便 AI 输出可被定位替换。
     """
-    from . import StageFail                                  # noqa: F401
     sys_p = system or ("你是网文编辑。严格按作者的修改意见改写下面这段文本，"
                        "不要改变剧情事实与时间线，不要复述，只输出改写后的文本。")
+    chars = str(state.get("characters") or "").strip()
     text = _ask(state, sys_p,
-                f"【修改意见】\n{instruction}\n\n"
+                (f"【角色设定（人名/性别/称呼/关系必须与其一致，"
+                 f"不得发明新人物）】\n{chars}\n\n" if chars else "")
+                + f"【修改意见】\n{instruction}\n\n"
                 f"【待改写文本】\n{context}\n\n"
                 "只输出改写后的完整文本，前后不要加任何说明。")
     if not text.strip():

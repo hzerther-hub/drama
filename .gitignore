@@ -44,3 +44,5 @@ novels/
 聚宽_ptrade/
 # 小说流程事件日志（落在书目录，随书走，不入库）
 *.events.jsonl
+# 测试视频（本地保留）
+_seedance_test.mp4

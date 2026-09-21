@@ -84,10 +84,11 @@ def show(app):
     ui._make_modal(win, app.root)
 
     st = {"ch": chapters[0]["idx"], "shot": 0, "busy": False, "step": 3,
-          "img_refs": [], "_t0": None, "_tick_id": None, "_gen_base": ""}
+          "img_refs": [], "_t0": None, "_tick_id": None, "_gen_base": "",
+          "_spin_i": 0}
 
     def _tick():
-        """生成中每秒把状态刷新成「…· Ns」，让长时间生成可感知。"""
+        """生成中刷新状态：「⠛ 生成中：… · Ns」盲文转圈 + 计时。"""
         tid = st.get("_tick_id")
         if tid:
             try:
@@ -98,8 +99,10 @@ def show(app):
         if not st["busy"] or not win.winfo_exists():
             return
         el = int(time.time() - st["_t0"]) if st["_t0"] else 0
-        stat_lbl.config(text=f"{st['_gen_base']} · {el}s")
-        st["_tick_id"] = win.after(1000, _tick)
+        f = theme.SPINNER[st["_spin_i"] % len(theme.SPINNER)]
+        st["_spin_i"] += 1
+        stat_lbl.config(text=f"{f} {st['_gen_base']} · {el}s")
+        st["_tick_id"] = win.after(200, _tick)
 
     def status(msg, busy=False):
         st["busy"] = busy
@@ -380,6 +383,8 @@ def show(app):
             dramavideo._chapter_assets_path(state, ch), {})
 
     def _build_cast_card(card, name, info, store_path):
+        dramavideo._resolve_asset_image(
+            state, name, info, base=os.path.dirname(store_path))
         ph = _thumb(info.get("path") or "", (150, 200))
         if ph:
             lbl = tk.Label(card, image=ph, bg=theme.PANEL)
@@ -475,7 +480,7 @@ def show(app):
                         image_ref=(mode == "i2i"), custom_prompt=custom,
                         fallback_dir=os.path.dirname(store_path))
                 except Exception as e:           # noqa: BLE001
-                    win.after(0, lambda: status(f"❌ {type(e).__name__}: {e}"))
+                    win.after(0, lambda err=e: status(f"❌ {type(err).__name__}: {err}"))
                 else:
                     # 接住返回值：path/url 必须落回 store——无 path 的资产
                     # 首次生成全靠这里记路，否则图在磁盘、卡片永远不出图
@@ -500,7 +505,7 @@ def show(app):
                 try:
                     lk = dramavideo.gen_look(state, name, dict(item), era)
                 except Exception as e:           # noqa: BLE001
-                    win.after(0, lambda: status(f"❌ {type(e).__name__}: {e}"))
+                    win.after(0, lambda err=e: status(f"❌ {type(err).__name__}: {err}"))
                 else:
                     c = _store()
                     it = c.setdefault(name, {"type": info.get("type", "角色")})
@@ -532,6 +537,36 @@ def show(app):
                         font=(FONT_UI, 9), command=lambda: _regen_by("i2i")
                         ).pack(side="left", padx=2)
 
+        def _three_view():
+            """三视图设定图（面特+正/侧/背，锁脸）：关键帧的高一致参考源。"""
+            item2 = _save_look_to_json(ent)     # 先把描述框的改动存进去
+            if st["busy"]:
+                status(_t("ds.busy"), busy=True)
+                return
+            if not (item2.get("path") or ""):
+                status(_t("ds.need_face", n=name))
+                return
+            status(_t("ds.generating", n=f"{name} 三视图"), busy=True)
+
+            def work():
+                try:
+                    tp = dramavideo.three_view(state, name, dict(item2))
+                except Exception as e:       # noqa: BLE001
+                    win.after(0, lambda err=e: status(
+                        f"❌ {type(err).__name__}: {err}"))
+                else:
+                    def done():
+                        status(_t("ds.ready"))
+                        if os.path.exists(tp):
+                            os.startfile(tp)
+                    win.after(0, done)
+            threading.Thread(target=work, daemon=True).start()
+
+        ui._flat_button(row2, text=_t("ds.three_view"), width=9,
+                        font=(FONT_UI, 9),
+                        command=lambda: _three_view()
+                        ).pack(side="left", padx=2)
+
     ui._flat_button(foot2, text=_t("ds.fill_cast"), width=14,
                     font=(FONT_UI, 10),
                     command=lambda: _run_thread(
@@ -553,7 +588,7 @@ def show(app):
                     state, {"idx": ch, "title": "", "text": ""},
                     shots, _cast())
             except Exception as e:       # noqa: BLE001
-                win.after(0, lambda: status(f"❌ {type(e).__name__}: {e}"))
+                win.after(0, lambda err=e: status(f"❌ {type(err).__name__}: {err}"))
             else:
                 win.after(0, lambda: (_refresh_cast(),
                                       status(_t("ds.ready"))))
@@ -689,9 +724,7 @@ def show(app):
                     else status(_t("ds.no_clips_dir"))).pack(pady=3)
     ui._flat_button(right3, text=_t("ds.play_clip"), width=18,
                     font=(FONT_UI, 10),
-                    command=lambda: os.startfile(_canonical_clip())
-                    if os.path.exists(_canonical_clip())
-                    else status(_t("ds.no_clip"))).pack(pady=3)
+                    command=lambda: _play_current()).pack(pady=3)
     # ---- 抽卡选择器：take 列表 + 首帧缩略图预览 + 采用为当前成片 ----
     take_var = tk.StringVar()
     take_box = ttk.Combobox(right3, textvariable=take_var, state="readonly",
@@ -789,6 +822,14 @@ def show(app):
             prev.config(image="", text=_t("ds.no_frame"),
                         width=30, height=14)
 
+    def _play_current():
+        """播放下拉当前选中的卡（take2 等）；未选 take 则播主成片。"""
+        for p in (_selected_take_path(), _canonical_clip()):
+            if p and os.path.exists(p):
+                os.startfile(p)
+                return
+        status(_t("ds.no_clip"))
+
     # ---- 步骤3 数据与动作 ----
     def _shots_file(ch):
         return os.path.join(book, dramavideo._SHOT_DIR, f"第{ch}章.json")
@@ -824,10 +865,9 @@ def show(app):
         mood_e.delete(0, "end"); mood_e.insert(0, s.get("mood", ""))
         need = dramavideo._speech_seconds(s)
         dur = int(float(s.get("duration") or 0))
-        spk_lbl.config(text=_t("ds.speech_hint", n=need)
-                       + ("" if dur >= need else " ⚠"))
-        if dur < need:
-            spk_lbl.config(fg=theme.DANGER)
+        lack = dur < need
+        spk_lbl.config(text=_t("ds.speech_hint", n=need) + (" ⚠" if lack else ""),
+                       fg=theme.DANGER if lack else theme.ACCENT)
         chars_e.delete(0, "end")
         chars_e.insert(0, "、".join(s.get("characters", [])))
         sec_sp.set(int(s.get("duration", 5)))
@@ -952,7 +992,7 @@ def show(app):
             try:
                 _gen_work(kind)
             except Exception as e:       # noqa: BLE001
-                win.after(0, lambda: status(f"❌ {type(e).__name__}: {e}"))
+                win.after(0, lambda err=e: status(f"❌ {type(err).__name__}: {err}"))
             else:
                 def done():
                     _refresh_shots(st["shot"])
@@ -975,7 +1015,7 @@ def show(app):
             try:
                 fn()
             except Exception as e:       # noqa: BLE001
-                win.after(0, lambda: status(f"❌ {type(e).__name__}: {e}"))
+                win.after(0, lambda err=e: status(f"❌ {type(err).__name__}: {err}"))
             else:
                 win.after(0, lambda: status(_t("ds.ready")))
         threading.Thread(target=work, daemon=True).start()
