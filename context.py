@@ -108,18 +108,24 @@ def _protected_indices(rounds: list[list[int]], keep_from: int) -> set[int]:
     return keep
 
 
-def _strip_old_images(content: list) -> list:
-    """把旧消息里的 image_url 部分换成占位文本（其余部分原样保留）。"""
+def _strip_old_images(content):
+    """把 content 列表里的 image_url 部分换成占位文本（其余部分原样保留）。
+
+    返回 ``(new_content, stripped_count)`` —— stripped_count 是被剥离的图片条数；
+    调用方在 stripped_count > 0 时把 new_content 写回，便于按张数在 UI 上报数字。
+    """
     changed = False
     out = []
+    stripped = 0
     for part in content:
         if isinstance(part, dict) and part.get("type") == "image_url":
             out.append({"type": "text",
                         "text": "[早期图片已省略以压缩上下文]"})
             changed = True
+            stripped += 1
         else:
             out.append(part)
-    return out if changed else content
+    return (out if changed else content), stripped
 
 
 def _round_summary(messages: list, idxs: list[int]) -> str:
@@ -189,27 +195,35 @@ def maybe_compact(messages: list, emit=None, model=None) -> list:
 
     msgs = [dict(m) for m in messages]
     changed = False
+    images_stripped = 0
+    tools_truncated = 0
+    protected = _protected_indices(rounds, keep_from)
     for i, m in enumerate(msgs):
         if m.get("role") == "tool" and isinstance(m.get("content"), str):
             limit = 400 if i in old_tool_idx else tool_keep
             if len(m["content"]) > limit:
                 m["content"] = _truncate(m["content"], limit)
                 changed = True
+                tools_truncated += 1
         # 多模态 user 消息：旧轮次里的图片 data URL 换成占位文本（大幅省 token）
-        if (isinstance(m.get("content"), list) and i not in
-                _protected_indices(rounds, keep_from)):
-            new_content = _strip_old_images(m["content"])
-            if new_content is not m["content"]:
+        if (isinstance(m.get("content"), list) and i not in protected):
+            new_content, stripped = _strip_old_images(m["content"])
+            if stripped:
                 m["content"] = new_content
                 changed = True
+                images_stripped += stripped
 
     # 没有可折叠的中间轮：截断后即返回
     if len(rounds) <= keep_rounds + 1:
         after = estimate_tokens(msgs)
         if emit and changed and after < before:
-            emit({"type": "context_compact", "before": before, "after": after})
+            emit({"type": "context_compact", "before": before, "after": after,
+                  "images_stripped": images_stripped,
+                  "tools_truncated": tools_truncated,
+                  "rounds_collapsed": 0})
         return msgs
 
+    rounds_collapsed = 0
     # ---- 阶段 2：仍超预算 → 折叠中间轮 ----
     if estimate_tokens(msgs) > budget:
         out = [msgs[0]]                      # system
@@ -226,8 +240,12 @@ def maybe_compact(messages: list, emit=None, model=None) -> list:
             for idx in rounds[r]:
                 out.append(msgs[idx])
         msgs = out
+        rounds_collapsed = len(mid_range)
 
     after = estimate_tokens(msgs)
     if emit and after < before:
-        emit({"type": "context_compact", "before": before, "after": after})
+        emit({"type": "context_compact", "before": before, "after": after,
+              "images_stripped": images_stripped,
+              "tools_truncated": tools_truncated,
+              "rounds_collapsed": rounds_collapsed})
     return msgs

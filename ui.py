@@ -7775,9 +7775,17 @@ class App:
             self.cache_saved_tokens += event.get("saved", 0)
             self._render_usage()
         elif etype == "context_compact":
-            self._append(
-                _t("evt.compact", before=event["before"], after=event["after"])+"\n",
-                "meta")
+            tail = _t("evt.compact", before=event["before"], after=event["after"])
+            detail_bits = []
+            if event.get("images_stripped"):
+                detail_bits.append(_t("evt.compact_images", n=event["images_stripped"]))
+            if event.get("tools_truncated"):
+                detail_bits.append(_t("evt.compact_tools", n=event["tools_truncated"]))
+            if event.get("rounds_collapsed"):
+                detail_bits.append(_t("evt.compact_rounds", n=event["rounds_collapsed"]))
+            if detail_bits:
+                tail += " · " + " / ".join(detail_bits)
+            self._append(tail + "\n", "meta")
         elif etype == "tool_denied":
             self._append(_t("evt.denied", name=event["name"])+"\n", "denied")
         elif etype == "media":
