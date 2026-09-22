@@ -21,6 +21,7 @@ import tkinter as tk
 from tkinter import ttk
 
 import dramavideo
+import videogen
 from i18n import t as _t
 import theme
 
