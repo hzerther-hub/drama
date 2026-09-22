@@ -318,7 +318,11 @@ TOOL_SCHEMAS = [
                            "**只有用户明确说要『生成一张新图保存到 media/』**（与已有"
                            "资产无关）时，才不传 asset_name。"
                            "asset_name 支持模糊匹配（『大前门香烟』→『香烟』）；"
-                           "不确定时务必先读短剧资产/全书/cast.json。",
+                           "不确定时务必先读短剧资产/全书/cast.json。"
+                           "**画面构图默认要求**：人物站姿 / 立绘请出『头部至脚部都在"
+                           "画面内』的全身像，避免只生成胸口以下或腰部以上；横向场景图"
+                           "同理保留完整边界；如果服务返回了半身像/裁切图，应在"
+                           "prompt 中显式写 full-body / head and feet in frame 后重发。",
             "parameters": {
                 "type": "object",
                 "properties": {
