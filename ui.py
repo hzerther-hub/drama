@@ -1159,6 +1159,26 @@ class App:
                 "<Leave>", lambda e: self._set_status(""))
             self._update_dispatch_btn()
 
+        # 创作模式开关：🎬 短剧 / 📖 漫画。关闭时对应 /novel 子命令被闸门拦截
+        # （命令分发 _novel_command + 弹窗过滤 command_candidates 双保险）
+        self.drama_mode_btn = _flat_button(
+            ctrl, text="", command=lambda: self._toggle_mode("drama"),
+            font=(FONT_UI, theme.FS_TOOLBAR))
+        self.drama_mode_btn.pack(side="left", padx=(0, 6))
+        self.drama_mode_btn.bind(
+            "<Enter>", lambda e: self._set_status(_t("mode.hint_drama")))
+        self.drama_mode_btn.bind(
+            "<Leave>", lambda e: self._set_status(""))
+        self.comic_mode_btn = _flat_button(
+            ctrl, text="", command=lambda: self._toggle_mode("comic"),
+            font=(FONT_UI, theme.FS_TOOLBAR))
+        self.comic_mode_btn.pack(side="left", padx=(0, 10))
+        self.comic_mode_btn.bind(
+            "<Enter>", lambda e: self._set_status(_t("mode.hint_comic")))
+        self.comic_mode_btn.bind(
+            "<Leave>", lambda e: self._set_status(""))
+        self._update_mode_btns()
+
         # 量化产品：策略互转面板入口（其它产品不建此按钮）
         if _feature("quant", False):
             _flat_emoji_button(ctrl, "📈",

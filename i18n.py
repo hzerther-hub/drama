@@ -65,6 +65,12 @@ STRINGS: dict = {
     "mode.readonly":   {"en": "Read-only (no writes)", "zh": "只读（禁止写）"},
     "mode.ask":        {"en": "Ask every time", "zh": "每次询问"},
     "mode.always":     {"en": "Always allow", "zh": "总是允许"},
+    "mode.hint_drama": {"en": "🎬 Toggle short-drama creation mode "
+                                "(/novel drama*)",
+                          "zh": "🎬 短剧创作模式开关（开启后 /novel drama* 子命令可用）"},
+    "mode.hint_comic": {"en": "📖 Toggle comic / manhua creation mode "
+                                "(/novel comic*)",
+                          "zh": "📖 漫画 / 漫剧创作模式开关（开启后 /novel comic* 子命令可用）"},
 
     # —— 模型菜单 ——
     "model.manage":    {"en": "⚙ Manage models (add / edit / delete)…", "zh": "⚙ 管理模型（添加 / 编辑 / 删除）…"},
@@ -1110,6 +1116,32 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
                                  "adoption still work)",
                            "zh": "预览首帧需要 ffmpeg（不影响生成与采用）"},
     "ds.speech_hint": {"en": "speech needs ≥{n}s", "zh": "读完需≥{n}秒"},
+    "ds.video_model":       {"en": "Video model", "zh": "视频模型"},
+    "ds.video_model_auto":  {"en": "auto", "zh": "自动"},
+    "ds.moderation_retry":  {"en": "🛟 Switch model & retry", "zh": "🛟 切模型重试"},
+    "ds.moderation_msg":    {"en": "Moderation rejected: {n} — {h}",
+                              "zh": "内容审核拒绝：{n}（{h}）"},
+    "ds.no_alt_provider":   {"en": "No alternate video provider configured",
+                              "zh": "没有可切换的备选视频模型（先去供应商管理填 Key）"},
+    "ds.concat_skip":       {"en": "Concat: skipped {n} missing clip(s): {names}",
+                              "zh": "拼接：跳过 {n} 个未生成镜头：{names}"},
+    "ds.batch_title":       {"en": "Batch generate chapter clips",
+                              "zh": "批量生成本章视频"},
+    "ds.batch_confirm":     {"en": "Chapter {ch}: {todo}/{n} clips to generate, "
+                                   "total ≈ {total}s. Model: {cur}; "
+                                   "Resolution: {res}. Start?",
+                              "zh": "第 {ch} 章：待生成 {todo}/{n} 个镜头，"
+                              "合计时长 ≈ {total}s。当前模型：{cur}；"
+                              "分辨率：{res}。开始生成？"},
+    "ds.batch_all_btn":     {"en": "📦 Batch generate chapter", "zh": "📦 批量生成本章视频"},
+    "ds.batch_retry_title": {"en": "Retry failed clips", "zh": "重试失败镜头"},
+    "ds.batch_retry_msg":   {"en": "Chapter {n}: re-run only the missing clips?",
+                              "zh": "第 {n} 章：仅重跑尚未生成 / 生成失败的镜头？"},
+    "ds.batch_retry_btn":   {"en": "🔁 Retry failed", "zh": "🔁 重试失败"},
+    "ds.batch_done":        {"en": "Batch done: {ok} generated, {skip} skipped, "
+                                   "{fail} failed",
+                              "zh": "批量完成：新生成 {ok} 个、跳过 {skip} 个、"
+                              "失败 {fail} 个"},
     "ed.result_discarded": {"en": "Generation finished, but the dialog was "
                                 "already closed — result discarded",
                             "zh": "生成完成，但弹窗已关闭——结果已丢弃"},

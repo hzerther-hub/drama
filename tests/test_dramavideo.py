@@ -225,7 +225,8 @@ def test_build_shots_two_stage_video_prompt(book, monkeypatch):
 
     seen = {}
 
-    def fake_gen(prompt, out, image=None, seconds=0, timeout=0):
+    def fake_gen(prompt, out, image=None, seconds=0, timeout=0,
+                resolution="", preferred_provider_id=""):
         seen["prompt"] = prompt
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "wb") as f:
@@ -257,7 +258,8 @@ def test_speech_seconds_and_clip_uses_it(book, monkeypatch):
 
     seen = {}
 
-    def fake_gen(prompt, out, image=None, seconds=0, timeout=0):
+    def fake_gen(prompt, out, image=None, seconds=0, timeout=0,
+                resolution="", preferred_provider_id=""):
         seen["sec"] = seconds
         seen["prompt"] = prompt
         os.makedirs(os.path.dirname(out), exist_ok=True)
@@ -325,8 +327,11 @@ def test_clip_uses_frame_url(book, monkeypatch):
             "description": "中景。", "dialogue": "好重", "duration": 6}
     captured = {}
 
-    def fake_video(prompt, out, image="", seconds=0, timeout=0):
-        captured.update(prompt=prompt, image=image, seconds=seconds)
+    def fake_video(prompt, out, image="", size="", resolution="", seconds=0,
+                   timeout=0, preferred_provider_id=""):
+        captured.update(prompt=prompt, image=image, seconds=seconds,
+                        resolution=resolution,
+                        preferred_provider_id=preferred_provider_id)
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "wb") as f:
             f.write(b"MP4")
@@ -350,7 +355,8 @@ def test_clip_dubs_dialogue_with_ffmpeg(book, monkeypatch):
     state["drama_tts"] = True            # 默认关：开启才走 TTS 配音
     events, dubs, speaks = [], [], []
 
-    def fake_video(prompt, out, image="", seconds=0, timeout=0):
+    def fake_video(prompt, out, image="", seconds=0, timeout=0,
+                   resolution="", preferred_provider_id=""):
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "wb") as f:
             f.write(b"RAW")
@@ -393,7 +399,8 @@ def test_clip_tts_failure_degrades_to_original(book, monkeypatch):
     state["drama_tts"] = True
     events = []
 
-    def fake_video(prompt, out, image="", seconds=0, timeout=0):
+    def fake_video(prompt, out, image="", seconds=0, timeout=0,
+                   resolution="", preferred_provider_id=""):
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "wb") as f:
             f.write(b"RAW")
@@ -427,6 +434,8 @@ def test_concat_runs_ffmpeg_and_cleans_list(book, monkeypatch):
                         lambda cmd, **kw: calls.append(cmd)
                         or type("R", (), {"returncode": 0})())
     clips = [str(tmp / "1.mp4"), str(tmp / "2.mp4")]
+    for c in clips:                          # 选择性拼接预检要求文件存在
+        open(c, "wb").close()
     out = dramavideo.concat(clips, str(tmp / "ep.mp4"))
     assert out.endswith("ep.mp4")
     assert calls[0][1:4] == ["-y", "-f", "concat"] and "-c" in calls[0]
@@ -589,7 +598,8 @@ def test_clip_prompt_separates_visual_and_voice(book, monkeypatch):
             "dialogue": "好重", "duration": 5}
     captured = {}
 
-    def fake_video(prompt, out, image="", seconds=0, timeout=0):
+    def fake_video(prompt, out, image="", seconds=0, timeout=0,
+                   resolution="", preferred_provider_id=""):
         captured["prompt"] = prompt
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "wb") as f:
@@ -944,7 +954,8 @@ def test_clip_force_regenerates_existing(book, monkeypatch):
             "description": "中景。", "dialogue": "", "duration": 5}
     calls = []
 
-    def fake_video(prompt, out, image="", seconds=0, timeout=0):
+    def fake_video(prompt, out, image="", seconds=0, timeout=0,
+                   resolution="", preferred_provider_id=""):
         calls.append(out)
         with open(out, "wb") as f:
             f.write(b"NEW")
@@ -1056,7 +1067,8 @@ def test_take_thumb_uses_ffmpeg(book, monkeypatch, tmp_path):
     assert ran["cmd"][-2:] == ["1", str(out)]     # -frames:v 1
 
 
-def fake_video_bytes(prompt, out, image="", seconds=0, timeout=0):
+def fake_video_bytes(prompt, out, image="", seconds=0, timeout=0,
+                       resolution="", preferred_provider_id=""):
     """抽卡测试共用：写盘模拟视频产物，按 out 内容区分。"""
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "wb") as f:

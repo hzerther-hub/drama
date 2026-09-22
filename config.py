@@ -360,6 +360,35 @@ def set_standalone(on: bool):
         _save_models_data(data)
 
 
+# ---------------- 创作模式开关（顶栏 🎬短剧 / 📖漫画） ----------------
+# 开关关闭时，对应的 /novel drama、/novel comic 系列快捷命令被闸门拦截，
+# 命令弹窗与速查菜单同步隐藏。drama 默认开（兼容既有用户习惯）。
+_MODE_DEFAULTS = {"drama": True, "comic": False}
+
+
+def get_mode_flags() -> dict:
+    """返回模式开关状态，缺失字段用默认值补齐。"""
+    data = _load_models_data()
+    modes = data.get("modes")
+    if not isinstance(modes, dict):
+        modes = {}
+    return {k: bool(modes.get(k, v)) for k, v in _MODE_DEFAULTS.items()}
+
+
+def set_mode_flag(key: str, on: bool):
+    """开关某个创作模式（变更才写盘）。"""
+    if key not in _MODE_DEFAULTS:
+        return
+    data = _load_models_data()
+    modes = data.get("modes")
+    if not isinstance(modes, dict):
+        modes = {}
+    if bool(modes.get(key, _MODE_DEFAULTS[key])) != bool(on):
+        modes[key] = bool(on)
+        data["modes"] = modes
+        _save_models_data(data)
+
+
 # ---------------- 界面字号（聊天 / 编辑器，持久化） ----------------
 FONT_SIZE_MIN, FONT_SIZE_MAX = 8, 24
 
@@ -709,6 +738,32 @@ def video_service() -> dict:
     return _media_service("LAS_VIDEO_BASE_URL", "LAS_VIDEO_MODEL",
                           "LAS_VIDEO_API_KEY", "video_model",
                           prefer_global="video_provider")
+
+
+def video_services() -> list:
+    """枚举所有视频供应商（带 video_model 字段；UI 顶栏下拉数据源）。
+
+    返回 [{provider_id, name, base_url, model, api_key}, ...]，按 models.json
+    顺序。未填 api_key 的也返回，调用方自己标记 has_key。
+    """
+    out = []
+    data = _load_models_data()
+    pid = (data.get("globals") or {}).get("video_provider", "") or ""
+    rows = list(data.get("providers", []))
+    if pid:
+        rows = sorted(rows, key=lambda p: 0 if p.get("id") == pid else 1)
+    for p in rows:
+        vm = (p.get("video_model") or "").strip()
+        if not vm:
+            continue
+        out.append({
+            "provider_id": p.get("id", ""),
+            "name": p.get("name", p.get("id", "")),
+            "base_url": (p.get("base_url") or "").rstrip("/"),
+            "model": vm,
+            "api_key": p.get("api_key", "") or "",
+        })
+    return out
 
 
 def add_custom_model(model_ids, base_url: str, api_key: str,

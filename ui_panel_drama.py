@@ -157,6 +157,70 @@ def show(app):
     ch_box.pack(side="right")
     ch_box.bind("<<ComboboxSelected>>", lambda e: _on_chapter())
 
+    # ---- 顶栏：视频模型 + 分辨率档位（provider 切换 → resolution 联动） ----
+    video_providers = videogen.available_providers()
+    provider_labels = ([f"自动（{_t('ds.video_model_auto') or 'auto'}）"]
+                          + [f"{vp['name']}（{vp['model']}）"
+                             + ("" if vp['has_key'] else " · 未填 Key")
+                             for vp in video_providers])
+    video_provider_var = tk.StringVar(
+        value=state.get("drama_video_provider_label") or provider_labels[0])
+    video_resolution_var = tk.StringVar(
+        value=state.get("drama_video_resolution") or "")
+
+    def _provider_index():
+        """当前 provider 选中索引（0=自动；≥1=providers[i-1]）。"""
+        s = video_provider_var.get()
+        if s in provider_labels:
+            return provider_labels.index(s)
+        return 0
+
+    def _current_provider_id() -> str:
+        idx = _provider_index()
+        return "" if idx == 0 else video_providers[idx - 1]["provider_id"]
+
+    def _current_resolution_tiers() -> tuple:
+        idx = _provider_index()
+        if idx == 0:
+            return videogen.provider_resolution_tiers("agnes")
+        kind = video_providers[idx - 1].get("kind", "agnes")
+        return videogen.provider_resolution_tiers(kind)
+
+    def _on_provider_change(*_a):
+        tiers = _current_resolution_tiers()
+        res_box["values"] = tiers
+        if video_resolution_var.get() not in tiers:
+            video_resolution_var.set(tiers[0] if tiers else "")
+        state["drama_video_provider"] = _current_provider_id()
+        state["drama_video_provider_label"] = video_provider_var.get()
+        state["drama_video_resolution"] = video_resolution_var.get().strip()
+        try:
+            p.save()
+        except Exception:                  # noqa: BLE001
+            pass
+
+    def _on_resolution_change(*_a):
+        state["drama_video_resolution"] = video_resolution_var.get().strip()
+        try:
+            p.save()
+        except Exception:                  # noqa: BLE001
+            pass
+
+    tk.Label(top, text=_t("ds.video_model"), font=(FONT_UI, 9),
+             bg=theme.BG, fg=theme.MUTED).pack(side="right", padx=(8, 0))
+    res_box = ttk.Combobox(top, textvariable=video_resolution_var, width=8,
+                           state="readonly", font=(FONT_UI, 9),
+                           values=_current_resolution_tiers())
+    res_box.pack(side="right", padx=(4, 0))
+    res_box.bind("<<ComboboxSelected>>", lambda e: _on_resolution_change())
+    if video_resolution_var.get() not in _current_resolution_tiers():
+        video_resolution_var.set(_current_resolution_tiers()[0])
+    prov_box = ttk.Combobox(top, textvariable=video_provider_var, width=22,
+                            state="readonly", font=(FONT_UI, 9),
+                            values=provider_labels)
+    prov_box.pack(side="right", padx=(4, 0))
+    prov_box.bind("<<ComboboxSelected>>", lambda e: _on_provider_change())
+
     # ---- 风格设置：预设 + 自由输入，保存进书状态（影响后续所有生成） ----
     style_row = tk.Frame(win, bg=theme.BG)
     style_row.pack(fill="x", padx=14, pady=(2, 0))
@@ -204,6 +268,44 @@ def show(app):
     ui._flat_button(stat_foot, text=_t("ds.stop"), width=12,
                     font=(FONT_UI, 9), command=_stop_gen
                     ).pack(side="right", padx=(8, 0))
+
+    # 内容审核拒绝时的「切模型重试」按钮（默认隐藏；moderation 事件触发显示）
+    def _on_moderation_retry():
+        """把 provider 切到列表里的下一个非当前选项，重新生成当前镜头。"""
+        last = st.get("_moderation_last") or {}
+        cur_pid = last.get("provider_id") or ""
+        # 找到下一个不同的 provider
+        nxt = ""
+        for vp in video_providers:
+            if vp["provider_id"] and vp["provider_id"] != cur_pid and vp["has_key"]:
+                nxt = vp["provider_id"]
+                break
+        if not nxt:
+            status(_t("ds.no_alt_provider"), busy=False)
+            return
+        state["drama_video_provider"] = nxt
+        state["drama_video_provider_label"] = next(
+            (l for l, v in zip(provider_labels[1:], video_providers)
+             if v["provider_id"] == nxt), provider_labels[0])
+        # resolution 联动
+        tiers = _current_resolution_tiers()
+        res_box["values"] = tiers
+        if video_resolution_var.get() not in tiers:
+            video_resolution_var.set(tiers[0] if tiers else "")
+        state["drama_video_resolution"] = video_resolution_var.get().strip()
+        video_provider_var.set(state["drama_video_provider_label"])
+        try:
+            p.save()
+        except Exception:                  # noqa: BLE001
+            pass
+        st["_moderation_last"] = None
+        mod_btn.pack_forget()
+        # 重跑当前镜头
+        _gen("clip")
+
+    mod_btn = ui._flat_button(stat_foot, text=_t("ds.moderation_retry"), width=14,
+                              font=(FONT_UI, 9), command=_on_moderation_retry)
+    # 不 pack，由 moderation 事件触发显示
 
     steps = {}
 
@@ -709,6 +811,83 @@ def show(app):
                     command=lambda: _gen("take")).pack(pady=3)
     ui._flat_button(right3, text=_t("ds.concat"), width=18, font=(FONT_UI, 10),
                     command=lambda: _gen("concat")).pack(pady=3)
+
+    # ---- 批量生成视频 + 重试失败（参考火宝 v3.1 选择模式 + 预生成确认） ----
+    def _batch_all():
+        """批量生成本章全部镜头视频（已有文件跳过）；弹确认窗。"""
+        if st["busy"]:
+            status(_t("ds.busy"), busy=True)
+            return
+        shots = _shots()
+        if not shots:
+            status(_t("ds.need_shots", n=st["ch"]))
+            return
+        ch, n = st["ch"], len(shots)
+        existing = sum(
+            1 for i in range(1, n + 1)
+            if os.path.exists(os.path.join(book, dramavideo._CLIP_DIR,
+                                          f"{ch}-{i:02d}.mp4")))
+        todo = n - existing
+        total_sec = sum(max(int(s.get("duration") or 5), 5) for s in shots)
+        cur_label = (video_provider_var.get() or "(自动)")
+        cur_res = (video_resolution_var.get() or "(自动)")
+        msg = _t("ds.batch_confirm",
+                 ch=ch, todo=todo, total=total_sec,
+                 n=n, cur=cur_label, res=cur_res)
+        from tkinter import messagebox
+        if not messagebox.askyesno(_t("ds.batch_title"), msg, parent=win):
+            return
+
+        def work():
+            try:
+                res = dramavideo.run_clips_batch(state, ch, on_event=ev)
+                win.after(0, lambda: status(
+                    _t("ds.batch_done",
+                       ok=len(res.get("ok") or []),
+                       skip=len(res.get("skipped_existing") or []),
+                       fail=len(res.get("fail") or []))))
+            except dramavideo.DramaModerationError:
+                pass
+            except Exception as e:       # noqa: BLE001
+                win.after(0, lambda err=e: status(
+                    f"❌ {type(err).__name__}: {err}"))
+
+        status(_t("ds.generating", n=_t("ds.batch_all_btn", n=ch)), busy=True)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _batch_retry():
+        """重试本章失败任务（同 batch_all，但显式提示这是补完流程）。"""
+        if st["busy"]:
+            status(_t("ds.busy"), busy=True)
+            return
+        ch = st["ch"]
+        from tkinter import messagebox
+        if not messagebox.askyesno(_t("ds.batch_retry_title"),
+                                   _t("ds.batch_retry_msg", n=ch),
+                                   parent=win):
+            return
+
+        def work():
+            try:
+                res = dramavideo.run_clips_batch(state, ch, on_event=ev)
+                win.after(0, lambda: status(
+                    _t("ds.batch_done",
+                       ok=len(res.get("ok") or []),
+                       skip=len(res.get("skipped_existing") or []),
+                       fail=len(res.get("fail") or []))))
+            except dramavideo.DramaModerationError:
+                pass
+            except Exception as e:       # noqa: BLE001
+                win.after(0, lambda err=e: status(
+                    f"❌ {type(err).__name__}: {err}"))
+
+        status(_t("ds.generating", n=_t("ds.batch_retry_btn", n=ch)), busy=True)
+        threading.Thread(target=work, daemon=True).start()
+
+    ui._flat_button(right3, text=_t("ds.batch_all_btn"), width=18,
+                    font=(FONT_UI, 10), command=_batch_all).pack(pady=3)
+    ui._flat_button(right3, text=_t("ds.batch_retry_btn"), width=18,
+                    font=(FONT_UI, 10), command=_batch_retry).pack(pady=3)
     ui._flat_button(right3, text=_t("ds.open_out"), width=18,
                     font=(FONT_UI, 10),
                     command=lambda: os.startfile(os.path.join(
@@ -919,16 +1098,38 @@ def show(app):
             _refresh_cast()
 
     _GEN_KIND = {"frame": "关键帧", "clip": "镜头视频", "dub": "配音",
-                 "cast": "形象", "shots": "分镜"}
+                 "cast": "形象", "shots": "分镜",
+                 "redo": "重做", "concat_skip": "拼接跳过",
+                 "moderation": "审核拒绝", "debt": "失败"}
 
     def _gen_event(e):
         """生成子步骤（关键帧/镜头视频/配音）→ 状态栏分步提示。"""
-        if e.get("type") == "drama_media" and e.get("label"):
-            k = _GEN_KIND.get(e.get("kind"), "")
-            extra = f"{e['label']}{('·' + k) if k else ''}"
-            if e.get("sec"):
-                extra += f"（出片 {int(float(e['sec']))}s）"
-            st["_gen_base"] = _t("ds.generating", n=extra)
+        if e.get("type") == "drama_media":
+            if e.get("kind") == "moderation":
+                st["_moderation_last"] = {
+                    "label": e.get("label"),
+                    "hint": e.get("hint"),
+                    "original": e.get("original"),
+                    "provider_id": e.get("provider_id"),
+                    "model": e.get("model"),
+                }
+                status(_t("ds.moderation_msg",
+                          n=(e.get("label") or ""),
+                          h=(e.get("hint") or "")[:120]))
+                mod_btn.pack(side="right", padx=(6, 0))
+                return
+            if e.get("kind") == "concat_skip":
+                names = e.get("names") or []
+                status(_t("ds.concat_skip",
+                          n=len(names),
+                          names="、".join(names)[:120]))
+                return
+            if e.get("label"):
+                k = _GEN_KIND.get(e.get("kind"), "")
+                extra = f"{e['label']}{('·' + k) if k else ''}"
+                if e.get("sec"):
+                    extra += f"（出片 {int(float(e['sec']))}s）"
+                st["_gen_base"] = _t("ds.generating", n=extra)
 
     def _gen_work(kind):
         ch, i = st["ch"], st["shot"] + 1

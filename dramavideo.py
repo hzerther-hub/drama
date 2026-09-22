@@ -29,6 +29,18 @@ except Exception:                    # noqa: BLE001
 
 DEFAULT_STYLE = "电影感写实风格，统一色调与打光，画面细腻，短剧质感"
 
+# 内容审核触发的特殊异常：UI 顶栏接住后可提示「切模型重试」
+class DramaModerationError(Exception):
+    """视频生成因内容审核被拒——{hint, original_err, provider_id, model}。"""
+
+    def __init__(self, message: str, *, hint: str = "", original_err: str = "",
+                 provider_id: str = "", model: str = ""):
+        super().__init__(message)
+        self.hint = hint
+        self.original_err = original_err
+        self.provider_id = provider_id
+        self.model = model
+
 
 def resolve_style(state: dict) -> str:
     """风格回退链：state['drama_style'] → 全局默认 → DEFAULT_STYLE，永不空。"""
@@ -1141,10 +1153,34 @@ def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
     # ——Seedance 1.0 系列视频无原生语音，靠这条补声
     spoken = dialogue or narration
     want_dub = bool(state.get("drama_tts")) and spoken
+    # 顶栏 provider/resolution 覆盖（state["drama_video_provider"] 缺省回落到 env/全局）
+    res = (state.get("drama_video_resolution") or "").strip()
+    preferred = (state.get("drama_video_provider") or "").strip()
     # 超时按时长缩放：长视频（15s/441帧）云端常超 4 分钟，240s 固定值会误杀
-    raw = videogen.generate(prompt, out if not want_dub else out + ".raw.mp4",
-                            image=frame_url, seconds=sec,
-                            timeout=max(240.0, sec * 30.0))
+    try:
+        raw = videogen.generate(prompt, out if not want_dub else out + ".raw.mp4",
+                                image=frame_url, resolution=res, seconds=sec,
+                                timeout=max(240.0, sec * 30.0),
+                                preferred_provider_id=preferred)
+    except videogen.VidError as e:
+        # 内容审核切模型（参考火宝 v3.1）：错误分类后抛专用异常，
+        # UI 顶栏接住后可一键切到下一个 provider 重试。
+        cls = videogen.classify_error(str(e))
+        svc_now = videogen._service()  # noqa: SLF001
+        if cls["category"] == "moderation":
+            on_event({"type": "drama_media", "kind": "moderation",
+                      "label": f"第{ch}章 镜头{i}（审核拒绝）",
+                      "hint": cls.get("hint") or "",
+                      "original": str(e)[:300],
+                      "provider_id": svc_now.get("provider_id", ""),
+                      "model": svc_now.get("model", "")})
+            raise DramaModerationError(
+                f"内容审核拒绝：{cls.get('hint') or '请尝试切模型'}",
+                hint=cls.get("hint") or "",
+                original_err=str(e)[:300],
+                provider_id=svc_now.get("provider_id", ""),
+                model=svc_now.get("model", "")) from e
+        raise
     if not want_dub:
         return raw
     import tts
@@ -1226,16 +1262,32 @@ def take_thumb(video_path: str, out_png: str) -> str:
 
 # ---------------- 4. ffmpeg 合成 ----------------
 
-def concat(clips: list, out_path: str) -> str:
-    """ffmpeg concat 拼接整集；先无损 copy，失败回退重编码。"""
+def concat(clips: list, out_path: str, on_event=None) -> str:
+    """ffmpeg concat 拼接整集；先无损 copy，失败回退重编码。
+
+    选择性拼接：列表里不存在的文件会被跳过（不阻断），on_event 非空时
+    推送 {"type":"drama_media","kind":"concat_skip","label":...,"names":[...]}
+    让 UI 顶部状态栏提示已跳过的镜头。返回拼接产物路径；列表全部缺失抛错。
+    """
+    on_event = on_event or (lambda e: None)
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise _stop("未安装 ffmpeg（整集合成需要；安装说明见 "
                     "docs/novel-setup.md，装后重跑本命令即可续造）")
+    valid = [p for p in clips if p and os.path.exists(str(p))]
+    missing = [p for p in clips if p and not os.path.exists(str(p))]
+    if missing:
+        names = sorted({os.path.basename(os.path.splitext(m)[0])
+                        for m in missing})
+        on_event({"type": "drama_media", "kind": "concat_skip",
+                  "label": f"已跳过 {len(missing)} 个未生成镜头",
+                  "names": names})
+    if not valid:
+        raise _stop("可拼接的文件数为 0：请先生成至少一个镜头视频")
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     lst = out_path + ".list.txt"
     with open(lst, "w", encoding="utf-8") as f:
-        for p in clips:
+        for p in valid:
             f.write("file '" + str(p).replace("'", "'\\''") + "'\n")
     try:
         subprocess.run([ffmpeg, "-y", "-f", "concat", "-safe", "0",
@@ -1325,6 +1377,67 @@ def reset(state: dict) -> int:
         except OSError:
             pass
     return n
+
+
+def run_clips_batch(state: dict, ch: int, on_event=None, stop=None,
+                   only_missing: bool = True) -> dict:
+    """单章批量生成关键帧+镜头视频（UI 顶栏「批量生成视频」按钮用）。
+
+    仅做关键帧 + 视频两件事，不跑资产提取（资产已是前置）；也不做合成——
+    合成由 UI 另起按钮触发（可选择性拼接）。返回：
+      {"ok": [path,...], "fail": [(i, err_str),...], "skipped_existing": [i,...]}
+
+    only_missing=True（默认）跳过已有 mp4 的镜头，仅补缺失的（重试失败用）。
+    only_missing=False 强制重生成（先删关键帧+片段，参考 drop_media）。
+    """
+    on_event = on_event or (lambda e: None)
+
+    def _stopped():
+        return stop is not None and stop.is_set()
+
+    chapters = state.get("chapters") or []
+    chobj = next((c for c in chapters if c.get("idx") == ch), None)
+    if not chobj:
+        raise _stop(f"第 {ch} 章不存在")
+    shots_path = os.path.join(_book_dir(state), _SHOT_DIR,
+                              f"第{ch}章.json")
+    shots = _json_load(shots_path, None)
+    if not isinstance(shots, list) or not shots:
+        raise _stop(f"第 {ch} 章还没有分镜——先跑 /novel drama 生成该章分镜")
+    if only_missing is False:
+        n = drop_media(state, ch)
+        if n:
+            on_event({"type": "drama_media", "kind": "redo",
+                      "label": f"第{ch}章（已删 {n} 个产物，强制重生成）"})
+    cast = _json_load(_global_cast_path(state), {})
+    local = _json_load(_chapter_assets_path(state, ch), {})
+    cast_ch = effective_cast(cast, local)
+    ok, fail, skipped = [], [], []
+    for i, shot in enumerate(shots, 1):
+        if _stopped():
+            raise _stop("已手动停止：已完成镜头保留，重跑自动续造")
+        clip_path = os.path.join(_book_dir(state), _CLIP_DIR,
+                                 f"{ch}-{i:02d}.mp4")
+        if only_missing and os.path.exists(clip_path):
+            skipped.append(i)
+            continue
+        url = ""
+        try:
+            _, url = keyframe(state, cast_ch, shot, ch, i, on_event)
+        except Exception as e:           # noqa: BLE001  单镜失败不阻断
+            err = str(e)
+            fail.append((i, err))
+            on_event({"type": "drama_media", "kind": "debt",
+                      "label": f"第{ch}章 镜头{i} 关键帧失败：{err[:80]}"})
+            continue
+        try:
+            ok.append(clip(state, shot, url, ch, i, on_event))
+        except Exception as e:           # noqa: BLE001
+            err = str(e)
+            fail.append((i, err))
+            on_event({"type": "drama_media", "kind": "debt",
+                      "label": f"第{ch}章 镜头{i} 视频失败：{err[:80]}"})
+    return {"ok": ok, "fail": fail, "skipped_existing": skipped}
 
 
 # ---------------- 总入口 ----------------
