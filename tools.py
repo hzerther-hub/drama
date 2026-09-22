@@ -310,22 +310,27 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "image_gen",
             "description": "文生图：调用图像生成服务（Agnes / 商汤日日新，在供应商管理里"
-                           "填 API Key 激活）生成一张图片，保存到工作区 media/images/，"
-                           "返回保存路径。",
+                           "填 API Key 激活）生成图片。"
+                           "**默认模式 = 替换已有短剧资产**：只要当前任务涉及短剧资产"
+                           "（角色/场景/道具，如『换掉手表/去背景/换色/重新画某角色』），"
+                           "必须先查 cast.json 找匹配名，传 `asset_name`，生成结果会"
+                           "覆盖原图（dramavideo.edit_asset）。"
+                           "**只有用户明确说要『生成一张新图保存到 media/』**（与已有"
+                           "资产无关）时，才不传 asset_name。"
+                           "asset_name 支持模糊匹配（『大前门香烟』→『香烟』）；"
+                           "不确定时务必先读短剧资产/全书/cast.json。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "prompt": {"type": "string", "description": "图像提示词（中文或英文）"},
                     "filename": {"type": "string",
-                                 "description": "保存文件名（可选，默认时间戳 .png）"},
+                                 "description": "保存文件名（仅在不传 asset_name 时生效，"
+                                                "默认时间戳 .png）"},
                     "asset_name": {"type": "string",
-                                   "description": "短剧资产名（可选，但修改短剧资产的图时"
-                                                  "必须填）。用户要求修改/重画/替换某张短剧"
-                                                  "资产图（角色/场景/道具，如 香烟/铁门/某角色）"
-                                                  "时，必须传资产名而不是另存新图：支持模糊"
-                                                  "匹配（如「大前门香烟」→「香烟」），生成结果"
-                                                  "直接覆盖资产原图。不确定资产名时先读 "
-                                                  "短剧资产/全书/cast.json 确认。"},
+                                   "description": "短剧资产名（角色/场景/道具）。"
+                                                  "改 / 重画 / 去背景 / 换色 等涉及已有资产"
+                                                  "的请求必须传；模糊匹配（『大前门香烟』→"
+                                                  "『香烟』）。不确定先读 cast.json。"},
                 },
                 "required": ["prompt"],
             },
