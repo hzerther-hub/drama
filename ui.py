@@ -2142,18 +2142,42 @@ class App:
 
         按下点在当前多选内且多选 >1 → 返回全部选中项（批量拖拽加对话）；
         否则只返回按下点条目；空白处返回 []。
-        必须在 Button-1 的 widget 绑定阶段调用：它先于 ttk 类绑定执行，
-        此时旧多选尚未被类绑定重置。
+
+        调前提：file_tree 自身 bindtag（``self.file_tree.bind("<Button-1>", _press,
+        add="+")``）先于 ttk.Treeview ``<Button-1>`` 类 binding 跑（默认 bindtags
+        顺序 = ``['.!treeview', 'Treeview', '.', 'all']``，widget 在前），
+        因此 _press 阶段 ``selection()`` 仍是按下前的多选。
         """
         try:
             iid = self.file_tree.identify_row(y)
         except Exception:            # noqa: BLE001
             iid = ""
         sel = list(self.file_tree.selection())
-        use = sel if (iid and iid in sel and len(sel) > 1) else ([iid] if iid else [])
+        return self._resolve_drag_items(iid, sel)
+
+    def _resolve_drag_items(self, clicked_iid, selection):
+        """核心策略：根据「按下点 iid」与「按下时的 selection」推出待拖条目。
+
+        - 按下点在多选内且多选 >1 → 返回整组多选（批量拖拽加对话）
+        - 否则只返回按下点（focus / 单条兜底）
+        - 空白处 / 没有 iid → []
+
+        与 ``_multi_drag_items`` 拆分是为了便于 pure-function 测试：
+        ``identify_row`` 需要真实像素坐标难 mock，selection 容易伪造。
+        """
+        sel = list(selection or [])
+        if clicked_iid and clicked_iid in sel and len(sel) > 1:
+            use = sel
+        elif clicked_iid:
+            use = [clicked_iid]
+        else:
+            use = []
         items = []
         for k in use:
-            vals = self.file_tree.item(k, "values")
+            try:
+                vals = self.file_tree.item(k, "values")
+            except Exception:        # noqa: BLE001
+                continue
             if vals and len(vals) >= 2 and str(vals[0]).strip():
                 items.append((vals[0], str(vals[1]).strip().lower() == "true"))
         return items
@@ -2163,6 +2187,13 @@ class App:
 
         - 文件：追加到待发送附件栏（等同右键「添加到对话」）
         - 目录：以 @引用 形式插入输入框（作为模型上下文，不转附件）
+        - 多选：Shift / Ctrl 点出来的多条选择一起拖走
+
+        关键前提：tk bindtags 默认顺序 ``['.!treeview', 'Treeview', '.', 'all']``，
+        widget 自身 tag 在前、ttk class 在后 —— 自己 ``bind("<Button-1>", _press,
+        add="+")`` 早于 ttk ``<Button-1>`` 类 binding 跑，能在 ``identify_row`` 之前
+        抓到「按下前的多选」selection。ttk 类 binding 之后才改 selection。
+
         无位移的普通点击仍走 _on_file_click（选中/展开/双击打开），不触发拖拽。
         """
         drag = {"sx": 0, "sy": 0, "moved": False, "ghost": None,

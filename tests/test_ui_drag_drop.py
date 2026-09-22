@@ -1,134 +1,193 @@
 # -*- coding: utf-8 -*-
-"""标签 / 文件树拖拽到聊天三落点（chat / input / attach_bar）的命中判断。
+"""文件树多选拖拽相关 helper 的覆盖测试。
 
-不创建真实 Tk：用 _FakeWidget 模拟 winfo_*，直接验证 helper：
-- ``App._point_over_widget``：矩形内 / 边界 / 矩形外的几何判定
-- ``App._hit_chat_drop_target``：聚合三落点；``attach_bar`` 缺失仍可命中 chat/input
-
-之所以覆盖 attach_bar：用户拖文件标签的目标除了 chat 区和 input 框，
-还应包括「聊天顶部附件栏」——这条能力对应产品语义 DND `_targets`
-（ui.py:7894 ``_targets = [chat, input, attach_bar]``）。
+覆盖：
+1. ``bindtags`` 顺序的 guard test：确认 widget path 在 ttk.Treeview class 之前；
+   这是「多选拖拽能用」的隐含前提，若 Tk 升级 / 换 ttk 实现变了顺序，本测试会失败提醒。
+2. ``_resolve_drag_items``：根据「按下点 iid」与「按下前的 selection」推出真正要拖的条目。
+3. 真实 ttk.Treeview 多选行为仍可用：调 helper 后 selection 不被静默重置。
 """
 
-import types
+import sys
+import tkinter as tk
+
+import pytest
+from tkinter import ttk
 
 from ui import App
 
 
-class _FakeWidget:
-    """伪装一个 Tk widget：固定 ``winfo_*`` 矩形坐标，给 ``_point_over_widget`` 用。"""
+# ============================================================
+# 1) bindtags 顺序 guard：多选 drag 的隐含前提
+# ============================================================
 
-    def __init__(self, x=0, y=0, w=100, h=20):
-        self._x, self._y, self._w, self._h = x, y, w, h
-
-    def winfo_rootx(self):
-        return self._x
-
-    def winfo_rooty(self):
-        return self._y
-
-    def winfo_width(self):
-        return self._w
-
-    def winfo_height(self):
-        return self._h
+@pytest.fixture(scope="module")
+def _root():
+    """一个 Tk root 给整个模块复用：withdraw + 不显式 show。"""
+    try:
+        r = tk.Tk()
+    except tk.TclError as e:
+        pytest.skip(f"无 Tk 可用：{e}")
+    r.withdraw()
+    yield r
+    r.destroy()
 
 
-class _FakeApp:
-    """把 ``_hit_chat_drop_target`` / ``_chat_drop_targets`` 从真 App「借」过来，
-    实例属性 ``chat`` / ``input`` / ``attach_bar`` 由测试控制。"""
-
-    _hit_chat_drop_target = App._hit_chat_drop_target
-    _chat_drop_targets = App._chat_drop_targets
-
-    def _point_over_widget(self, w, gx, gy):
-        # 转发到 App 的 staticmethod；staticmethod 通过类属性继承有 descriptor
-        # 重绑定问题（FakeApp 上 self 调用会带 self 进来），这里显式走类。
-        return App._point_over_widget(w, gx, gy)
-
-    def __init__(self, chat=None, inp=None, bar=None):
-        self.chat = chat
-        self.input = inp
-        self.attach_bar = bar
+def _tv(_root):
+    return ttk.Treeview(_root, selectmode="extended", show="tree")
 
 
-def test_point_over_widget_hit_and_miss():
-    w = _FakeWidget(x=100, y=200, w=300, h=40)
-    # 矩形内（典型点）
-    assert App._point_over_widget(w, 150, 220)
-    # 左上 / 右下边界：包含（约定 <=）
-    assert App._point_over_widget(w, 100, 200)
-    assert App._point_over_widget(w, 400, 240)
-    # 矩形外（紧邻四边外侧）
-    assert not App._point_over_widget(w, 99, 200)
-    assert not App._point_over_widget(w, 401, 200)
-    assert not App._point_over_widget(w, 150, 199)
-    assert not App._point_over_widget(w, 150, 241)
-    # 容错：None 永远 False
-    assert not App._point_over_widget(None, 0, 0)
+def test_default_bindtags_widget_first_then_class(_root):
+    """tk 默认 bindtags = [widget_path, 'Treeview', '.', 'all']，
+    widget 在 class 之前；这是「user binding 先于 ttk 类 binding 跑」的前提。
+    若有升级改动顺序，这里会失败提醒。"""
+    tv = _tv(_root)
+    bt = list(tv.bindtags())
+    assert bt[0] == str(tv),     f"widget path 应在首位，实际 {bt!r}"
+    assert bt[1] == "Treeview",  f"ttk class 应该在 widget 之后，实际 {bt!r}"
 
 
-def test_point_over_widget_negative_dim_returns_false():
-    """未映射的 widget (width/height=0) 仍返回 False，不抛异常。"""
-    w = _FakeWidget(x=0, y=0, w=0, h=0)
-    # 0x0 矩形：起点 == 终点算命中（左上角），但应用上的「拖动命中检测」要
-    # 至少有一定面积才合理；这里只确认不抛异常、行为稳定。
-    App._point_over_widget(w, 0, 0)
-    assert not App._point_over_widget(w, 5, 5)
+def test_user_binding_runs_before_class_for_button1(_root):
+    """在 widget 上绑的 <Button-1> handler 顺序先于 ttk.Treeview 类 binding；
+    所以 _press 期间 self.file_tree.selection() 仍反映按下前的多选。"""
+    tv = _tv(_root)
+    for iid in ("a", "b", "c"):
+        tv.insert("", "end", iid=iid, text=iid)
+    tv.selection_add("a", "b", "c")
+    captured = []
+
+    def cap(e):
+        captured.append(set(tv.selection()))
+
+    tv.bind("<Button-1>", cap, add="+")
+    tv.event_generate("<Button-1>", x=10, y=10)
+    _root.update_idletasks()
+    assert captured == [{"a", "b", "c"}], \
+        f"user binding 跑时 selection 应仍是多选，实际 {captured!r}"
 
 
-def _make_app(chat=None, inp=None, bar=None):
-    """构造只有三落点属性的伪 App。"""
-    return _FakeApp(chat, inp, bar)
+# ============================================================
+# 2) _resolve_drag_items：核心策略 pure-function 测
+# ============================================================
+
+class _FakeTree:
+    """只假冒 ``item(iid, "values")`` 给 ``_resolve_drag_items`` 用。"""
+
+    def __init__(self, items):
+        # items: dict[iid] = (path, bool is_dir)
+        self._vals = items
+
+    def item(self, iid, what):
+        if what != "values":
+            raise AssertionError(f"unexpected item({iid}, {what!r})")
+        return self._vals.get(iid, ("", ""))
 
 
-def _hit(app, gx, gy):
-    """调一次 ``_hit_chat_drop_target``。"""
-    return app._hit_chat_drop_target(gx, gy)
+def _resolve_on(items, clicked_iid, selection):
+    """把 ``_resolve_drag_items`` 绑到只有 ``file_tree`` 属性的 stub 上调。"""
+    class _Stub:
+        file_tree = _FakeTree(items)
+    return App._resolve_drag_items(_Stub(), clicked_iid, selection)
 
 
-def test_hit_chat_drop_target_three_widgets():
-    chat = _FakeWidget(x=50, y=80, w=700, h=300)
-    inp = _FakeWidget(x=20, y=460, w=760, h=80)
-    bar = _FakeWidget(x=20, y=420, w=760, h=30)
-    app = _make_app(chat, inp, bar)
-    # 三落点都命中
-    assert _hit(app, 400, 200)     # chat 区中部
-    assert _hit(app, 400, 500)     # input 框
-    assert _hit(app, 400, 435)     # 附件栏（input 上方 30px）
-    # chat 与附件栏之间的空白处不命中
-    assert not _hit(app, 400, 410)
-    # 远离聊天区
-    assert not _hit(app, 0, 0)
-    assert not _hit(app, 1000, 1000)
+def test_resolve_returns_multi_when_clicked_within_selection():
+    items = {
+        "a": ("C:\\tmp\\a.png", False),
+        "b": ("C:\\tmp\\b.png", False),
+        "c": ("C:\\tmp\\c.png", False),
+    }
+    sel = ["a", "b", "c"]
+    out = _resolve_on(items, clicked_iid="b", selection=sel)
+    assert sorted(p for p, _ in out) == sorted(v[0] for v in items.values())
+    assert all(isd is False for _, isd in out)
 
 
-def test_hit_chat_drop_target_missing_attach_bar():
-    """attach_bar 不可用（0 附件时被 pack_forget 等价于几何隐藏）时，
-    chat / input 仍可单独命中，不抛异常。"""
-    chat = _FakeWidget(x=50, y=80, w=700, h=300)
-    inp = _FakeWidget(x=20, y=460, w=760, h=80)
-    app = _make_app(chat, inp, bar=None)
-    assert _hit(app, 400, 500)     # input 命中
-    assert _hit(app, 400, 200)     # chat 命中
-    assert not _hit(app, 400, 435) # 旧附件栏位置：现在不在 → 不命中
-    assert not _hit(app, 0, 0)
-    assert not _hit(app, 1000, 1000)
+def test_resolve_returns_single_when_clicked_outside_selection():
+    items = {
+        "a": ("C:\\tmp\\a.png", False),
+        "b": ("C:\\tmp\\b.png", False),
+    }
+    sel = ["a"]
+    out = _resolve_on(items, clicked_iid="b", selection=sel)
+    assert out == [("C:\\tmp\\b.png", False)]
 
 
-def test_hit_chat_drop_target_no_widgets():
-    """所有落点都缺失时不抛异常，返回 False（拖入空白处）。"""
-    app = _make_app(chat=None, inp=None, bar=None)
-    assert _hit(app, 0, 0) is False
-    assert _hit(app, 999, 999) is False
+def test_resolve_returns_single_when_only_one_selected():
+    """多选只剩 1 条时不再走 multi 路径，按下点决定。"""
+    items = {
+        "a": ("C:\\tmp\\a.png", False),
+        "b": ("C:\\tmp\\b.png", False),
+    }
+    sel = ["a"]
+    out = _resolve_on(items, clicked_iid="a", selection=sel)
+    assert out == [("C:\\tmp\\a.png", False)]
 
 
-def test_chat_drop_targets_filters_none():
-    """_chat_drop_targets 只返回非 None widget，顺序保持 chat → input → attach_bar。"""
-    chat = _FakeWidget()
-    inp = _FakeWidget()
-    app = _make_app(chat, inp, bar=None)
-    assert app._chat_drop_targets() == [chat, inp]
+def test_resolve_returns_empty_when_no_clicked_iid():
+    items = {"a": ("C:\\tmp\\a.png", False)}
+    out = _resolve_on(items, clicked_iid="", selection=["a"])
+    assert out == []
 
-    app2 = _make_app(chat=None, inp=None, bar=None)
-    assert app2._chat_drop_targets() == []
+
+def test_resolve_handles_dirs_and_files_mixed():
+    items = {
+        "d1": ("C:\\proj\\src", True),
+        "d2": ("C:\\proj\\imgs", True),
+        "f1": ("C:\\proj\\src\\x.txt", False),
+    }
+    sel = ["d1", "d2", "f1"]
+    out = _resolve_on(items, clicked_iid="d1", selection=sel)
+    dirs = sorted(p for p, isd in out if isd is True)
+    files = sorted(p for p, isd in out if isd is False)
+    assert dirs == ["C:\\proj\\imgs", "C:\\proj\\src"]
+    assert files == ["C:\\proj\\src\\x.txt"]
+
+
+def test_resolve_skips_iids_with_empty_path():
+    items = {
+        "a": ("C:\\tmp\\a.png", False),
+        "b": ("", False),                            # path 为空
+        "c": ("C:\\tmp\\c.png", False),
+    }
+    sel = ["a", "b", "c"]
+    out = _resolve_on(items, clicked_iid="a", selection=sel)
+    paths = [p for p, _ in out]
+    assert "C:\\tmp\\a.png" in paths
+    assert "C:\\tmp\\c.png" in paths
+    assert all(p for p in paths)
+
+
+def test_resolve_swallows_item_lookup_errors():
+    """item() 抛异常的 iid 跳过，其他继续。"""
+    class _BoomTree(_FakeTree):
+        def item(self, iid, what):
+            if iid == "b":
+                raise RuntimeError("oops")
+            return super().item(iid, what)
+
+    items = {
+        "a": ("C:\\tmp\\a.png", False),
+        "b": ("C:\\tmp\\b.png", False),
+    }
+
+    class _Stub:
+        file_tree = _BoomTree(items)
+    out = App._resolve_drag_items(_Stub(), clicked_iid="a", selection=["a", "b"])
+    # b 抛异常被吞；a 正常返回
+    assert out == [("C:\\tmp\\a.png", False)]
+
+
+# ============================================================
+# 3) 真实 ttk.Treeview 多选 + selection API
+# ============================================================
+
+def test_real_treeview_extended_multi_select(_root):
+    """selectmode='extended' 留下多选 = Shift/Ctrl 拖拽的入口前提。"""
+    tv = _tv(_root)
+    for iid in ("a", "b", "c"):
+        tv.insert("", "end", iid=iid, text=iid)
+    tv.selection_add("a", "b", "c")
+    assert set(tv.selection()) == {"a", "b", "c"}
+    # 单条 add 不破坏多选
+    tv.selection_remove("a")
+    assert set(tv.selection()) == {"b", "c"}
