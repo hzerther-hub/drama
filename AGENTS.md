@@ -110,3 +110,45 @@ Window title carries a build marker: `<profile.title> - build <ui._BUILD_TAG>` (
 - **Naming**: `tests/test_<module>.py`, plain module-level functions or `TestX` grouping, Chinese one-line module docstrings.
 - **Quant QA gate**: after parser/emitter/kb changes run `python -m products.quant.benchmark` — any direction <100% (deterministic path) means template/parser semantic drift; overall acceptance ≥90%.
 - Test-isolation helpers: `cache.reset()`, `vecstore.reset_memory()`, `products._reset_for_test()` — use them when a test mutates module singletons.
+
+## Drama Workshop (剧集工作台 / Pavo 三段式)
+
+novelwriter 的制片模块，UI 在 `ui_panel_drama.py`，引擎在 `dramavideo.py`。流水线是"大纲 → 资产 → 分镜视频"，所有产物落到 `novels/<书名>/`，**文件存在即缓存**（断点续传天然成立，重新进入工作台自动跳过已完成环节）。
+
+**四步流程**：
+
+1. **大纲改写** — 工作台粘贴原始文本 → 「AI 改写」按集拆分剧本、标注场景与角色；可换文本模型、调语气（全局风格存 `models.json::globals.default_drama_style`，默认 `dramavideo.DEFAULT_STYLE = "电影感写实风格，统一色调与打光，画面细腻，短剧质感"`）。满意后「保存并进入制作」落盘 `novels/<书名>/剧本.json`。
+2. **资产制作** — 对剧本「提取」得到 角色 / 场景 / 道具 清单（每条带 `name` + `appearance` + `type` + `path`）；逐个点「生成形象」产出一致性参考图（也可全选批量）。资产图存 `短剧资产/<名>.png` + `短剧资产/cast.json`（含 `_done_<类>` 完成标记），后续生视频时作为视觉参考注入。
+3. **分镜与视频** — 「视频制作」页先拆分分镜（AI 按节奏切分并生成提示词）；顶栏选视频模型（Seedance / Wan 3.0 / MiniMax…），分辨率与时长档位联动；右侧微调每个分镜的提示词（`@角色名` 自动从 `cast.json` 映射参考图）。点「批量生成视频」并发调用 `videogen.py`；关键帧由 `dramavideo` 多图合成生成，再作首帧走图生视频（`text_to_video` 降级）。失败任务可「重试失败」/「重新生成单个镜头」/`/novel drama video 1-3 redo`。
+4. **拼接导出** — 勾选镜头（悬停预览单镜视频），点「开始拼接」→ FFmpeg 合成到 `短剧成片/第N章-<标题>.mp4`，可下载 / 在 UI 播放。点「标记完成」点亮左侧进度栏；`剧集列表` 随时查看各集状态，点「进入制作」继续未完成的集。
+
+**一致性三段传播**（`dramavideo.py:5-7`）：
+
+1. **角色基础形象** — 详细外貌锚 + 统一风格，每角色一次，全剧复用（资产层）；
+2. **镜头关键帧** — 分镜描述 + 出场角色形象图作参考图多图合成（长相由参考图锁定，资产 → 关键帧层）；
+3. **镜头视频** — 关键帧作首帧图生视频（画面继承关键帧，不再漂移，关键帧 → 视频层）。
+
+**目录约定**（dramavideo.py:10-11，所有路径相对 `novels/<书名>/`）：
+
+| 目录 | 内容 |
+|---|---|
+| `短剧资产/` | `<角色>.png` + `cast.json` + 各章 `assets.json` |
+| `短剧分镜/` | `第N章.json`（分镜表）+ `urls.json` |
+| `短剧关键帧/` | `N-01.png` …（多图合成产物） |
+| `短剧片段/` | `N-01.mp4` …（单镜视频） |
+| `短剧成片/` | `第N章-<标题>.mp4`（FFmpeg 拼接终产物） |
+
+**关键模块**：
+
+| 文件 | 职责 |
+|---|---|
+| `ui_panel_drama.py` (≈45KB) | 剧集工作台 UI：`show(app)` 入口；三页（大纲 / 资产 / 分镜视频）由 `state` + `dramavideo` 状态驱动；后台线程跑生成，`win.after` 回主线程刷新 |
+| `dramavideo.py` (≈70KB) | 三段流水线 + ffmpeg 拼接；`DEFAULT_STYLE`、`cast.json` I/O、`_done_<类>` 标记、关键帧多图合成、`redo=True` 重做关键帧/片段（角色形象/分镜表保留） |
+| `videogen.py` (≈12KB) | 多 provider 视频生成（Seedance / Wan / MiniMax…）；分辨率×时长档位映射；并发任务管理；`text_to_video` / `image_to_video` 两路 |
+| `imggen.py` (≈18KB) | 图像生成后端（角色参考图、关键帧多图合成）；PIL 可选（缺则降级为文本） |
+| `tests/test_dramavideo.py` | pytest 覆盖；monkeypatch `llm._post_stream` 风格的 mock 流 |
+| `i18n.py` (≈100KB) | 包含 `ds.shots`、`novel drama video` 等工作台文案；UI 字符串全走 `i18n.t` |
+
+**FFmpeg**：拼接走 stdlib `subprocess` 调用 ffmpeg；macOS / Linux 走 PATH，Windows 走 PATH 或 `imageio-ffmpeg` bundled binary（`packaging/build.py` 已处理）。视频时长护栏：视频模型给多长画面只能说多长的话，镜头时长低于此数会截断（dramavideo.py:1077 注释）。
+
+**注意**：当前 `ui_panel_drama.py` / `dramavideo.py` 文件头的 docstring 出现乱码（gbk/latin-1 被当 utf-8 解码），历史遗留；修改这两个文件时用 UTF-8 读写即可。
