@@ -1598,3 +1598,47 @@ def book_review_full(state: dict) -> str:
                 f"【伏笔】\n{fsh}\n\n"
                 f"【章节正文（节选前1200字/章）】\n" + "\n\n".join(body))
     return text.strip()
+
+
+# ---------------- Agent 注册（借鉴 huobao 4 具名 agent） ----------------
+# 4 个具名 agent 中，script_rewriter 住在这里；后 3 个在 dramavideo.AGENT_REGISTRY。
+# 注册表只存元数据——运行时通过 get_agent() 解析 function / system_prompt 等
+# 字段，避免模块加载时定义顺序耦合（chapter templates 与 stages 在文件上方定义）。
+
+AGENT_REGISTRY = {
+    "script_rewriter": {
+        "display_name": "Script Rewriter（章节剧本改写）",
+        "description": "逐章改写：草稿 → 分维度审校 → 自动修复一次 → "
+                        "事实账本 / 伏笔回灌 → RAG 索引；chain 总入口 st_chapters()",
+        "function_name": "st_chapters",
+        "system_prompt_writer": "_SYS_WRITER",
+        "stages": ("setup", "outline", "world", "contract", "characters",
+                   "volume", "chapter_plan", "chapters"),
+        "stage_titles": {"setup": "项目设定", "outline": "宏观规划",
+                         "world": "世界设定", "contract": "故事合约",
+                         "characters": "角色生成", "volume": "卷战略",
+                         "chapter_plan": "节奏拆章", "chapters": "章节执行"},
+    },
+}
+
+
+def list_agents() -> list:
+    """列出 novel_chain 注册的 agent（[{name, display_name, description}]）。"""
+    return [{"name": k, "display_name": v.get("display_name", k),
+             "description": v.get("description", "")}
+            for k, v in AGENT_REGISTRY.items()]
+
+
+def get_agent(name: str) -> dict | None:
+    """按名取 agent 注册项（function 等字段懒解析）。未注册返回 None。"""
+    entry = AGENT_REGISTRY.get(name)
+    if not entry:
+        return None
+    out = {"name": name, **{k: v for k, v in entry.items()
+                            if not k.endswith("_name")}}
+    for src_key, dst_key in (("function_name", "function"),
+                              ("system_prompt_writer", "system_prompt")):
+        n = entry.get(src_key)
+        if n and dst_key not in out:
+            out[dst_key] = globals().get(n)
+    return out

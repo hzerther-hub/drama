@@ -42,6 +42,69 @@ class DramaModerationError(Exception):
         self.model = model
 
 
+# ---------------- Agent 注册（借鉴 huobao 4 具名 agent） ----------------
+# 4 个具名 agent 中，drama workshop 后 3 个住在这里：
+# - extractor           资产生成（角色/场景/道具）
+# - storyboard_breaker  分镜生成（含结构化字段 + 火宝规范 video_prompt）
+# - prompt_generator    提示词生成（图/视频提示词模板与函数）
+# 第一个 script_rewriter 在 novel_chain.AGENT_REGISTRY。
+# 注册表只存元数据（display_name / description / 引用函数名）——运行时通过
+# get_agent() 解析，避免定义顺序耦合。
+
+AGENT_REGISTRY = {
+    "extractor": {
+        "display_name": "Extractor（资产抽取）",
+        "description": "从剧本文本抽取全书级资产（人物/场景/道具），"
+                        "分类型出视觉描述锚 + 中国面孔默认锚",
+        "function_name": "build_cast",
+        "system_prompts_name": "_SECTION_SYS",
+        "asset_template_name": "_ASSET_TPL",
+        "cache_markers": ("_done_角色", "_done_场景", "_done_道具"),
+    },
+    "storyboard_breaker": {
+        "display_name": "Storyboard Breaker（拆分镜）",
+        "description": "把一章改编为结构化分镜 JSON（标题/场景/角色/道具/时长/"
+                        "运镜/情绪/旁白/台词），并二次生成按时间分段的 video_prompt",
+        "function_name": "build_shots",
+        "video_prompt_fn_name": "_video_prompts",
+    },
+    "prompt_generator": {
+        "display_name": "Prompt Generator（图/视频提示词）",
+        "description": "为资产生成基础形象提示词（含画幅 + 中国面孔默认锚）；"
+                        "为分镜生成按 3 秒分段的 video_prompt（参考 huobao 火宝规范）",
+        "asset_template_name": "_ASSET_TPL",
+        "video_prompt_fn_name": "_video_prompts",
+    },
+}
+
+
+def list_agents() -> list:
+    """枚举 drama workshop 的注册 agent（[{name, display_name, description}]）。"""
+    return [{"name": k, "display_name": v.get("display_name", k),
+             "description": v.get("description", "")}
+            for k, v in AGENT_REGISTRY.items()]
+
+
+def get_agent(name: str) -> dict | None:
+    """按名取 agent 注册项（function 等字段懒解析）。
+
+    返回 dict 包含 name / display_name / description / function / ...；未注册返回 None。
+    """
+    entry = AGENT_REGISTRY.get(name)
+    if not entry:
+        return None
+    out = {"name": name, **{k: v for k, v in entry.items()
+                            if not k.endswith("_name")}}
+    for src_key, dst_key in (("function_name", "function"),
+                              ("system_prompts_name", "system_prompts"),
+                              ("asset_template_name", "asset_template"),
+                              ("video_prompt_fn_name", "video_prompt_fn")):
+        n = entry.get(src_key)
+        if n and dst_key not in out:
+            out[dst_key] = globals().get(n)
+    return out
+
+
 def resolve_style(state: dict) -> str:
     """风格回退链：state['drama_style'] → 全局默认 → DEFAULT_STYLE，永不空。"""
     v = (state or {}).get("drama_style")

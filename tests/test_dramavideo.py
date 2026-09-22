@@ -420,9 +420,12 @@ def test_clip_tts_failure_degrades_to_original(book, monkeypatch):
 
 
 def test_concat_requires_ffmpeg(book, monkeypatch):
+    _, tmp = book
+    clip_path = str(tmp / "a.mp4")
+    open(clip_path, "wb").close()                # 选择性拼接预检要求文件存在
     monkeypatch.setattr(dramavideo.shutil, "which", lambda name: None)
     with pytest.raises(Exception) as ei:
-        dramavideo.concat(["a.mp4"], str(book[1] / "out.mp4"))
+        dramavideo.concat([clip_path], str(tmp / "out.mp4"))
     assert "ffmpeg" in str(ei.value)
 
 
