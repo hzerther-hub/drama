@@ -6970,14 +6970,8 @@ class App:
     # 帮助正文统一取自 i18n 的 help.text（中英跟随界面语言）。
 
     def _show_help(self):
-        """帮助窗口（实现在 ui_panel_help.py）。"""
-        import ui_panel_help
-        ui_panel_help.show(self)
-
-    def _help_drag(self, win, e):
-        """帮助窗口拖动（实现在 ui_panel_help.py）。"""
-        import ui_panel_help
-        ui_panel_help._drag(self, win, e)
+        """直接往聊天里追加 help.text（不再弹窗——与 /novel help 同款 inline）。"""
+        self._append(_t("help.text") + "\n", "meta")
 
     # ================= 附件与媒体展示 =================
     def _pick_attachments(self):
