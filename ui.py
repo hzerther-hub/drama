@@ -1508,6 +1508,15 @@ class App:
         return items
 
     def _render_todo(self):
+        # 取消上一次 _render_todo 残留的 _fit 调度：它可能引用即将被销毁的 widget。
+        # _fit 自带 winfo_exists 守护但提前取消能省一次错误回调。
+        prev_id = getattr(self, "_todo_fit_after_id", None)
+        if prev_id:
+            try:
+                self.todo_frame.after_cancel(prev_id)
+            except Exception:        # noqa: BLE001
+                pass
+            self._todo_fit_after_id = None
         for w in self.todo_frame.winfo_children():
             w.destroy()
         self.todo_frame.config(bg=theme.PANEL)
@@ -1583,12 +1592,32 @@ class App:
         _TODO_MAX_ROWS = 6
 
         def _fit():
-            inner.update_idletasks()
-            row_h = max(22, (self.todo_rows[0].winfo_reqheight() + 4)
-                        if self.todo_rows else 26)
-            canvas.configure(height=min(inner.winfo_reqheight(),
-                                        row_h * _TODO_MAX_ROWS))
-        inner.after(10, _fit)
+            # 守护性访问：_render_todo 会在 markdown 流式追加时被反复调用（每行
+            # 可能触发一次）；进入新渲染时旧 inner / 旧 todo_rows[0] 已经销毁，
+            # 但本次 inner.after(10, _fit) 在上一帧 destroy 之前已经排队。
+            # 任何 winfo_* 触发都可能拿到已销毁的路径，报 TclError 让整个 UI 崩，
+            # 所以每个 try block 都吞掉——canvas 高度算错一次就是表面小小的不便，
+            # 比崩溃好。
+            try:
+                if not canvas.winfo_exists():
+                    return
+                inner.update_idletasks()
+            except Exception:        # noqa: BLE001
+                return
+            row_h = 26
+            for w in self.todo_rows:
+                try:
+                    if w.winfo_exists():
+                        row_h = max(22, w.winfo_reqheight() + 4)
+                        break
+                except Exception:    # noqa: BLE001
+                    continue
+            try:
+                canvas.configure(height=min(inner.winfo_reqheight(),
+                                            row_h * _TODO_MAX_ROWS))
+            except Exception:        # noqa: BLE001
+                pass
+        self._todo_fit_after_id = inner.after(10, _fit)
         # 底部一行灰显当前正在执行的工具（临时行，不进清单）
         cur = getattr(self, "_todo_tool_current", None)
         if cur:
