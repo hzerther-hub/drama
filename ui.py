@@ -2061,6 +2061,28 @@ class App:
         except Exception:            # noqa: BLE001
             return False
 
+    def _chat_drop_targets(self):
+        """内部拖拽（标签 / 文件树）松手时算命中的目标 widget 列表。
+
+        与外部 DND ``_targets = [chat, input, attach_bar]`` 对齐：附件栏也是合法落点，
+        等同把文件直接堆进待发送附件栏。注意 ``attach_bar`` 没附件时被 ``pack_forget``，
+        ``_point_over_widget`` 自然返回 False —— 此时仍可走 chat / input 命中。
+        """
+        targets = []
+        for w in (getattr(self, "chat", None),
+                  getattr(self, "input", None),
+                  getattr(self, "attach_bar", None)):
+            if w is not None:
+                targets.append(w)
+        return targets
+
+    def _hit_chat_drop_target(self, gx, gy):
+        """全局坐标 (gx, gy) 是否落在聊天三落点（chat / input / attach_bar）之一上。"""
+        for w in self._chat_drop_targets():
+            if self._point_over_widget(w, gx, gy):
+                return True
+        return False
+
     def _bind_tab_drag(self, name_lbl, view_id):
         """让文件标签可拖拽：按住拖到聊天输入区/消息区放下 = 加入对话。
 
@@ -2108,8 +2130,7 @@ class App:
                     pass
             if not drag["moved"]:
                 return
-            if self._point_over_widget(self.input, e.x_root, e.y_root) or \
-               self._point_over_widget(self.chat, e.x_root, e.y_root):
+            if self._hit_chat_drop_target(e.x_root, e.y_root):
                 self._add_selected_to_chat(path)
 
         name_lbl.bind("<Button-1>", _press, add="+")
@@ -2205,7 +2226,7 @@ class App:
                     pass
             if not drag["moved"]:
                 return
-            if self._point_over_widget(self.input, e.x_root, e.y_root) or                self._point_over_widget(self.chat, e.x_root, e.y_root):
+            if self._hit_chat_drop_target(e.x_root, e.y_root):
                 items = drag["items"] or (
                     [(drag["path"], drag["isdir"])] if drag["path"] else [])
                 for path, isdir in items:
