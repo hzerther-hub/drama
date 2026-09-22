@@ -1183,27 +1183,14 @@ class App:
                 "<Leave>", lambda e: self._set_status(""))
             self._update_dispatch_btn()
 
-        # 创作模式开关：🎬 短剧 / 📖 漫画。关闭时对应 /novel 子命令被闸门拦截
-        # （命令分发 _novel_command + 弹窗过滤 command_candidates 双保险）
-        # 用 Fluent Emoji clapper / books 图标（与 assets/icons/ 风格统一），
-        # 而不是 emoji 字形——避免 Tk 8.6 渲染彩色问题（CLAUDE.md 已知点）。
-        self.drama_mode_btn = _image_button(
-            ctrl, _emoji_icon("clapper"),
-            command=lambda: self._toggle_mode("drama"))
-        self.drama_mode_btn.pack(side="left", padx=(0, 6))
-        self.drama_mode_btn.bind(
-            "<Enter>", lambda e: self._set_status(_t("mode.hint_drama")))
-        self.drama_mode_btn.bind(
-            "<Leave>", lambda e: self._set_status(""))
-        self.comic_mode_btn = _image_button(
-            ctrl, _emoji_icon("kb"),
-            command=lambda: self._toggle_mode("comic"))
-        self.comic_mode_btn.pack(side="left", padx=(0, 10))
-        self.comic_mode_btn.bind(
-            "<Enter>", lambda e: self._set_status(_t("mode.hint_comic")))
-        self.comic_mode_btn.bind(
-            "<Leave>", lambda e: self._set_status(""))
-        self._update_mode_btns()
+        # 创作模式开关（🎬 短剧 / 📖 漫画）已迁到设置下拉菜单（_show_settings_menu
+        # 末尾的 checkmenu 项），不再占用顶栏位。命令分发 _novel_command +
+        # 弹窗过滤 command_candidates 双保险照旧。状态由这两个 tk 变量承担
+        # （checkmenu 直接绑 variable，免去手动同步）。
+        self._mode_drama_var = tk.BooleanVar(value=False)
+        self._mode_comic_var = tk.BooleanVar(value=False)
+        self.drama_mode_btn = None
+        self.comic_mode_btn = None
 
         # 量化产品：策略互转面板入口（其它产品不建此按钮）
         if _feature("quant", False):
@@ -4183,7 +4170,7 @@ class App:
                             command=lambda k=m.key: self._select_model(k))
 
     def _show_settings_menu(self, anchor=None):
-        """独立的设置菜单：模型管理 / MCP / 缓存 / 派发 / 代码索引 / 语言。"""
+        """独立的设置菜单：模型管理 / MCP / 缓存 / 派发 / 代码索引 / 创作模式 / 语言。"""
         menu = tk.Menu(self.root, tearoff=0, font=(FONT_UI, 10))
         menu.add_command(label=_t("model.manage"),
                          command=self._manage_models)
@@ -4196,6 +4183,19 @@ class App:
                              command=self._manage_dispatch)
         menu.add_command(label=_t("model.index"),
                          command=self._rebuild_codeindex)
+        # 创作模式开关：勾选 = 开启；切换即时生效（关闭时对应 /novel 子命令
+        # 被 _novel_command / command_candidates 双保险闸门拦截）
+        flags = (config.get_mode_flags()
+                 if hasattr(config, "get_mode_flags") else {})
+        menu.add_separator()
+        menu.add_checkbutton(label="🎬  " + _t("mode.drama"),
+                             variable=self._mode_drama_var,
+                             onvalue=True, offvalue=False,
+                             command=lambda: self._toggle_mode("drama"))
+        menu.add_checkbutton(label="📖  " + _t("mode.comic"),
+                             variable=self._mode_comic_var,
+                             onvalue=True, offvalue=False,
+                             command=lambda: self._toggle_mode("comic"))
         if not _feature("zh_only", False):
             menu.add_separator()
             lang = tk.Menu(menu, tearoff=0, font=(FONT_UI, 10))
@@ -4205,6 +4205,10 @@ class App:
             lang.add_command(label=_t("lang.zh") + ("  ✓" if cur == "zh" else ""),
                              command=lambda: self._switch_lang("zh"))
             menu.add_cascade(label=_t("lang.menu"), menu=lang)
+        # 把当前 flags 同步到 tk 变量上（之前 _update_mode_btns 干这事；按钮
+        # 迁走后改在打开菜单前一刻同步——保留一处事实源 config.mode_flags）
+        self._mode_drama_var.set(bool(flags.get("drama")))
+        self._mode_comic_var.set(bool(flags.get("comic")))
         tgt = anchor or self.settings_btn
         x = tgt.winfo_rootx()
         y = tgt.winfo_rooty() + tgt.winfo_height()
@@ -4281,16 +4285,13 @@ class App:
             self._set_status(_t("dispatch.topbar.now_on_inactive", name=name))
 
     def _update_mode_btns(self):
-        """按 config.get_mode_flags() 刷新顶栏模式按钮（开 = 浅绿底色，关 = 默认）。"""
+        """按 config.get_mode_flags() 刷新顶栏模式状态——按钮已迁到下拉菜单，
+        这里只同步 tk 变量（checkmenu 用），开不开用户通过菜单复选项看到。"""
         flags = config.get_mode_flags() if hasattr(config, "get_mode_flags") else {}
-        for btn, key in (
-            (getattr(self, "drama_mode_btn", None), "drama"),
-            (getattr(self, "comic_mode_btn", None), "comic"),
-        ):
-            if btn is None:
-                continue
-            on = bool(flags.get(key))
-            btn.config(bg="#dcfce7" if on else theme.BG)   # 浅绿底色 = 开启
+        if getattr(self, "_mode_drama_var", None) is not None:
+            self._mode_drama_var.set(bool(flags.get("drama")))
+        if getattr(self, "_mode_comic_var", None) is not None:
+            self._mode_comic_var.set(bool(flags.get("comic")))
 
     def _toggle_mode(self, key: str):
         """切换创作模式开关（drama / comic）。状态变更后刷新按钮 + 状态栏。"""

@@ -71,6 +71,10 @@ STRINGS: dict = {
     "mode.hint_comic": {"en": "📖 Toggle comic / manhua creation mode "
                                 "(/novel comic*)",
                           "zh": "📖 漫画 / 漫剧创作模式开关（开启后 /novel comic* 子命令可用）"},
+    "mode.drama":      {"en": "Short drama mode (/novel drama*)",
+                          "zh": "短剧模式（/novel drama*）"},
+    "mode.comic":      {"en": "Comic mode (/novel comic*)",
+                          "zh": "漫画模式（/novel comic*）"},
 
     # —— 模型菜单 ——
     "model.manage":    {"en": "⚙ Manage models (add / edit / delete)…", "zh": "⚙ 管理模型（添加 / 编辑 / 删除）…"},
