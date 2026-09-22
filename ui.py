@@ -1230,8 +1230,10 @@ class App:
             self.lang_btn.pack(side="right", padx=(0, 6))
 
         # 字号调节（Aa）：聊天 / 编辑器分别 −/＋，实时生效并持久化
-        _flat_button(ctrl, text="Aa", command=self._show_font_popup,
-                     width=3, font=(FONT_MONO, theme.FS_TOOLBAR)).pack(side="right", padx=(0, 6))
+        self.font_btn = _flat_button(
+            ctrl, text="Aa", command=self._show_font_popup,
+            width=3, font=(FONT_MONO, theme.FS_TOOLBAR))
+        self.font_btn.pack(side="right", padx=(0, 6))
 
         # 状态文字（"就绪"等，置于帮助按钮左侧）
         self.status_label = tk.Label(ctrl, text=_t("top.ready"), font=(FONT_MONO, 10))
@@ -7744,9 +7746,19 @@ class App:
 
     # ================= 字号调节（聊天 / 编辑器） =================
     def _show_font_popup(self):
-        """Aa 弹窗：聊天与编辑器两行 −/＋ 调节，实时生效并持久化。"""
+        """Aa 弹窗：聊天与编辑器两行 −/＋ 调节，实时生效并持久化。
+
+        弹窗位置 = Aa 按钮正下方 + 6px；超出屏幕或 root 右/下边界时自动
+        翻折到按钮上方或向左夹紧。早期版本用 `root.winfo_width()-260` 硬算
+        在多屏 / DPI 缩放下常落到屏幕外，肉眼无任何反馈 → 误以为"无效"。
+        """
+        # 先关闭已存在的同款弹窗，避免叠多
+        for child in list(self.root.winfo_children()):
+            if isinstance(child, tk.Toplevel) and getattr(child, "_font_pop", False):
+                child.destroy()
         pop = tk.Toplevel(self.root)
         pop.title("")
+        pop._font_pop = True                # 标记：再次点击时可识别关闭
         try:
             pop.overrideredirect(True)
         except Exception:                # noqa: BLE001
@@ -7754,11 +7766,6 @@ class App:
         pop.transient(self.root)
         pop.configure(bg=theme.PANEL, highlightthickness=1,
                       highlightbackground="#d4d4d4")
-        # 定位到 Aa 按钮下方（用 lang 按钮附近的右上角：取 ❓ 位置近似）
-        self.root.update_idletasks()
-        rx = self.root.winfo_rootx() + self.root.winfo_width() - 260
-        ry = self.root.winfo_rooty() + 60
-        pop.geometry("240x120+%d+%d" % (max(rx, 0), ry))
 
         tk.Label(pop, text="Aa " + _t("font.title"), bg=theme.PANEL,
                  font=(FONT_UI, 10, "bold")).pack(anchor="w", padx=10, pady=(8, 2))
@@ -7784,9 +7791,37 @@ class App:
             _flat_button(row, text="－", width=2, font=(FONT_MONO, 10),
                          command=lambda w=which: self._adjust_font(w, -1)
                          ).pack(side="right")
-        # Esc / ✕ 关闭（不绑 FocusOut：点 ＋/－ 会让焦点在弹窗内移动，误触关闭）
+
+        # 计算位置：先 update 让 popup 拿到真实宽高，再贴 Aa 按钮下方
+        pop.update_idletasks()
+        btn = getattr(self, "font_btn", None)
+        if btn is not None:
+            self.root.update_idletasks()
+            bx, by = btn.winfo_rootx(), btn.winfo_rooty()
+            bw, bh = btn.winfo_width(), btn.winfo_height()
+            pw, ph = pop.winfo_width(), pop.winfo_height()
+            # 默认：紧贴按钮下方 + 6px
+            px = bx + bw - pw              # 右对齐按钮右缘
+            py = by + bh + 6
+            # 越界夹紧：右/下溢出 root 时翻折到按钮上方或左对齐
+            rx2 = self.root.winfo_rootx() + self.root.winfo_width()
+            ry2 = self.root.winfo_rooty() + self.root.winfo_height()
+            if px + pw > rx2:
+                px = max(self.root.winfo_rootx(), bx + bw - pw)
+            if py + ph > ry2:
+                py = max(self.root.winfo_rooty(), by - ph - 6)
+            # 仍溢出屏幕 → 退回 root 右上角（兜底）
+            sw = pop.winfo_screenwidth()
+            sh = pop.winfo_screenheight()
+            if px < 0 or py < 0 or px + pw > sw or py + ph > sh:
+                px = max(0, sw - pw - 20)
+                py = max(0, sh - ph - 40)
+            pop.geometry(f"+{px}+{py}")
+
+        # Esc 关闭（不绑 FocusOut：点 ＋/－ 会让焦点在弹窗内移动，误触关闭）
         pop.bind("<Escape>", lambda _e: pop.destroy())
-        pop.focus_set()
+        pop.lift()
+        pop.focus_force()
 
     def _adjust_font(self, which: str, delta: int):
         lo, hi = config.FONT_SIZE_MIN, config.FONT_SIZE_MAX
