@@ -1052,12 +1052,30 @@ def keyframe(state: dict, cast: dict, shot: dict, ch: int, i: int,
     return path, url
 
 
+def _ffmpeg_exe() -> str:
+    """返回可用的 ffmpeg 可执行文件路径。
+
+    优先系统 PATH（便于测试 monkeypatch `dramavideo.shutil.which`）；
+    缺失则回退到 imageio-ffmpeg 捆绑二进制（pip install imageio-ffmpeg，
+    Windows 也能免装 ffmpeg 直接跑）。两者都没装则返回 ""。
+    """
+    p = shutil.which("ffmpeg")
+    if p:
+        return p
+    try:
+        import imageio_ffmpeg              # noqa: PLC0415  懒导入
+        return imageio_ffmpeg.get_ffmpeg_exe() or ""
+    except Exception:                  # noqa: BLE001
+        return ""
+
+
 def dub(video_path: str, audio_path: str, out_path: str) -> str:
     """ffmpeg 把配音替换到视频音轨（-shortest 对齐时长）。"""
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = _ffmpeg_exe()
     if not ffmpeg:
         raise _stop("未安装 ffmpeg（配音混流与整集合成都需要它；"
-                    "安装说明见 docs/novel-setup.md）")
+                    "pip install imageio-ffmpeg 可免系统依赖，"
+                    "或安装说明见 docs/novel-setup.md）")
     subprocess.run([ffmpeg, "-y", "-i", video_path, "-i", audio_path,
                     "-map", "0:v", "-map", "1:a",
                     "-c:v", "copy", "-c:a", "aac", "-shortest", out_path],
@@ -1249,7 +1267,7 @@ def select_clip_take(state: dict, ch: int, i: int, take_path: str) -> str:
 
 def take_thumb(video_path: str, out_png: str) -> str:
     """ffmpeg 抽视频首帧做缩略图（take 预览用）；无 ffmpeg/失败返回空串。"""
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = _ffmpeg_exe()
     if not ffmpeg:
         return ""
     try:
@@ -1270,10 +1288,11 @@ def concat(clips: list, out_path: str, on_event=None) -> str:
     让 UI 顶部状态栏提示已跳过的镜头。返回拼接产物路径；列表全部缺失抛错。
     """
     on_event = on_event or (lambda e: None)
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = _ffmpeg_exe()
     if not ffmpeg:
-        raise _stop("未安装 ffmpeg（整集合成需要；安装说明见 "
-                    "docs/novel-setup.md，装后重跑本命令即可续造）")
+        raise _stop("未安装 ffmpeg（整集合成需要；"
+                    "pip install imageio-ffmpeg 可免系统依赖，"
+                    "或安装说明见 docs/novel-setup.md，装后重跑本命令即可续造）")
     valid = [p for p in clips if p and os.path.exists(str(p))]
     missing = [p for p in clips if p and not os.path.exists(str(p))]
     if missing:

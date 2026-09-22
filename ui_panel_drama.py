@@ -775,6 +775,155 @@ def show(app):
     desc_t = tk.Text(center3, height=8, font=(FONT_UI, 10), wrap="word",
                      relief="flat", bg="white", fg=theme.TEXT, padx=8, pady=6)
     desc_t.pack(fill="both", expand=True, padx=10)
+
+    # ---- @角色名 自动补全（描述编辑框输入 @ 弹候选菜单，选中插入 @name） ----
+    _role_popup = {"top": None, "lb": None, "items": [],
+                   "prefix": "", "insert_index": None}
+
+    def _role_names() -> list:
+        """当前 cast 里所有角色名（全书 + 本章专属），按长度排序短前缀优先。"""
+        names = []
+        for k in _cast():
+            if not k.startswith("_") and isinstance(_cast()[k], dict):
+                names.append(k)
+        return sorted(set(names), key=lambda s: (len(s), s))
+
+    def _close_role_popup():
+        top = _role_popup["top"]
+        if top is not None:
+            try:
+                top.destroy()
+            except tk.TclError:
+                pass
+        _role_popup["top"] = None
+        _role_popup["lb"] = None
+        _role_popup["items"] = []
+        _role_popup["prefix"] = ""
+        _role_popup["insert_index"] = None
+
+    def _show_role_popup(prefix: str):
+        """在光标位置显示 popup，列出以 prefix 开头的角色名。"""
+        names = _role_names()
+        if prefix:
+            cands = [n for n in names if n.startswith(prefix)]
+        else:
+            cands = names[:10]                 # 无前缀时取前 10 个
+        if not cands:
+            _close_role_popup()
+            return
+        # 关旧 popup（如有）
+        if _role_popup["top"] is not None:
+            _close_role_popup()
+        top = tk.Toplevel(win, bg=theme.PANEL)
+        top.wm_overrideredirect(True)
+        # 定位到 desc_t 光标处（屏幕坐标）
+        try:
+            x, y, _, _ = desc_t.bbox("insert") or (0, 0, 0, 0)
+            ax = desc_t.winfo_rootx() + x
+            ay = desc_t.winfo_rooty() + y + 20
+        except Exception:                  # noqa: BLE001
+            ax, ay = win.winfo_rootx() + 50, win.winfo_rooty() + 100
+        top.geometry(f"+{ax}+{ay}")
+        lb = tk.Listbox(top, font=(FONT_UI, 10), bg=theme.PANEL,
+                        fg=theme.TEXT, relief="flat", highlightthickness=1,
+                        highlightbackground=theme.BORDER,
+                        selectbackground=theme.ACCENT,
+                        selectforeground="#ffffff",
+                        width=18, height=min(8, len(cands)))
+        lb.pack()
+        for n in cands:
+            lb.insert("end", n)
+        lb.selection_clear(0)
+        lb.selection_set(0)
+        lb.activate(0)
+        lb.focus_set()
+        _role_popup["top"] = top
+        _role_popup["lb"] = lb
+        _role_popup["items"] = cands
+        _role_popup["prefix"] = prefix
+
+        def _pick(_e=None):
+            sel = lb.curselection()
+            if sel:
+                name = cands[sel[0]]
+                idx = _role_popup["insert_index"]
+                _insert_at_cursor(f"@{name}", idx)
+            _close_role_popup()
+            return "break"
+
+        def _on_arrow(e):
+            cur = lb.curselection()
+            n = len(cands)
+            if not cur:
+                return
+            i = cur[0]
+            if e.keysym == "Down" and i < n - 1:
+                lb.selection_clear(i)
+                lb.selection_set(i + 1)
+                lb.activate(i + 1)
+                lb.see(i + 1)
+            elif e.keysym == "Up" and i > 0:
+                lb.selection_clear(i)
+                lb.selection_set(i - 1)
+                lb.activate(i - 1)
+                lb.see(i - 1)
+            return "break"
+
+        lb.bind("<Return>", _pick)
+        lb.bind("<Double-Button-1>", _pick)
+        lb.bind("<Escape>", lambda e: (_close_role_popup(), "break"))
+        lb.bind("<Down>", _on_arrow)
+        lb.bind("<Up>", _on_arrow)
+        # 点 popup 外关闭
+        top.bind("<FocusOut>", lambda e: win.after(50, _close_role_popup))
+
+    def _insert_at_cursor(text: str, default_index: str = None):
+        """在 desc_t 光标处插入 text，并保持光标在文本后。"""
+        try:
+            if default_index:
+                desc_t.mark_set("insert", default_index)
+            desc_t.insert("insert", text)
+        except tk.TclError:
+            desc_t.insert("end", text)
+
+    def _filter_role_popup():
+        """输入更多字符时按当前 @ 前缀过滤已显示的 popup。"""
+        if _role_popup["top"] is None:
+            return
+        # 读取 desc_t 当前 insert 位置往前最近的 @ 到 insert 之间的内容作为新前缀
+        idx = desc_t.index("insert")
+        line, ch = idx.split(".")
+        ch = int(ch)
+        line_text = desc_t.get(f"{line}.0", idx)
+        at_pos = line_text.rfind("@")
+        if at_pos < 0:
+            _close_role_popup()
+            return
+        prefix = line_text[at_pos + 1:]
+        # 去掉中间含空白/中文逗号的——视为已结束输入
+        if any(c in prefix for c in " \t，。；、"):
+            _close_role_popup()
+            return
+        # prefix 里有角色名完整字符串 → 自动收尾（说明选中后继续打字）
+        names = _role_names()
+        for n in names:
+            if prefix.startswith(n) and len(prefix) > len(n):
+                _close_role_popup()
+                return
+        _show_role_popup(prefix)
+
+    def _on_desc_key(e):
+        """监听 desc_t 按键——`@` 触发候选菜单；其它键过滤已展开 popup。"""
+        if e.char == "@" and _role_names():
+            # 记录光标插入位置（@ 即将插入的地方），popup 选中后写入此处
+            _role_popup["insert_index"] = desc_t.index("insert")
+            win.after(0, lambda: _show_role_popup(""))
+        elif _role_popup["top"] is not None:
+            win.after(0, _filter_role_popup)
+
+    desc_t.bind("<Key>", _on_desc_key)
+    # 失焦 / 点击 popup 外部时关 popup
+    desc_t.bind("<FocusOut>", lambda e: win.after(80, _close_role_popup))
     tk.Label(center3, text=_t("ds.narration"), font=(FONT_UI, 10),
              bg=theme.PANEL, fg=theme.MUTED).pack(anchor="w", padx=10)
     narr_e = tk.Entry(center3, font=(FONT_UI, 10), relief="flat",
