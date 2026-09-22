@@ -65,6 +65,9 @@ const UI_ICONS = {
   turtle: ["Turtle", "turtle"],
   flame: ["Fire", "fire"],
   rocket: ["Rocket", "rocket"],
+  // drama workshop 新增（与 ui_panel_drama / ui.py mode 按钮统一风格）
+  clapper: ["Clapper board", "clapper_board"],  // 🎬 drama 模式开关（短剧/影视）
+  package: ["Package", "package"],              // 📦 批量生成
 };
 
 const MIT_CDN = "https://cdn.jsdelivr.net/npm/material-icon-theme@latest/icons/";

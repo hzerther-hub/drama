@@ -1118,7 +1118,7 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "ds.speech_hint": {"en": "speech needs ≥{n}s", "zh": "读完需≥{n}秒"},
     "ds.video_model":       {"en": "Video model", "zh": "视频模型"},
     "ds.video_model_auto":  {"en": "auto", "zh": "自动"},
-    "ds.moderation_retry":  {"en": "🛟 Switch model & retry", "zh": "🛟 切模型重试"},
+    "ds.moderation_retry":  {"en": "Switch model & retry", "zh": "切模型重试"},
     "ds.moderation_msg":    {"en": "Moderation rejected: {n} — {h}",
                               "zh": "内容审核拒绝：{n}（{h}）"},
     "ds.no_alt_provider":   {"en": "No alternate video provider configured",
@@ -1133,11 +1133,11 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
                               "zh": "第 {ch} 章：待生成 {todo}/{n} 个镜头，"
                               "合计时长 ≈ {total}s。当前模型：{cur}；"
                               "分辨率：{res}。开始生成？"},
-    "ds.batch_all_btn":     {"en": "📦 Batch generate chapter", "zh": "📦 批量生成本章视频"},
+    "ds.batch_all_btn":     {"en": "Batch generate chapter", "zh": "批量生成本章视频"},
     "ds.batch_retry_title": {"en": "Retry failed clips", "zh": "重试失败镜头"},
     "ds.batch_retry_msg":   {"en": "Chapter {n}: re-run only the missing clips?",
                               "zh": "第 {n} 章：仅重跑尚未生成 / 生成失败的镜头？"},
-    "ds.batch_retry_btn":   {"en": "🔁 Retry failed", "zh": "🔁 重试失败"},
+    "ds.batch_retry_btn":   {"en": "Retry failed", "zh": "重试失败"},
     "ds.batch_done":        {"en": "Batch done: {ok} generated, {skip} skipped, "
                                    "{fail} failed",
                               "zh": "批量完成：新生成 {ok} 个、跳过 {skip} 个、"

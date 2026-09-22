@@ -303,8 +303,10 @@ def show(app):
         # 重跑当前镜头
         _gen("clip")
 
-    mod_btn = ui._flat_button(stat_foot, text=_t("ds.moderation_retry"), width=14,
-                              font=(FONT_UI, 9), command=_on_moderation_retry)
+    mod_btn = ui._icon_text_button(stat_foot, "shield",
+                                   _t("ds.moderation_retry"),
+                                   command=_on_moderation_retry,
+                                   font=(FONT_UI, 9))
     # 不 pack，由 moderation 事件触发显示
 
     steps = {}
@@ -1033,10 +1035,10 @@ def show(app):
         status(_t("ds.generating", n=_t("ds.batch_retry_btn", n=ch)), busy=True)
         threading.Thread(target=work, daemon=True).start()
 
-    ui._flat_button(right3, text=_t("ds.batch_all_btn"), width=18,
-                    font=(FONT_UI, 10), command=_batch_all).pack(pady=3)
-    ui._flat_button(right3, text=_t("ds.batch_retry_btn"), width=18,
-                    font=(FONT_UI, 10), command=_batch_retry).pack(pady=3)
+    ui._icon_text_button(right3, "package", _t("ds.batch_all_btn"),
+                       command=_batch_all, font=(FONT_UI, 10)).pack(pady=3)
+    ui._icon_text_button(right3, "refresh", _t("ds.batch_retry_btn"),
+                       command=_batch_retry, font=(FONT_UI, 10)).pack(pady=3)
     ui._flat_button(right3, text=_t("ds.open_out"), width=18,
                     font=(FONT_UI, 10),
                     command=lambda: os.startfile(os.path.join(

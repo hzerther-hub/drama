@@ -550,6 +550,29 @@ def _flat_button(parent, text, command, width=12, font=(FONT_UI, 10),
     return btn
 
 
+def _icon_text_button(parent, icon_name: str, text: str, command,
+                      font=(FONT_UI, 10)):
+    """图标 + 文字按钮（compound=left）。从 assets/icons/ 拿 PNG，与现有
+    Fluent Emoji / Material Icon Theme 风格统一。"""
+    img = _emoji_icon(icon_name)
+    if img is None:
+        return _flat_button(parent, text=text, command=command,
+                           width=max(8, len(text) + 2), font=font)
+    btn = tk.Button(parent, image=img, text=" " + text,
+                    compound="left", command=command,
+                    font=font, relief="flat", cursor="hand2",
+                    padx=6, pady=4,
+                    bg=theme.BG, fg=theme.TEXT, bd=0, highlightthickness=0,
+                    activebackground=theme.ACCENT_FAINT,
+                    activeforeground=theme.TEXT)
+    btn._icon_ref = img              # PhotoImage 防 GC
+    def _hover(on):
+        btn.config(bg=theme.ACCENT_FAINT if on else theme.BG)
+    btn.bind("<Enter>", lambda _e: _hover(True))
+    btn.bind("<Leave>", lambda _e: _hover(False))
+    return btn
+
+
 # ---------------- 图标素材：彩色 PNG（Material Icon Theme + Fluent Emoji，均 MIT） ----------------
 # Tk 的 PhotoImage 不认 SVG，assets/icons/ 里放的是预先栅格化好的 PNG。
 # 图标标识沿用「emoji」：MODE_ICON / REASONING_ICON 等常量同时供按钮图标与提示
@@ -582,6 +605,7 @@ _ICON_ALIAS = {
     "1f422": "turtle",      # 🐢 推理：低
     "1f525": "flame",       # 🔥 推理：高
     "1f680": "rocket",      # 🚀 推理：最高
+    "1f4e6": "package",     # 📦 批量生成（drama workshop）
 }
 
 
@@ -1161,17 +1185,19 @@ class App:
 
         # 创作模式开关：🎬 短剧 / 📖 漫画。关闭时对应 /novel 子命令被闸门拦截
         # （命令分发 _novel_command + 弹窗过滤 command_candidates 双保险）
-        self.drama_mode_btn = _flat_button(
-            ctrl, text="", command=lambda: self._toggle_mode("drama"),
-            font=(FONT_UI, theme.FS_TOOLBAR))
+        # 用 Fluent Emoji clapper / books 图标（与 assets/icons/ 风格统一），
+        # 而不是 emoji 字形——避免 Tk 8.6 渲染彩色问题（CLAUDE.md 已知点）。
+        self.drama_mode_btn = _image_button(
+            ctrl, _emoji_icon("clapper"),
+            command=lambda: self._toggle_mode("drama"))
         self.drama_mode_btn.pack(side="left", padx=(0, 6))
         self.drama_mode_btn.bind(
             "<Enter>", lambda e: self._set_status(_t("mode.hint_drama")))
         self.drama_mode_btn.bind(
             "<Leave>", lambda e: self._set_status(""))
-        self.comic_mode_btn = _flat_button(
-            ctrl, text="", command=lambda: self._toggle_mode("comic"),
-            font=(FONT_UI, theme.FS_TOOLBAR))
+        self.comic_mode_btn = _image_button(
+            ctrl, _emoji_icon("kb"),
+            command=lambda: self._toggle_mode("comic"))
         self.comic_mode_btn.pack(side="left", padx=(0, 10))
         self.comic_mode_btn.bind(
             "<Enter>", lambda e: self._set_status(_t("mode.hint_comic")))
@@ -4253,6 +4279,32 @@ class App:
             self._set_status(_t("dispatch.topbar.now_on_active", name=name))
         else:
             self._set_status(_t("dispatch.topbar.now_on_inactive", name=name))
+
+    def _update_mode_btns(self):
+        """按 config.get_mode_flags() 刷新顶栏模式按钮（开 = 浅绿底色，关 = 默认）。"""
+        flags = config.get_mode_flags() if hasattr(config, "get_mode_flags") else {}
+        for btn, key in (
+            (getattr(self, "drama_mode_btn", None), "drama"),
+            (getattr(self, "comic_mode_btn", None), "comic"),
+        ):
+            if btn is None:
+                continue
+            on = bool(flags.get(key))
+            btn.config(bg="#dcfce7" if on else theme.BG)   # 浅绿底色 = 开启
+
+    def _toggle_mode(self, key: str):
+        """切换创作模式开关（drama / comic）。状态变更后刷新按钮 + 状态栏。"""
+        if not hasattr(config, "set_mode_flag"):
+            return
+        flags = config.get_mode_flags() or {}
+        on = not bool(flags.get(key))
+        config.set_mode_flag(key, on)
+        self._update_mode_btns()
+        name = {"drama": "短剧", "comic": "漫画"}.get(key, key)
+        self._set_status(
+            _t("dispatch.topbar.now_on_active", name=f"{name}: {'开' if on else '关'}")
+            if on else
+            _t("dispatch.topbar.now_off"))
 
     def _manage_models(self):
         """模型管理窗口（实现在 ui_panel_models.py）。"""
