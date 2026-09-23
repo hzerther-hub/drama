@@ -29,6 +29,81 @@ except Exception:                    # noqa: BLE001
 
 DEFAULT_STYLE = "电影感写实风格，统一色调与打光，画面细腻，短剧质感"
 
+# 内容审核触发的特殊异常：UI 顶栏接住后可提示「切模型重试」
+class DramaModerationError(Exception):
+    """视频生成因内容审核被拒——{hint, original_err, provider_id, model}。"""
+
+    def __init__(self, message: str, *, hint: str = "", original_err: str = "",
+                 provider_id: str = "", model: str = ""):
+        super().__init__(message)
+        self.hint = hint
+        self.original_err = original_err
+        self.provider_id = provider_id
+        self.model = model
+
+
+# ---------------- Agent 注册（借鉴 huobao 4 具名 agent） ----------------
+# 4 个具名 agent 中，drama workshop 后 3 个住在这里：
+# - extractor           资产生成（角色/场景/道具）
+# - storyboard_breaker  分镜生成（含结构化字段 + 火宝规范 video_prompt）
+# - prompt_generator    提示词生成（图/视频提示词模板与函数）
+# 第一个 script_rewriter 在 novel_chain.AGENT_REGISTRY。
+# 注册表只存元数据（display_name / description / 引用函数名）——运行时通过
+# get_agent() 解析，避免定义顺序耦合。
+
+AGENT_REGISTRY = {
+    "extractor": {
+        "display_name": "Extractor（资产抽取）",
+        "description": "从剧本文本抽取全书级资产（人物/场景/道具），"
+                        "分类型出视觉描述锚 + 中国面孔默认锚",
+        "function_name": "build_cast",
+        "system_prompts_name": "_SECTION_SYS",
+        "asset_template_name": "_ASSET_TPL",
+        "cache_markers": ("_done_角色", "_done_场景", "_done_道具"),
+    },
+    "storyboard_breaker": {
+        "display_name": "Storyboard Breaker（拆分镜）",
+        "description": "把一章改编为结构化分镜 JSON（标题/场景/角色/道具/时长/"
+                        "运镜/情绪/旁白/台词），并二次生成按时间分段的 video_prompt",
+        "function_name": "build_shots",
+        "video_prompt_fn_name": "_video_prompts",
+    },
+    "prompt_generator": {
+        "display_name": "Prompt Generator（图/视频提示词）",
+        "description": "为资产生成基础形象提示词（含画幅 + 中国面孔默认锚）；"
+                        "为分镜生成按 3 秒分段的 video_prompt（参考 huobao 火宝规范）",
+        "asset_template_name": "_ASSET_TPL",
+        "video_prompt_fn_name": "_video_prompts",
+    },
+}
+
+
+def list_agents() -> list:
+    """枚举 drama workshop 的注册 agent（[{name, display_name, description}]）。"""
+    return [{"name": k, "display_name": v.get("display_name", k),
+             "description": v.get("description", "")}
+            for k, v in AGENT_REGISTRY.items()]
+
+
+def get_agent(name: str) -> dict | None:
+    """按名取 agent 注册项（function 等字段懒解析）。
+
+    返回 dict 包含 name / display_name / description / function / ...；未注册返回 None。
+    """
+    entry = AGENT_REGISTRY.get(name)
+    if not entry:
+        return None
+    out = {"name": name, **{k: v for k, v in entry.items()
+                            if not k.endswith("_name")}}
+    for src_key, dst_key in (("function_name", "function"),
+                              ("system_prompts_name", "system_prompts"),
+                              ("asset_template_name", "asset_template"),
+                              ("video_prompt_fn_name", "video_prompt_fn")):
+        n = entry.get(src_key)
+        if n and dst_key not in out:
+            out[dst_key] = globals().get(n)
+    return out
+
 
 def resolve_style(state: dict) -> str:
     """风格回退链：state['drama_style'] → 全局默认 → DEFAULT_STYLE，永不空。"""
@@ -230,6 +305,7 @@ _ASSET_GLOBAL = "全书"                    # 全书（长期）资产子目录
 def _chapter_asset_subdir(ch) -> str:     # 章节专属（暂时）子目录
     return f"第{ch}章"
 _SHOT_DIR = "短剧分镜"
+_SCRIPT_DIR = "短剧剧本"
 _FRAME_DIR = "短剧关键帧"
 _CLIP_DIR = "短剧片段"
 _OUT_DIR = "短剧成片"
@@ -253,6 +329,24 @@ def _stop(msg: str):
 
 def _safe_name(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|\s]+', "", str(name or ""))[:24] or "角色"
+
+
+def _drama_sizes() -> tuple:
+    """读 /media 面板的短剧/漫画尺寸配置。
+
+    返回 (图像档位, 短剧比例, 视频尺寸, 漫画档位, 漫画比例)；
+    未配置的键回落内置默认（1K / 9:16 / 空=服务端默认 / 1K / 2:3）。
+    """
+    try:
+        import config
+        d = config.get_drama()
+    except Exception:                  # noqa: BLE001  配置不可用走默认
+        d = {}
+    return (d.get("image_size") or "1K",
+            d.get("image_ratio") or "9:16",
+            d.get("video_size") or "",
+            d.get("comic_size") or "1K",
+            d.get("comic_ratio") or "2:3")
 
 
 def _anchored_appearance(ap: str) -> str:
@@ -507,7 +601,7 @@ def build_cast(state: dict, on_event=None, stop=None, redo: bool = False) -> dic
                 f"{style}。{sec}基础形象：" +
                 tpl.format(a=_anchored_appearance(
                     info.get("appearance", ""))),
-                out, size="1K", ratio=ratio)
+                out, size=_drama_sizes()[0], ratio=ratio)
             info["path"], info["url"] = path, url
             _json_dump(cast_path, cast)
         # 角色多阶段形象（现代/古装…）：逐套补图；默认套复用主图。
@@ -536,7 +630,7 @@ def build_cast(state: dict, on_event=None, stop=None, redo: bool = False) -> dic
                      if refs else
                      "。同一人物：保持脸型五官与体格特征与其它阶段一致，"
                      "仅更换该阶段的服装发型。"),
-                    lk_out, size="1K", ratio=ratio, image_refs=refs)
+                    lk_out, size=_drama_sizes()[0], ratio=ratio, image_refs=refs)
                 lk["path"], lk["url"] = lp, lu
             except Exception as e:          # noqa: BLE001  单套失败不阻断
                 on_event({"type": "drama_media", "kind": "debt",
@@ -569,7 +663,7 @@ def three_view(state: dict, name: str, info: dict, on_event=None) -> str:
         "正面、侧面、背面全身立像；自然直立站姿无动作，纯白色背景，"
         "人物比例与头身比严格一致，三个视图的服装发型配饰完全相同，"
         "线条清晰流畅，视觉焦点集中在角色身上。",
-        out, size="1K", ratio="16:9", image_refs=[src])
+        out, size=_drama_sizes()[0], ratio="16:9", image_refs=[src])
     return out
 
 
@@ -607,7 +701,7 @@ def gen_asset(state: dict, name: str, info: dict, on_event=None,
         prompt += f"。{prompt_extra.strip('。 ')}"
     on_event({"type": "drama_media", "kind": "cast",
               "label": f"{name}（{sec}·{'图生图' if refs else '描述生成'}）"})
-    path, url = imggen.generate_ex(prompt, out, size="1K", ratio=ratio,
+    path, url = imggen.generate_ex(prompt, out, size=_drama_sizes()[0], ratio=ratio,
                                    image_refs=refs, want_url=True)
     info["path"], info["url"] = path, url
     return info
@@ -643,7 +737,7 @@ def gen_look(state: dict, name: str, info: dict, era: str,
                    "与体格不变，仅更换为本阶段的服装发型与配饰。")
     on_event({"type": "drama_media", "kind": "cast",
               "label": f"{name}（{sec}·{era}）"})
-    path, url = imggen.generate_ex(prompt, out, size="1K", ratio=ratio,
+    path, url = imggen.generate_ex(prompt, out, size=_drama_sizes()[0], ratio=ratio,
                                    image_refs=refs, want_url=True)
     lk = dict(lk)
     lk["path"], lk["url"] = path, url
@@ -781,7 +875,7 @@ def chapter_assets(state: dict, chapter: dict, shots: list, cast: dict,
             p, url = imggen.generate_ex(
                 f"{style}。{sec}基础形象：" + tpl.format(
                     a=_anchored_appearance(info.get("appearance", ""))),
-                out, size="1K", ratio=ratio)
+                out, size=_drama_sizes()[0], ratio=ratio)
             info["path"], info["url"] = p, url
         except Exception as e:          # noqa: BLE001  单个失败不阻断
             on_event({"type": "drama_media", "kind": "debt",
@@ -1031,7 +1125,8 @@ def keyframe(state: dict, cast: dict, shot: dict, ch: int, i: int,
               "画面中不要出现任何字幕、文字、标题、水印或字母字符。竖屏构图。")
     on_event({"type": "drama_media", "kind": "frame",
               "label": f"第{ch}章 镜头{i}"})
-    path, url = imggen.generate_ex(prompt, out, size="1K", ratio="9:16",
+    path, url = imggen.generate_ex(prompt, out, size=_drama_sizes()[0],
+                                   ratio=_drama_sizes()[1],
                                    image_refs=refs, want_url=True)
     if url:
         urls = _json_load(_urls_path(state), {})
@@ -1040,12 +1135,30 @@ def keyframe(state: dict, cast: dict, shot: dict, ch: int, i: int,
     return path, url
 
 
+def _ffmpeg_exe() -> str:
+    """返回可用的 ffmpeg 可执行文件路径。
+
+    优先系统 PATH（便于测试 monkeypatch `dramavideo.shutil.which`）；
+    缺失则回退到 imageio-ffmpeg 捆绑二进制（pip install imageio-ffmpeg，
+    Windows 也能免装 ffmpeg 直接跑）。两者都没装则返回 ""。
+    """
+    p = shutil.which("ffmpeg")
+    if p:
+        return p
+    try:
+        import imageio_ffmpeg              # noqa: PLC0415  懒导入
+        return imageio_ffmpeg.get_ffmpeg_exe() or ""
+    except Exception:                  # noqa: BLE001
+        return ""
+
+
 def dub(video_path: str, audio_path: str, out_path: str) -> str:
     """ffmpeg 把配音替换到视频音轨（-shortest 对齐时长）。"""
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = _ffmpeg_exe()
     if not ffmpeg:
         raise _stop("未安装 ffmpeg（配音混流与整集合成都需要它；"
-                    "安装说明见 docs/novel-setup.md）")
+                    "pip install imageio-ffmpeg 可免系统依赖，"
+                    "或安装说明见 docs/novel-setup.md）")
     subprocess.run([ffmpeg, "-y", "-i", video_path, "-i", audio_path,
                     "-map", "0:v", "-map", "1:a",
                     "-c:v", "copy", "-c:a", "aac", "-shortest", out_path],
@@ -1141,10 +1254,34 @@ def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
     # ——Seedance 1.0 系列视频无原生语音，靠这条补声
     spoken = dialogue or narration
     want_dub = bool(state.get("drama_tts")) and spoken
+    # 顶栏 provider/resolution 覆盖（state["drama_video_provider"] 缺省回落到 env/全局）
+    res = (state.get("drama_video_resolution") or "").strip()
+    preferred = (state.get("drama_video_provider") or "").strip()
     # 超时按时长缩放：长视频（15s/441帧）云端常超 4 分钟，240s 固定值会误杀
-    raw = videogen.generate(prompt, out if not want_dub else out + ".raw.mp4",
-                            image=frame_url, seconds=sec,
-                            timeout=max(240.0, sec * 30.0))
+    try:
+        raw = videogen.generate(prompt, out if not want_dub else out + ".raw.mp4",
+                                image=frame_url, resolution=res, seconds=sec,
+                                timeout=max(240.0, sec * 30.0),
+                                preferred_provider_id=preferred)
+    except videogen.VidError as e:
+        # 内容审核切模型（参考火宝 v3.1）：错误分类后抛专用异常，
+        # UI 顶栏接住后可一键切到下一个 provider 重试。
+        cls = videogen.classify_error(str(e))
+        svc_now = videogen._service()  # noqa: SLF001
+        if cls["category"] == "moderation":
+            on_event({"type": "drama_media", "kind": "moderation",
+                      "label": f"第{ch}章 镜头{i}（审核拒绝）",
+                      "hint": cls.get("hint") or "",
+                      "original": str(e)[:300],
+                      "provider_id": svc_now.get("provider_id", ""),
+                      "model": svc_now.get("model", "")})
+            raise DramaModerationError(
+                f"内容审核拒绝：{cls.get('hint') or '请尝试切模型'}",
+                hint=cls.get("hint") or "",
+                original_err=str(e)[:300],
+                provider_id=svc_now.get("provider_id", ""),
+                model=svc_now.get("model", "")) from e
+        raise
     if not want_dub:
         return raw
     import tts
@@ -1213,7 +1350,7 @@ def select_clip_take(state: dict, ch: int, i: int, take_path: str) -> str:
 
 def take_thumb(video_path: str, out_png: str) -> str:
     """ffmpeg 抽视频首帧做缩略图（take 预览用）；无 ffmpeg/失败返回空串。"""
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = _ffmpeg_exe()
     if not ffmpeg:
         return ""
     try:
@@ -1226,16 +1363,33 @@ def take_thumb(video_path: str, out_png: str) -> str:
 
 # ---------------- 4. ffmpeg 合成 ----------------
 
-def concat(clips: list, out_path: str) -> str:
-    """ffmpeg concat 拼接整集；先无损 copy，失败回退重编码。"""
-    ffmpeg = shutil.which("ffmpeg")
+def concat(clips: list, out_path: str, on_event=None) -> str:
+    """ffmpeg concat 拼接整集；先无损 copy，失败回退重编码。
+
+    选择性拼接：列表里不存在的文件会被跳过（不阻断），on_event 非空时
+    推送 {"type":"drama_media","kind":"concat_skip","label":...,"names":[...]}
+    让 UI 顶部状态栏提示已跳过的镜头。返回拼接产物路径；列表全部缺失抛错。
+    """
+    on_event = on_event or (lambda e: None)
+    ffmpeg = _ffmpeg_exe()
     if not ffmpeg:
-        raise _stop("未安装 ffmpeg（整集合成需要；安装说明见 "
-                    "docs/novel-setup.md，装后重跑本命令即可续造）")
+        raise _stop("未安装 ffmpeg（整集合成需要；"
+                    "pip install imageio-ffmpeg 可免系统依赖，"
+                    "或安装说明见 docs/novel-setup.md，装后重跑本命令即可续造）")
+    valid = [p for p in clips if p and os.path.exists(str(p))]
+    missing = [p for p in clips if p and not os.path.exists(str(p))]
+    if missing:
+        names = sorted({os.path.basename(os.path.splitext(m)[0])
+                        for m in missing})
+        on_event({"type": "drama_media", "kind": "concat_skip",
+                  "label": f"已跳过 {len(missing)} 个未生成镜头",
+                  "names": names})
+    if not valid:
+        raise _stop("可拼接的文件数为 0：请先生成至少一个镜头视频")
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     lst = out_path + ".list.txt"
     with open(lst, "w", encoding="utf-8") as f:
-        for p in clips:
+        for p in valid:
             f.write("file '" + str(p).replace("'", "'\\''") + "'\n")
     try:
         subprocess.run([ffmpeg, "-y", "-f", "concat", "-safe", "0",
@@ -1327,18 +1481,89 @@ def reset(state: dict) -> int:
     return n
 
 
+def run_clips_batch(state: dict, ch: int, on_event=None, stop=None,
+                   only_missing: bool = True) -> dict:
+    """单章批量生成关键帧+镜头视频（UI 顶栏「批量生成视频」按钮用）。
+
+    仅做关键帧 + 视频两件事，不跑资产提取（资产已是前置）；也不做合成——
+    合成由 UI 另起按钮触发（可选择性拼接）。返回：
+      {"ok": [path,...], "fail": [(i, err_str),...], "skipped_existing": [i,...]}
+
+    only_missing=True（默认）跳过已有 mp4 的镜头，仅补缺失的（重试失败用）。
+    only_missing=False 强制重生成（先删关键帧+片段，参考 drop_media）。
+    """
+    on_event = on_event or (lambda e: None)
+
+    def _stopped():
+        return stop is not None and stop.is_set()
+
+    chapters = state.get("chapters") or []
+    chobj = next((c for c in chapters if c.get("idx") == ch), None)
+    if not chobj:
+        raise _stop(f"第 {ch} 章不存在")
+    shots_path = os.path.join(_book_dir(state), _SHOT_DIR,
+                              f"第{ch}章.json")
+    shots = _json_load(shots_path, None)
+    if not isinstance(shots, list) or not shots:
+        raise _stop(f"第 {ch} 章还没有分镜——先跑 /novel drama 生成该章分镜")
+    if only_missing is False:
+        n = drop_media(state, ch)
+        if n:
+            on_event({"type": "drama_media", "kind": "redo",
+                      "label": f"第{ch}章（已删 {n} 个产物，强制重生成）"})
+    cast = _json_load(_global_cast_path(state), {})
+    local = _json_load(_chapter_assets_path(state, ch), {})
+    cast_ch = effective_cast(cast, local)
+    ok, fail, skipped = [], [], []
+    for i, shot in enumerate(shots, 1):
+        if _stopped():
+            raise _stop("已手动停止：已完成镜头保留，重跑自动续造")
+        clip_path = os.path.join(_book_dir(state), _CLIP_DIR,
+                                 f"{ch}-{i:02d}.mp4")
+        if only_missing and os.path.exists(clip_path):
+            skipped.append(i)
+            continue
+        url = ""
+        try:
+            _, url = keyframe(state, cast_ch, shot, ch, i, on_event)
+        except Exception as e:           # noqa: BLE001  单镜失败不阻断
+            err = str(e)
+            fail.append((i, err))
+            on_event({"type": "drama_media", "kind": "debt",
+                      "label": f"第{ch}章 镜头{i} 关键帧失败：{err[:80]}"})
+            continue
+        try:
+            ok.append(clip(state, shot, url, ch, i, on_event))
+        except Exception as e:           # noqa: BLE001
+            err = str(e)
+            fail.append((i, err))
+            on_event({"type": "drama_media", "kind": "debt",
+                      "label": f"第{ch}章 镜头{i} 视频失败：{err[:80]}"})
+    return {"ok": ok, "fail": fail, "skipped_existing": skipped}
+
+
 # ---------------- 总入口 ----------------
 
 def run(state: dict, ch_start: int, ch_end: int, on_event=None,
-        redo: bool = False, stop=None) -> list:
+        redo: bool = False, stop=None, stop_after: str = "") -> list:
     """按章范围跑完整链：资产 → 分镜 → 关键帧 → 镜头视频 → 合成。
 
     redo=True 时先删范围内各章的关键帧与片段（角色形象/分镜表保留），
     全部重新生成。单个镜头失败不阻断（记质量债继续跑，末尾合成已完成
     片段；重跑本命令自动补造缺失镜头）。stop 为 threading.Event：置位后
-    在资产/章节/镜头边界停下（已完成产物保留）。返回每章成片路径列表。
+    在资产/章节/镜头边界停下（已完成产物保留）。
+
+    stop_after：手动模式——跑到该阶段为止停下（"" = 全自动一跑到底），
+    可选 assets / shots / keyframes / clips / compose。停下后可手工调整
+    产物（改分镜 JSON、替换关键帧图），再跑下一阶段命令续造：已完成的
+    产物自动跳过，不会覆盖手工修改。返回每章成片路径列表。
     """
     on_event = on_event or (lambda e: None)
+    order = ("assets", "shots", "keyframes", "clips", "compose")
+    do = {s: True for s in order}
+    if stop_after in do:
+        for s in order[order.index(stop_after) + 1:]:
+            do[s] = False
 
     def _stopped():
         return stop is not None and stop.is_set()
@@ -1357,12 +1582,17 @@ def run(state: dict, ch_start: int, ch_end: int, on_event=None,
                 on_event({"type": "drama_media", "kind": "redo",
                           "label": f"第{c['idx']}章（已删 {n} 个产物，重生成）"})
     cast = build_cast(state, on_event, stop=stop)
+    if not do["shots"]:
+        raise _stop("✅ 阶段「形象资产」完成——可替换 media 下形象图后，"
+                    "跑 /novel drama shots 继续")
     outs = []
     debts = []
     for c in chapters:
         if _stopped():
             raise _stop("已手动停止：已完成产物保留，重跑命令自动续造")
         shots = build_shots(state, c, on_event, cast=cast)
+        if stop_after == "shots":
+            continue
         local = chapter_assets(state, c, shots, cast, on_event)
         cast_ch = effective_cast(cast, local)   # 长期 + 本章暂时
         clips = []
@@ -1370,20 +1600,24 @@ def run(state: dict, ch_start: int, ch_end: int, on_event=None,
             if _stopped():
                 raise _stop("已手动停止：已完成产物保留，重跑命令自动续造")
             url = ""
-            try:
-                _, url = keyframe(state, cast_ch, shot, c["idx"], i, on_event)
-            except Exception as e:       # noqa: BLE001  单镜失败不阻断
-                debts.append(f"第{c['idx']}章 镜头{i} 关键帧：{e}")
-                on_event({"type": "drama_media", "kind": "debt",
-                          "label": f"第{c['idx']}章 镜头{i} 关键帧失败，跳过"})
-            try:
-                clips.append(clip(state, shot, url, c["idx"], i, on_event))
-            except Exception as e:       # noqa: BLE001
-                debts.append(f"第{c['idx']}章 镜头{i} 视频：{e}")
-                on_event({"type": "drama_media", "kind": "debt",
-                          "label": f"第{c['idx']}章 镜头{i} 视频失败，跳过"})
-        if not clips:
+            if do["keyframes"]:
+                try:
+                    _, url = keyframe(state, cast_ch, shot, c["idx"], i, on_event)
+                except Exception as e:       # noqa: BLE001  单镜失败不阻断
+                    debts.append(f"第{c['idx']}章 镜头{i} 关键帧：{e}")
+                    on_event({"type": "drama_media", "kind": "debt",
+                              "label": f"第{c['idx']}章 镜头{i} 关键帧失败，跳过"})
+            if do["clips"]:
+                try:
+                    clips.append(clip(state, shot, url, c["idx"], i, on_event))
+                except Exception as e:       # noqa: BLE001
+                    debts.append(f"第{c['idx']}章 镜头{i} 视频：{e}")
+                    on_event({"type": "drama_media", "kind": "debt",
+                              "label": f"第{c['idx']}章 镜头{i} 视频失败，跳过"})
+        if do["clips"] and not clips:
             continue                      # 本章全军覆没：不合成，重跑续造
+        if not do["compose"]:
+            continue                      # 手动分步：未到合成阶段
         out = os.path.join(_book_dir(state), _OUT_DIR,
                            f"第{c['idx']}章-{_safe_name(c['title'])}.mp4")
         on_event({"type": "drama_media", "kind": "concat",
@@ -1391,6 +1625,18 @@ def run(state: dict, ch_start: int, ch_end: int, on_event=None,
         outs.append(concat(clips, out))
         on_event({"type": "drama_media", "kind": "done", "label": c["title"],
                   "path": out})
+    boundary = {
+        "shots": "✅ 阶段「分镜」完成——可手工调整 分镜目录 下的 JSON，"
+                 "然后跑 /novel drama frames 继续",
+        "keyframes": "✅ 阶段「关键帧」完成——可替换不满意的关键帧图，"
+                     "然后跑 /novel drama clips 继续",
+        "clips": "✅ 阶段「镜头视频」完成——可先试看各镜头，"
+                 "然后跑 /novel drama compose 合成整集",
+    }
+    if stop_after in boundary:
+        on_event({"type": "drama_media", "kind": "stage",
+                  "label": boundary[stop_after]})
+        raise _stop(boundary[stop_after])
     if debts:
         on_event({"type": "drama_media", "kind": "debt",
                   "label": "；".join(debts[:5])

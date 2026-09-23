@@ -145,9 +145,9 @@ def test_update_provider_full_edit(monkeypatch):
     assert p["base_url"] == "http://new/v1"        # 尾斜杠剥掉
     assert p["api_key"] == "新key占位"
     assert p["api_type"] == "anthropic"
-    # 部分编辑：None 字段不动；空 api_key 回落本地免鉴权占位
+    # 部分编辑：None 字段不动；空 api_key 回落 local-noauth 哨兵
     assert config.update_provider("p1", api_key="") is None
-    assert state["data"]["providers"][0]["api_key"] == "本地免鉴权占位"
+    assert state["data"]["providers"][0]["api_key"] == "local-noauth"
     assert config.update_provider("p1", name=None, base_url=None) is None
     assert state["data"]["providers"][0]["name"] == "New"
     # gpulocal-* 遗留条目同样可编辑
@@ -379,3 +379,17 @@ def test_media_service_skips_unkeyed_providers(monkeypatch):
     monkeypatch.setattr(config, "_load_models_data", lambda: {"providers": []})
     assert config.image_service() == {}
     assert config.video_service() == {}
+
+
+def test_load_models_dedupes_duplicate_keys(monkeypatch):
+    # 脏数据防御：同一 provider 下重复登记的模型只保留首个
+    state = _seed_providers(monkeypatch, [
+        {"id": "glm", "name": "GLM", "base_url": "x", "api_key": "k",
+         "api_type": "openai_compatible",
+         "models": [{"id": "glm-5.3", "name": "A"},
+                    {"id": "glm-5.3", "name": "B"}]},
+    ])
+    models, _ = config.load_models()
+    keys = [m.key for m in models]
+    assert keys.count("glm/glm-5.3") == 1
+    assert models[0].display_name == "A"          # 保留首个

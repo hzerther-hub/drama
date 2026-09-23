@@ -300,7 +300,10 @@ def _process_one_impl(url: str) -> _Result:
                 "[图片链接 %s 无法下载（%s）。这是图片地址，但当前防盗链/"
                 "鉴权导致拿不到图片数据；若需识图请用「附件」上传本地图片文件，"
                 "或改用可公开访问的图片直链。]" % (url, _err(e)), None, None)
-        return _Result("[链接 %s 抓取失败：%s]" % (url, _err(e)), None, None)
+        return _Result(
+            "[链接 %s 抓取失败：%s。轻量抓取常被反爬/鉴权站拒绝；"
+            "如需阅读该页，请改用 browser_open 工具用真实浏览器打开。]"
+            % (url, _err(e)), None, None)
 
     ctype = _mime_type(raw_ct)
     if ctype in _CT_EXT:                          # 图片 → 识图附件

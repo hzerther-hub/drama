@@ -179,24 +179,54 @@ def _dims(size: str = "", ratio: str = "") -> tuple:
     return w, h
 
 
+def _obj_choices(base: str, cls: str, field: str) -> list:
+    """取 ComfyUI 节点某个枚举输入的候选列表；节点缺失/异常返回 []。"""
+    try:
+        with urllib.request.urlopen(f"{base}/object_info/{cls}", timeout=8) as r:
+            info = json.loads(r.read().decode("utf-8"))
+        req = (info.get(cls, {}).get("input", {}).get("required", {})
+               .get(field, []))
+        return req[0] if req and isinstance(req[0], list) else []
+    except Exception:                  # noqa: BLE001  节点未装视为无候选
+        return []
+
+
 def _comfy_pick_ckpt(base: str) -> str:
-    """取 ComfyUI 里可用的第一个 checkpoint（可用 LAS_IMAGE_CKPT 指定）。"""
+    """取 ComfyUI 里可用的第一个模型：先 checkpoint，无则 GGUF（LAS_IMAGE_CKPT 可指定）。"""
     want = os.environ.get("LAS_IMAGE_CKPT", "").strip()
     if want:
         return want
-    try:
-        with urllib.request.urlopen(
-                base + "/object_info/CheckpointLoaderSimple", timeout=8) as r:
-            info = json.loads(r.read().decode("utf-8"))
-        req = (info.get("CheckpointLoaderSimple", {})
-               .get("input", {}).get("required", {})
-               .get("ckpt_name", []))
-        names = req[0] if req and isinstance(req[0], list) else []
-        if names:
-            return str(names[0])
-    except Exception:                  # noqa: BLE001
-        pass
-    raise ImgError("ComfyUI 未找到可用 checkpoint（可用 LAS_IMAGE_CKPT 指定）")
+    names = _obj_choices(base, "CheckpointLoaderSimple", "ckpt_name")
+    if names:
+        return str(names[0])
+    gguf = _obj_choices(base, "UnetLoaderGGUF", "unet_name")
+    if gguf:
+        return str(gguf[0])
+    raise ImgError("ComfyUI 未找到可用模型（checkpoints 为空且未装 ComfyUI-GGUF 节点；"
+                   "可用 LAS_IMAGE_CKPT 指定）")
+
+
+def _comfy_pick_gguf_parts(base: str, svc: dict) -> tuple:
+    """Flux GGUF 三件套：clip_l(safetensors) + t5(gguf) + vae；svc/环境变量可覆盖。"""
+    info1 = _obj_choices(base, "DualCLIPLoaderGGUF", "clip_name1")
+    info2 = _obj_choices(base, "DualCLIPLoaderGGUF", "clip_name2")
+    vaes = _obj_choices(base, "VAELoader", "vae_name")
+    clip1 = (svc.get("clip1") or os.environ.get("LAS_IMAGE_CLIP1", "").strip()
+             or next((str(n) for n in info1
+                      if not str(n).lower().endswith(".gguf")), ""))
+    clip2 = (svc.get("clip2") or os.environ.get("LAS_IMAGE_CLIP2", "").strip()
+             or next((str(n) for n in info2
+                      if str(n).lower().endswith(".gguf")), ""))
+    vae = (svc.get("vae") or os.environ.get("LAS_IMAGE_VAE", "").strip()
+           or (str(vaes[0]) if vaes else ""))
+    missing = [k for k, v in (("clip_l", clip1), ("t5 编码器", clip2),
+                              ("vae", vae)) if not v]
+    if missing:
+        raise ImgError("Flux GGUF 缺少文本编码器/VAE（" + "、".join(missing) +
+                       "）：确认已安装 ComfyUI-GGUF 节点并按模型下载清单把它们"
+                       "放到 text_encoders/vae；或用 LAS_IMAGE_CLIP1/"
+                       "LAS_IMAGE_CLIP2/LAS_IMAGE_VAE 指定文件名")
+    return clip1, clip2, vae
 
 
 def _comfy_workflow(ckpt: str, prompt: str, negative: str,
@@ -225,10 +255,49 @@ def _comfy_workflow(ckpt: str, prompt: str, negative: str,
     }
 
 
+def _comfy_workflow_gguf(unet: str, clip1: str, clip2: str, vae: str,
+                         prompt: str, negative: str,
+                         w: int, h: int, seed: int, prefix: str) -> dict:
+    """Flux GGUF 工作流：UnetLoaderGGUF + DualCLIPLoaderGGUF + VAELoader。
+
+    Flux.1-dev 为引导蒸馏模型：KSampler cfg=1，引导强度走 FluxGuidance
+    （仅支持 flux 系 GGUF；其他架构请用 checkpoint 工作流）。
+    """
+    return {
+        "4": {"class_type": "UnetLoaderGGUF",
+              "inputs": {"unet_name": unet}},
+        "10": {"class_type": "DualCLIPLoaderGGUF",
+               "inputs": {"clip_name1": clip1, "clip_name2": clip2,
+                          "type": "flux"}},
+        "11": {"class_type": "VAELoader",
+               "inputs": {"vae_name": vae}},
+        "5": {"class_type": "EmptyLatentImage",
+              "inputs": {"width": w, "height": h, "batch_size": 1}},
+        "6": {"class_type": "CLIPTextEncode",
+              "inputs": {"text": prompt, "clip": ["10", 0]}},
+        "7": {"class_type": "CLIPTextEncode",
+              "inputs": {"text": negative, "clip": ["10", 0]}},
+        "12": {"class_type": "FluxGuidance",
+               "inputs": {"guidance": 3.5, "conditioning": ["6", 0]}},
+        "3": {"class_type": "KSampler",
+              "inputs": {"seed": seed, "steps": 20, "cfg": 1.0,
+                         "sampler_name": "euler", "scheduler": "simple",
+                         "denoise": 1.0, "model": ["4", 0],
+                         "positive": ["12", 0], "negative": ["7", 0],
+                         "latent_image": ["5", 0]}},
+        "8": {"class_type": "VAEDecode",
+              "inputs": {"samples": ["3", 0], "vae": ["11", 0]}},
+        "9": {"class_type": "SaveImage",
+              "inputs": {"filename_prefix": prefix, "images": ["8", 0]}},
+    }
+
+
 def _comfy_generate(svc: dict, prompt: str, out_path: str,
                     size: str, ratio: str) -> tuple:
     """ComfyUI：提交工作流 → 轮询 history → /view 取图落盘。
 
+    模型名以 .gguf 结尾时走 Flux GGUF 工作流（模型清单里的
+    flux1-dev-Q5_K_S），否则走标准 checkpoint 工作流。
     注：ComfyUI 参考图（角色一致性）需要 IPAdapter/ControlNet 等自定义节点，
     不在此硬编码；角色一致性靠提示词里的形象描述（cast 提供）。
     """
@@ -238,9 +307,16 @@ def _comfy_generate(svc: dict, prompt: str, out_path: str,
     w, h = _dims(size, ratio)
     ckpt = svc.get("model") or _comfy_pick_ckpt(base)
     cid = "las-%d" % int(_time.time() * 1000)
-    wf = _comfy_workflow(ckpt, prompt, svc.get("negative", ""), w, h,
-                         int(_time.time()) % (2 ** 31),
-                         os.path.basename(os.path.splitext(out_path)[0]))
+    seed = int(_time.time()) % (2 ** 31)
+    prefix = os.path.basename(os.path.splitext(out_path)[0])
+    negative = svc.get("negative", "") or (
+        "lowres, bad anatomy, extra fingers, watermark, text")
+    if ckpt.lower().endswith(".gguf"):
+        clip1, clip2, vae = _comfy_pick_gguf_parts(base, svc)
+        wf = _comfy_workflow_gguf(ckpt, clip1, clip2, vae, prompt,
+                                  negative, w, h, seed, prefix)
+    else:
+        wf = _comfy_workflow(ckpt, prompt, negative, w, h, seed, prefix)
     body = json.dumps({"prompt": wf, "client_id": cid}).encode("utf-8")
 
     def _submit():

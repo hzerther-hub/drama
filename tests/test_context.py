@@ -167,3 +167,52 @@ class TestMaybeCompact:
                 for p in m["content"]
                 if isinstance(p, dict) and p.get("type") == "image_url"]
         assert not imgs
+
+    def test_emit_includes_counters(self, monkeypatch):
+        """emit 的 context_compact event 应带 images_stripped / tools_truncated /
+        rounds_collapsed 三个细化数字，便于 UI 显示本轮压缩到底动了哪些类。
+
+        场景：1 张大图（被 strip）+ 1 条超长 tool result（被截断）；stage 0 后总
+        token 应落到 budget 以下，所以不再触发 stage 2 折叠。
+        """
+        monkeypatch.setattr(config, "CONTEXT_BUDGET", 2000)
+        events = []
+        msgs = [_msg("system", "s"),
+                _msg("user", "第一句" * 60)]                 # round 0：用户文本
+        # round 1：用户多模态（2 张图）— 超过 keep_rounds 时被 strip
+        msgs.append({"role": "user", "content": [
+            {"type": "text", "text": "round1 文本"},
+            {"type": "image_url",
+             "image_url": {"url": "data:image/png;base64,A" * 400}},
+            {"type": "image_url",
+             "image_url": {"url": "data:image/png;base64,B" * 400}},
+        ]})
+        # round 2：assistant + tool 超长（5000 char > tool_keep 3000）— 被截断
+        msgs += _tool_round("c0", "read_file", "R" * 5000)
+        # round 3：被保护：assistant + 短 tool
+        msgs += _tool_round("c1", "read_file", "x" * 200)
+        context.maybe_compact(msgs, emit=events.append)
+        e = events[-1]
+        assert e["type"] == "context_compact"
+        assert e["images_stripped"] == 2, \
+            f"应剥离 round 1 的 2 张图，实际 {e.get('images_stripped')}"
+        assert e["tools_truncated"] >= 1, \
+            f"应截断至少 1 条超长 tool result，实际 {e.get('tools_truncated')}"
+        assert e["rounds_collapsed"] == 0, \
+            "stage 0 已经压到 budget 以下，不应再进入 stage 2 折叠"
+
+    def test_emit_rounds_collapsed_when_mid_fold_runs(self, monkeypatch):
+        """超预算且中间轮折叠时，emit 给出 rounds_collapsed > 0。"""
+        monkeypatch.setattr(config, "CONTEXT_BUDGET", 200)
+        events = []
+        msgs = [_msg("system", "sys")]
+        # 5 轮，每轮 600 char——中间三轮必折叠
+        for i in range(5):
+            msgs += _tool_round(f"c{i}", "read_file", "X" * 600)
+        out = context.maybe_compact(msgs, emit=events.append)
+        e = events[-1]
+        assert e["type"] == "context_compact"
+        assert e["rounds_collapsed"] > 0, \
+            f"应折叠若干中间轮，实际 {e.get('rounds_collapsed')}"
+        assert any("历史对话已压缩" in (m.get("content") or "")
+                   for m in out if isinstance(m.get("content"), str))

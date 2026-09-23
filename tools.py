@@ -308,24 +308,155 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "browser_open",
+            "description": "用内置浏览器打开网页（真实 Chromium/Edge），等加载完成后返回"
+                           "「标题 + 链接 + 正文前段」。需要进一步读全文用 browser_read，"
+                           "需要交互用 browser_click / browser_type。搜索结果里的链接、"
+                           "需要登录态或动态渲染的页面都用本工具而不是 web_search。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "网页地址（http/https，裸域名自动补全）"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_read",
+            "description": "读取内置浏览器当前页的正文文本（innerText），按 max_chars 截断。"
+                           "先 browser_open 打开页面再调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "max_chars": {"type": "integer",
+                                  "description": "返回正文字符上限，默认 6000，最大 50000"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_click",
+            "description": "在内置浏览器当前页点击元素（CSS 选择器，真实鼠标事件，自动滚动到位）。"
+                           "会触发导航/翻页/提交等真实动作，执行前需要用户批准。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string",
+                                 "description": "CSS 选择器，如 #next-btn、a.next、button:has-text(\"下一页\")"},
+                },
+                "required": ["selector"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_type",
+            "description": "在内置浏览器当前页的输入框清空并填入文本（兼容 React 受控组件）。"
+                           "执行前需要用户批准。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string",
+                                 "description": "输入框 CSS 选择器，如 input[name=q]、#editor"},
+                    "text": {"type": "string", "description": "要填入的文本"},
+                },
+                "required": ["selector", "text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_eval",
+            "description": "在内置浏览器当前页执行任意 JS 并返回 JSON 结果（取表格数据、"
+                           "精取字段、翻页计数等研究场景逃生舱）。执行前需要用户批准。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "expression": {"type": "string",
+                                   "description": "JS 表达式，如 document.querySelectorAll(\"h2\").length"},
+                },
+                "required": ["expression"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_screenshot",
+            "description": "对内置浏览器当前页整页截图，PNG 落盘到工作区 media/screenshots/，"
+                           "返回保存路径。需要看页面版式/图表时使用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string",
+                                 "description": "保存文件名（可选，默认时间戳 .png）"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_close",
+            "description": "关闭内置浏览器（释放资源；下次 browser_open 会自动重启）。",
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "jev_run",
+            "description": "浏览器智能体（Jev 模式）：把一句目标交给本机 jev-ultrafast "
+                           "自动连续操作网站（登录/搜索/填表等），返回逐动作日志。"
+                           "需在 /media 面板配置 TypeSafe API Key 与安装目录。"
+                           "整段任务一次委托执行，会真实操作页面，执行前需要用户批准。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "目标网站地址"},
+                    "goal": {"type": "string",
+                             "description": "一句自然语言目标，如 Log in with username demo and password pass123"},
+                },
+                "required": ["url", "goal"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "image_gen",
             "description": "文生图：调用图像生成服务（Agnes / 商汤日日新，在供应商管理里"
-                           "填 API Key 激活）生成一张图片，保存到工作区 media/images/，"
-                           "返回保存路径。",
+                           "填 API Key 激活）生成图片。"
+                           "**默认模式 = 替换已有短剧资产**：只要当前任务涉及短剧资产"
+                           "（角色/场景/道具，如『换掉手表/去背景/换色/重新画某角色』），"
+                           "必须先查 cast.json 找匹配名，传 `asset_name`，生成结果会"
+                           "覆盖原图（dramavideo.edit_asset）。"
+                           "**只有用户明确说要『生成一张新图保存到 media/』**（与已有"
+                           "资产无关）时，才不传 asset_name。"
+                           "asset_name 支持模糊匹配（『大前门香烟』→『香烟』）；"
+                           "不确定时务必先读短剧资产/全书/cast.json。"
+                           "**画面构图默认要求**：人物站姿 / 立绘请出『头部至脚部都在"
+                           "画面内』的全身像，避免只生成胸口以下或腰部以上；横向场景图"
+                           "同理保留完整边界；如果服务返回了半身像/裁切图，应在"
+                           "prompt 中显式写 full-body / head and feet in frame 后重发。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "prompt": {"type": "string", "description": "图像提示词（中文或英文）"},
                     "filename": {"type": "string",
-                                 "description": "保存文件名（可选，默认时间戳 .png）"},
+                                 "description": "保存文件名（仅在不传 asset_name 时生效，"
+                                                "默认时间戳 .png）"},
                     "asset_name": {"type": "string",
-                                   "description": "短剧资产名（可选，但修改短剧资产的图时"
-                                                  "必须填）。用户要求修改/重画/替换某张短剧"
-                                                  "资产图（角色/场景/道具，如 香烟/铁门/某角色）"
-                                                  "时，必须传资产名而不是另存新图：支持模糊"
-                                                  "匹配（如「大前门香烟」→「香烟」），生成结果"
-                                                  "直接覆盖资产原图。不确定资产名时先读 "
-                                                  "短剧资产/全书/cast.json 确认。"},
+                                   "description": "短剧资产名（角色/场景/道具）。"
+                                                  "改 / 重画 / 去背景 / 换色 等涉及已有资产"
+                                                  "的请求必须传；模糊匹配（『大前门香烟』→"
+                                                  "『香烟』）。不确定先读 cast.json。"},
                 },
                 "required": ["prompt"],
             },
@@ -619,7 +750,6 @@ def _run_shell(args):
     try:
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
             timeout=config.TOOL_EXEC_TIMEOUT, cwd=WORKSPACE)
         out = (r.stdout or "").strip()
         err = (r.stderr or "").strip()
@@ -712,7 +842,6 @@ def kb_schema() -> list:
     return [KB_SEARCH_SCHEMA]
 
 
-<<<<<<< HEAD
 # ---------------- 代码知识图谱（内置 codegraph，code_graph 工具） ----------------
 # 与 index_search（文本块检索）互补：这里回答结构问题——符号定义在哪、
 # 谁调用了它、它依赖谁、上下游是什么。工作区里有真实 CodeGraph 库时直接读它。
@@ -829,11 +958,41 @@ def codegraph_schema() -> list:
     except Exception:                    # noqa: BLE001
         return []
     return [CODE_GRAPH_SCHEMA]
-=======
->>>>>>> 1a7c87d (refactor(dispatch): (B) 收敛——退役 call_model 工具与本地大脑，派发纯云端化)
 
 
-
+def _lsp_diagnostics(args: dict) -> str:
+    """lsp_diagnostics 执行器：LSP 检查文件错误/警告（只读）。"""
+    path = (args.get("path") or "").strip()
+    if not path:
+        return "错误：缺少参数 path"
+    import lsp as lsp_mod
+    full = _resolve(path)
+    if not os.path.isfile(full):
+        return f"错误：文件不存在 {path}"
+    lang = lsp_mod.language_of(full)
+    if not lang:
+        return f"错误：不识别的文件类型（无对应语言）：{path}"
+    if not lsp_mod.available_for(lang):
+        return (f"提示：{path} 的语言（{lsp_mod.lang_id_of(lang)}）"
+                "未安装 LSP 服务器，无法检查。可安装后重试。")
+    c = lsp_mod.LSPClient.for_file(full)
+    if c is None:
+        return f"错误：无法启动 LSP 客户端：{path}"
+    try:
+        with open(full, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        diags = c.diag(content, wait=2.0)
+    except Exception as e:                    # noqa: BLE001
+        return f"错误：LSP 检查失败：{e}"
+    finally:
+        c.close()
+    if not diags:
+        return f"✓ {path}：无错误/警告"
+    lines = [f"{path}：{len(diags)} 条诊断"]
+    lines += [f"  第{d['line']}行 {d['mark']} {d['msg']}" for d in diags[:30]]
+    if len(diags) > 30:
+        lines.append(f"  …（其余 {len(diags) - 30} 条略）")
+    return "\n".join(lines)
 
 
 def _media_out_path(subdir: str, filename: str, default_ext: str,
@@ -847,20 +1006,6 @@ def _media_out_path(subdir: str, filename: str, default_ext: str,
     return os.path.join(get_workspace() or os.getcwd(), "media", subdir, name)
 
 
-def _latest_book_state():
-    """最近一本书的 state（image_gen 编辑短剧资产用）；没有书返回 None。"""
-    try:
-        import pipeline as _pl
-        import novel_chain
-        rows = _pl.list_pipelines()
-        if not rows:
-            return None
-        p = _pl.load(rows[0]["pid"], novel_chain.STAGES)
-        return p.state if p else None
-    except Exception:                  # noqa: BLE001
-        return None
-
-
 def _image_gen(args):
     """image_gen 执行器：文生图，落盘 media/images/。"""
     import imggen
@@ -871,16 +1016,6 @@ def _image_gen(args):
         return ("错误：未配置图像生成服务。请在「模型与供应商」面板给 Agnes 或 "
                 "商汤日日新填 API Key（条目含 image_model 自动生效），或设环境"
                 "变量 LAS_IMAGE_BASE_URL / LAS_IMAGE_MODEL。")
-    asset_name = (args.get("asset_name") or "").strip()
-    if asset_name:
-        # 短剧资产编辑：原图为参考按指令修改，直接覆盖资产原图（同步 cast.json）
-        try:
-            import dramavideo
-            state = _latest_book_state()
-            p = dramavideo.edit_asset(state, asset_name, prompt)
-        except Exception as e:         # noqa: BLE001
-            return f"错误：{e}"
-        return f"已修改并覆盖资产「{asset_name}」原图：{p}"
     out = _media_out_path("images", args.get("filename"), ".png",
                           (".png", ".jpg", ".jpeg", ".webp"))
     try:
@@ -936,39 +1071,109 @@ def _video_status(args):
     return f"任务 {vid} 状态：{st['status']}（仍在生成，请稍后再查。）"
 
 
-def _lsp_diagnostics(args: dict) -> str:
-    """lsp_diagnostics 执行器：LSP 检查文件错误/警告（只读）。"""
-    path = (args.get("path") or "").strip()
-    if not path:
-        return "错误：缺少参数 path"
-    import lsp as lsp_mod
-    full = _resolve(path)
-    if not os.path.isfile(full):
-        return f"错误：文件不存在 {path}"
-    lang = lsp_mod.language_of(full)
-    if not lang:
-        return f"错误：不识别的文件类型（无对应语言）：{path}"
-    if not lsp_mod.available_for(lang):
-        return (f"提示：{path} 的语言（{lsp_mod.lang_id_of(lang)}）"
-                "未安装 LSP 服务器，无法检查。可安装后重试。")
-    c = lsp_mod.LSPClient.for_file(full)
-    if c is None:
-        return f"错误：无法启动 LSP 客户端：{path}"
+def _browser_hint(e: Exception) -> str:
+    """浏览器工具统一错误包装：Playwright 未安装时给出一次性安装指引。"""
+    import browser
+    if not browser.available():
+        return ("错误：浏览器功能需要一次性安装 Playwright："
+                "pip install playwright（浏览器直接用系统 Edge/Chrome，"
+                "无需下载内核）。安装后重试即可。")
+    return f"错误：{e}"
+
+
+def _browser_open(args):
+    """browser_open 执行器：打开网页并返回标题+正文前段。"""
+    import browser
+    if not browser.available():
+        return _browser_hint(RuntimeError())
     try:
-        with open(full, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
-        diags = c.diag(content, wait=2.0)
-    except Exception as e:                    # noqa: BLE001
-        return f"错误：LSP 检查失败：{e}"
-    finally:
-        c.close()
-    if not diags:
-        return f"✓ {path}：无错误/警告"
-    lines = [f"{path}：{len(diags)} 条诊断"]
-    lines += [f"  第{d['line']}行 {d['mark']} {d['msg']}" for d in diags[:30]]
-    if len(diags) > 30:
-        lines.append(f"  …（其余 {len(diags) - 30} 条略）")
-    return "\n".join(lines)
+        return browser.open_url((args.get("url") or "").strip())
+    except browser.BrowserError as e:
+        return _browser_hint(e)
+    except Exception as e:                 # noqa: BLE001
+        return _browser_hint(e)
+
+
+def _browser_read(args):
+    """browser_read 执行器：当前页正文文本。"""
+    import browser
+    if not browser.available():
+        return _browser_hint(RuntimeError())
+    try:
+        return browser.read_page(int(args.get("max_chars") or 6000))
+    except Exception as e:                 # noqa: BLE001
+        return _browser_hint(e)
+
+
+def _browser_click(args):
+    """browser_click 执行器：点击元素（审批层工具）。"""
+    import browser
+    try:
+        return browser.click((args.get("selector") or "").strip())
+    except Exception as e:                 # noqa: BLE001
+        return _browser_hint(e)
+
+
+def _browser_type(args):
+    """browser_type 执行器：输入框填字（审批层工具）。"""
+    import browser
+    try:
+        return browser.fill((args.get("selector") or "").strip(),
+                            str(args.get("text", "")))
+    except Exception as e:                 # noqa: BLE001
+        return _browser_hint(e)
+
+
+def _browser_eval(args):
+    """browser_eval 执行器：页面内执行 JS（审批层工具）。"""
+    import browser
+    try:
+        return browser.eval_js(str(args.get("expression", "")))
+    except Exception as e:                 # noqa: BLE001
+        return _browser_hint(e)
+
+
+def _browser_screenshot(args):
+    """browser_screenshot 执行器：整页截图，落盘 media/screenshots/。"""
+    import browser
+    if not browser.available():
+        return _browser_hint(RuntimeError())
+    out = _media_out_path("screenshots", args.get("filename"), ".png",
+                          (".png",))
+    try:
+        p = browser.screenshot(out)
+    except Exception as e:                 # noqa: BLE001
+        return _browser_hint(e)
+    return f"已截图：{p}"
+
+
+def _browser_close(args):
+    """browser_close 执行器：关闭浏览器。"""
+    import browser
+    try:
+        return browser.close()
+    except Exception as e:                 # noqa: BLE001
+        return _browser_hint(e)
+
+
+def _jev_run(args):
+    """jev_run 执行器：委托本机 jev-ultrafast 按目标自动操作网站（审批层工具）。"""
+    import config
+    import jev
+    cfg = config.get_jev()
+    key = str(cfg.get("api_key", "") or "")
+    if not key:
+        return ("错误：尚未配置 TypeSafe API Key。请打开 /media 面板在"
+                "「浏览器智能体」段填入你自己的 key（console.typesafe.ai 获取），"
+                "并确认本机已安装 jev-ultrafast。")
+    try:
+        return jev.run_goal(args.get("url") or "", args.get("goal") or "",
+                            key, cfg.get("install_dir", ""),
+                            cfg.get("model", ""))
+    except jev.JevError as e:
+        return f"错误：{e}"
+    except Exception as e:             # noqa: BLE001
+        return f"错误：jev 执行异常：{e}"
 
 
 def _task_plan(args: dict) -> str:
@@ -999,6 +1204,14 @@ _EXECUTORS = {
     "image_gen": _image_gen,
     "video_gen": _video_gen,
     "video_status": _video_status,
+    "browser_open": _browser_open,
+    "browser_read": _browser_read,
+    "browser_click": _browser_click,
+    "browser_type": _browser_type,
+    "browser_eval": _browser_eval,
+    "browser_screenshot": _browser_screenshot,
+    "browser_close": _browser_close,
+    "jev_run": _jev_run,
     "lsp_diagnostics": _lsp_diagnostics,
     "task_plan": _task_plan,
 }
@@ -1021,8 +1234,11 @@ def execute_tool(name: str, arguments: dict) -> str:
                 f"其他方法继续完成当前任务，不要因此停止。）")
 
 
-# 可写工具：执行前需要用户批准
-WRITE_TOOLS = {"write_file", "run_shell"}
+# 可写工具：执行前需要用户批准（浏览器点击/填表/执行 JS 会真实改变页面
+# 状态乃至提交表单；jev_run 整段委托自动操作，与写盘同级别对待）
+WRITE_TOOLS = {"write_file", "run_shell",
+               "browser_click", "browser_type", "browser_eval",
+               "jev_run"}
 
 
 def is_write_tool(name: str) -> bool:

@@ -43,7 +43,7 @@ main.py（Python 3.12 版本守卫，必须在 import ui 之前）
 - **事件契约**：agent 抛出 `{"type": ...}` 字典 —— `text / reasoning / tool_start / tool_result / tool_denied / round / usage / cache_hit / context_compact / model_switch / plan / media`，由 `ui.App._on_event` 单点消费；小说流水线经 `_novel_event` 转成同类事件。
 - **权限**：`readonly` / `ask`（默认，写工具需审批）/ `always`；写工具 = `write_file`、`run_shell`（及非只读的 MCP 服务器）。审批跨线程用共享 dict + `threading.Event`，超时自动拒绝。
 - **沙箱**：默认开启，`LAS_SANDBOX=off` 关闭；`write_file` 只能写工作区内（`tools.path_in_workspace`），`run_shell` 拦截明显破坏性命令（`tools._BLOCKED_SHELL_PATTERNS`）。这是护栏，不是 OS 级隔离。
-- **内置工具（`tools.py`）**：`read_file`、`write_file`、`list_dir`、`glob_search`、`grep_search`、`index_search`、`lsp_diagnostics`、`run_shell`、`web_search`、`task_plan`、`call_model`、`kb_search`。
+- **内置工具（`tools.py`）**：`read_file`、`write_file`、`list_dir`、`glob_search`、`grep_search`、`index_search`、`lsp_diagnostics`、`run_shell`、`web_search`、`image_gen`/`video_gen`/`video_status`、`browser_open`/`browser_read`/`browser_click`/`browser_type`/`browser_eval`/`browser_screenshot`/`browser_close`（`browser.py`，Playwright 可选依赖，驱动系统 Edge；点击/填表/执行 JS 需审批）、`task_plan`、`kb_search`。
 - **小说线**：`pipeline.py` 通用阶段状态机（`StageStopError` 断链 / `StageDebtError` 记债续跑 / `StagePaused` 恢复时跳过已完成阶段，原子 JSON 检查点 + `.events.jsonl` 事件日志）→ `novel_chain.py` 8 阶段（setup→outline→world→contract→characters→volume→chapter_plan→chapters，`STAGES` 定义于 `novel_chain.py:460`），逐章 草稿→五维审校→修复一次→事实/伏笔台账→RAG 索引。交互全部是 `ui.py` 内联的 `/novel` 子命令（**不存在 `ui_panel_novel.py`**，也没有弹出式工作台）。书稿落在 `工作区/novels/<书名>/{大纲,设定集,正文,审查报告}`。
 - **量化线**：铁律 **禁 N×N 平台直译**。`parsers.py`（AST 确定性解析，超范围抛 `ParseError`）→ `ir.py`（`StrategyIR`）→ `emitters.py`（确定性模板发射，不用 LLM）→ `validate.py`（白名单沙箱）→ `sim.py`（桩运行时信号一致率）→ `benchmark.py`；`llm_parse.py` 仅在 ParseError 时兜底。映射真相在 `products/quant/api_maps/*.md`（改映射先改对照表），IR 内部统一聚宽规范形，只在 parse/emit 边界转换（`symbols.py`）；QMT 模板故意保留 `TODO: 填资金账号`（合规红线），xtquant 只引用不内嵌。
 
@@ -81,3 +81,45 @@ main.py（Python 3.12 版本守卫，必须在 import ui 之前）
 - **LLM mock 范式**：`monkeypatch.setattr(llm, '_post_stream', lambda model, messages, tools: iter(fake_sse_dicts))`；模型对象直接构造 `config.ModelConfig`。
 - **缓存不变量**：缓存键用**请求时**的消息列表（不要在键入前追加助手回复）；被中止的运行绝不缓存；MCP 调用不缓存。
 - **文档时效**：`CLAUDE.md`（引用了已删除的 `gpulocal/`、`localmodels.py`）、`CODE_STRUCTURE_REPORT.md`（2026-08-27 快照，行数已滞后）、`docs/optimization-design.md`（称仓库无 LICENSE，实际已有 Mulan PSL v2）均可能过时，**以代码为准**。
+
+## Drama Workshop (剧集工作台 / Pavo 三段式)
+
+novelwriter 的制片模块，UI 在 `ui_panel_drama.py`，引擎在 `dramavideo.py`。流水线是"大纲 → 资产 → 分镜视频"，所有产物落到 `novels/<书名>/`，**文件存在即缓存**（断点续传天然成立，重新进入工作台自动跳过已完成环节）。
+
+**四步流程**：
+
+1. **大纲改写** — 工作台粘贴原始文本 → 「AI 改写」按集拆分剧本、标注场景与角色；可换文本模型、调语气（全局风格存 `models.json::globals.default_drama_style`，默认 `dramavideo.DEFAULT_STYLE = "电影感写实风格，统一色调与打光，画面细腻，短剧质感"`）。满意后「保存并进入制作」落盘 `novels/<书名>/剧本.json`。
+2. **资产制作** — 对剧本「提取」得到 角色 / 场景 / 道具 清单（每条带 `name` + `appearance` + `type` + `path`）；逐个点「生成形象」产出一致性参考图（也可全选批量）。资产图存 `短剧资产/<名>.png` + `短剧资产/cast.json`（含 `_done_<类>` 完成标记），后续生视频时作为视觉参考注入。
+3. **分镜与视频** — 「视频制作」页先拆分分镜（AI 按节奏切分并生成提示词）；顶栏选视频模型（Seedance / Wan 3.0 / MiniMax…），分辨率与时长档位联动；右侧微调每个分镜的提示词（`@角色名` 自动从 `cast.json` 映射参考图）。点「批量生成视频」并发调用 `videogen.py`；关键帧由 `dramavideo` 多图合成生成，再作首帧走图生视频（`text_to_video` 降级）。失败任务可「重试失败」/「重新生成单个镜头」/`/novel drama video 1-3 redo`。
+4. **拼接导出** — 勾选镜头（悬停预览单镜视频），点「开始拼接」→ FFmpeg 合成到 `短剧成片/第N章-<标题>.mp4`，可下载 / 在 UI 播放。点「标记完成」点亮左侧进度栏；`剧集列表` 随时查看各集状态，点「进入制作」继续未完成的集。
+
+**一致性三段传播**（`dramavideo.py:5-7`）：
+
+1. **角色基础形象** — 详细外貌锚 + 统一风格，每角色一次，全剧复用（资产层）；
+2. **镜头关键帧** — 分镜描述 + 出场角色形象图作参考图多图合成（长相由参考图锁定，资产 → 关键帧层）；
+3. **镜头视频** — 关键帧作首帧图生视频（画面继承关键帧，不再漂移，关键帧 → 视频层）。
+
+**目录约定**（dramavideo.py:10-11，所有路径相对 `novels/<书名>/`）：
+
+| 目录 | 内容 |
+|---|---|
+| `短剧资产/` | `<角色>.png` + `cast.json` + 各章 `assets.json` |
+| `短剧分镜/` | `第N章.json`（分镜表）+ `urls.json` |
+| `短剧关键帧/` | `N-01.png` …（多图合成产物） |
+| `短剧片段/` | `N-01.mp4` …（单镜视频） |
+| `短剧成片/` | `第N章-<标题>.mp4`（FFmpeg 拼接终产物） |
+
+**关键模块**：
+
+| 文件 | 职责 |
+|---|---|
+| `ui_panel_drama.py` (≈45KB) | 剧集工作台 UI：`show(app)` 入口；三页（大纲 / 资产 / 分镜视频）由 `state` + `dramavideo` 状态驱动；后台线程跑生成，`win.after` 回主线程刷新 |
+| `dramavideo.py` (≈70KB) | 三段流水线 + ffmpeg 拼接；`DEFAULT_STYLE`、`cast.json` I/O、`_done_<类>` 标记、关键帧多图合成、`redo=True` 重做关键帧/片段（角色形象/分镜表保留） |
+| `videogen.py` (≈12KB) | 多 provider 视频生成（Seedance / Wan / MiniMax…）；分辨率×时长档位映射；并发任务管理；`text_to_video` / `image_to_video` 两路 |
+| `imggen.py` (≈18KB) | 图像生成后端（角色参考图、关键帧多图合成）；PIL 可选（缺则降级为文本） |
+| `tests/test_dramavideo.py` | pytest 覆盖；monkeypatch `llm._post_stream` 风格的 mock 流 |
+| `i18n.py` (≈100KB) | 包含 `ds.shots`、`novel drama video` 等工作台文案；UI 字符串全走 `i18n.t` |
+
+**FFmpeg**：拼接走 stdlib `subprocess` 调用 ffmpeg；macOS / Linux 走 PATH，Windows 走 PATH 或 `imageio-ffmpeg` bundled binary（`packaging/build.py` 已处理）。视频时长护栏：视频模型给多长画面只能说多长的话，镜头时长低于此数会截断（dramavideo.py:1077 注释）。
+
+**注意**：当前 `ui_panel_drama.py` / `dramavideo.py` 文件头的 docstring 出现乱码（gbk/latin-1 被当 utf-8 解码），历史遗留；修改这两个文件时用 UTF-8 读写即可。

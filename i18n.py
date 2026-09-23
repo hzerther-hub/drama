@@ -65,6 +65,16 @@ STRINGS: dict = {
     "mode.readonly":   {"en": "Read-only (no writes)", "zh": "只读（禁止写）"},
     "mode.ask":        {"en": "Ask every time", "zh": "每次询问"},
     "mode.always":     {"en": "Always allow", "zh": "总是允许"},
+    "mode.hint_drama": {"en": "🎬 Toggle short-drama creation mode "
+                                "(/novel drama*)",
+                          "zh": "🎬 短剧创作模式开关（开启后 /novel drama* 子命令可用）"},
+    "mode.hint_comic": {"en": "📖 Toggle comic / manhua creation mode "
+                                "(/novel comic*)",
+                          "zh": "📖 漫画 / 漫剧创作模式开关（开启后 /novel comic* 子命令可用）"},
+    "mode.drama":      {"en": "Short drama mode (/novel drama*)",
+                          "zh": "短剧模式（/novel drama*）"},
+    "mode.comic":      {"en": "Comic mode (/novel comic*)",
+                          "zh": "漫画模式（/novel comic*）"},
 
     # —— 模型菜单 ——
     "model.manage":    {"en": "⚙ Manage models (add / edit / delete)…", "zh": "⚙ 管理模型（添加 / 编辑 / 删除）…"},
@@ -190,6 +200,9 @@ STRINGS: dict = {
     "evt.tool": {"en": "Tool", "zh": "工具"},
     "evt.round": {"en": "Round {n} tool calls done, continuing", "zh": "第 {n} 轮工具调用完成，继续处理"},
     "evt.compact": {"en": "📉 Context compacted: ~{before} → ~{after} tk", "zh": "📉 上下文已压缩：~{before} → ~{after} tk"},
+    "evt.compact_images": {"en": "strip {n} image", "zh": "剥离 {n} 张图"},
+    "evt.compact_tools": {"en": "truncate {n} tool result", "zh": "截断 {n} 条工具结果"},
+    "evt.compact_rounds": {"en": "collapse {n} round", "zh": "折叠 {n} 轮历史"},
     "evt.denied": {"en": "⛔ Denied: {name}", "zh": "⛔ 已拒绝: {name}"},
     "btn.play": {"en": "▶ Play", "zh": "▶ 播放"},
     "btn.stop2": {"en": "⏸ Stop", "zh": "⏸ 停止"},
@@ -615,6 +628,95 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "cache.saved":    {"en": "Cache saved: {b}", "zh": "缓存已保存：{b}"},
     "cache.ttl_int":  {"en": "TTLs must be integers", "zh": "TTL 必须是整数"},
     "cache.clear":    {"en": "Clear cache", "zh": "清空缓存"},
+    "media.title":    {"en": "Image / Video generation services",
+                       "zh": "图像 / 视频生成服务"},
+    "media.image":    {"en": "Image backend", "zh": "图像后端"},
+    "media.video":    {"en": "Video backend", "zh": "视频后端"},
+    "media.base_url": {"en": "Service URL", "zh": "服务地址"},
+    "media.model":    {"en": "Model (empty = local default)", "zh": "模型（留空 = 本地默认）"},
+    "media.api_key":  {"en": "API Key", "zh": "API Key（本地可留空）"},
+    "media.kind":     {"en": "Protocol", "zh": "协议"},
+    "media.hint.image": {"en": "pick one: local (e.g. ComfyUI/SD-WebUI) or cloud",
+                         "zh": "本地（如 ComfyUI/SD-WebUI）或云端，任选其一，均可选装"},
+    "media.hint.video": {"en": "agnes or ark (Volcengine Jimeng)",
+                         "zh": "agnes｜ark（火山即梦 Seedance），任选其一"},
+    "media.jev":        {"en": "Browser agent (jev-ultrafast)",
+                         "zh": "浏览器智能体（jev-ultrafast）"},
+    "media.jev_api_key": {"en": "TypeSafe API Key", "zh": "TypeSafe API Key"},
+    "media.jev_install_dir": {"en": "jev-ultrafast folder (optional)",
+                              "zh": "jev-ultrafast 目录（可选）"},
+    "media.jev_model":  {"en": "Model (default jev-latest)",
+                         "zh": "模型（默认 jev-latest）"},
+    "media.jev_hint":   {"en": "Get your own key at console.typesafe.ai",
+                         "zh": "key 在 console.typesafe.ai 获取，各用户各自持有"},
+    "media.browser":    {"en": "Browser behavior", "zh": "浏览器行为"},
+    "media.headed":     {"en": "Show browser window (watch operations)",
+                         "zh": "显示浏览器窗口（可视化操作过程）"},
+    "media.proxy":      {"en": "Proxy", "zh": "代理"},
+    "media.proxy_hint": {"en": "system=follow OS / direct=no proxy",
+                         "zh": "system=跟随系统｜direct=强制直连"},
+    "media.drama":       {"en": "Drama / comic sizes",
+                          "zh": "短剧 / 漫画尺寸"},
+    "media.drama_isz":   {"en": "Image tier", "zh": "图像档位"},
+    "media.drama_iratio": {"en": "Drama ratio", "zh": "短剧比例"},
+    "media.drama_vsize": {"en": "Video size", "zh": "视频尺寸"},
+    "media.drama_csz":   {"en": "Comic tier", "zh": "漫画档位"},
+    "media.drama_cratio": {"en": "Comic ratio", "zh": "漫画比例"},
+    "media.menu_cfg":   {"en": "Media services settings…", "zh": "媒体服务配置…"},
+    "media.menu_image": {"en": "Generate an image…", "zh": "生成图像…"},
+    "media.menu_video": {"en": "Generate a video…", "zh": "生成视频…"},
+    "media.menu_browser": {"en": "Browser agent task (jev)…",
+                           "zh": "浏览器智能体任务（jev）…"},
+    "media.menu_board": {"en": "Drama production board…",
+                         "zh": "短剧制作台…"},
+    "vb.title":      {"en": "Drama production board", "zh": "短剧制作台"},
+    "vb.chapter":    {"en": "Chapter", "zh": "章节"},
+    "vb.shot":       {"en": "Shot", "zh": "镜号"},
+    "vb.desc":       {"en": "Description", "zh": "分镜描述"},
+    "vb.dur":        {"en": "Dur", "zh": "时长"},
+    "vb.frame":      {"en": "Keyframe", "zh": "关键帧"},
+    "vb.clip":       {"en": "Clip", "zh": "片段"},
+    "vb.status":     {"en": "Status", "zh": "状态"},
+    "vb.busy":       {"en": "A task is running…", "zh": "有任务执行中，稍候…"},
+    "vb.pick_shot":  {"en": "Select a shot first", "zh": "请先在列表中选择一个镜头"},
+    "vb.pick_asset": {"en": "Select an asset first",
+                      "zh": "请先在列表中选择一个资产"},
+    "vb.assets":     {"en": "Character assets", "zh": "角色资产"},
+    "vb.name":       {"en": "Name", "zh": "名称"},
+    "vb.ast_status": {"en": "Status", "zh": "状态"},
+    "vb.done":       {"en": "done", "zh": "已完成"},
+    "vb.pending":    {"en": "pending", "zh": "待生成"},
+    "vb.dur_edit":   {"en": "Duration (4-15s, writes back to storyboard):",
+                      "zh": "时长（4-15 秒，保存回分镜 JSON）："},
+    "vb.dur_save":   {"en": "Save duration", "zh": "保存时长"},
+    "vb.dur_saved":  {"en": "Duration saved", "zh": "时长已保存"},
+    "vb.gen_frame":  {"en": "Generate keyframe", "zh": "生成关键帧"},
+    "vb.gen_clip":   {"en": "Generate clip", "zh": "生成视频"},
+    "vb.regenerate": {"en": "Regenerate keyframe (force)",
+                      "zh": "重生成关键帧（强制）"},
+    "vb.upload":     {"en": "Upload image", "zh": "上传图片替换"},
+    "vb.refresh":    {"en": "Refresh", "zh": "刷新"},
+    "vb.hint_shots": {"en": "No storyboard yet — run /novel drama shots {ch} first",
+                      "zh": "（还没有分镜——先执行 /novel drama shots {ch} 生成分镜，再回到制作台）"},
+    "media.menu_filled": {"en": "Template filled — complete it and send",
+                          "zh": "模板已填入输入框，补全后发送即可"},
+    "novel.drama_rewrite": {"en": "Rewriting shooting script…",
+                            "zh": "正在改写拍摄剧本…"},
+    "novel.drama_rewrite_done": {"en": "Shooting script ready: {file}",
+                                 "zh": "拍摄剧本已生成：{file}（分镜将优先使用它）"},
+    "ds.need_face":     {"en": "Generating character face: {n}",
+                         "zh": "正在生成角色形象：{n}"},
+    "ds.three_view":    {"en": "3-view", "zh": "三视图"},
+    "media.saved":    {"en": "Saved. Takes effect on next generation.",
+                       "zh": "已保存，下次生成即生效"},
+    "media.save":     {"en": "Save", "zh": "保存"},
+    "media.clear":    {"en": "Clear", "zh": "清除"},
+    "media.cleared":  {"en": "Media config cleared (back to env / providers)",
+                       "zh": "已清除，回退到环境变量 / 供应商配置"},
+    "media.note":     {"en": "Priority: env vars > this panel > providers. "
+                       "Local ComfyUI/SD-WebUI: URL only, key may be empty.",
+                       "zh": "优先级：环境变量 > 本面板 > 供应商配置。"
+                       "本地 ComfyUI/SD-WebUI 只填地址，Key 可留空。"},
 
     # —— 模型管理 ——
     "mm.list_title":  {"en": "Configured models (double-click to use)",
@@ -632,6 +734,16 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "mm.providers":            {"en": "Providers",          "zh": "服务提供商"},
     "mm.models":               {"en": "Models",             "zh": "模型"},
     "mm.add_provider":         {"en": "＋ Add provider",   "zh": "＋ 添加 Provider"},
+    "add_provider.preset_hint": {"en": "Pick a preset to autofill (or fill manually below)",
+                                  "zh": "选预设一键填表（也可手动填）"},
+    "add_provider.preset_comfyui":   {"en": "ComfyUI (local)",
+                                        "zh": "ComfyUI（本地）"},
+    "add_provider.preset_volc":      {"en": "Volcengine (Ark)",
+                                        "zh": "火山方舟"},
+    "add_provider.preset_sensenova": {"en": "SenseTime (日日新)",
+                                        "zh": "商汤日日新"},
+    "add_provider.preset_silicon":   {"en": "SiliconFlow",
+                                        "zh": "硅基流动"},
     "mm.edit_provider":        {"en": "✏ Edit provider",    "zh": "✏ 编辑 Provider"},
     "mm.rename_provider":      {"en": "✏ Edit provider",    "zh": "✏ 编辑 Provider"},
     "mm.del_provider":         {"en": "🗑 Delete provider", "zh": "🗑 删除 Provider"},
@@ -753,18 +865,17 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "sess.workspace": {"en": "Workspace", "zh": "工作区"},
     "panel.files":    {"en": "Files", "zh": "文件"},
     "file.search":    {"en": "Search by filename…", "zh": "按文件名搜索…"},
+    "editor.max":     {"en": "Maximize / restore editor (▣/▢)",
+                       "zh": "最大化 / 还原编辑区（▣ 全窗，▢ 恢复三栏）"},
+    "editor.maxed":   {"en": "Editor maximized — click ▢ to restore",
+                       "zh": "编辑区已独占整窗，点 ▢ 还原三栏"},
+    "editor.restored": {"en": "Editor restored", "zh": "编辑区已还原三栏布局"},
     "file.add_chat":  {"en": "Add to conversation", "zh": "添加到对话"},
     "file.drag_multi": {"en": "{t} +{n} more", "zh": "{t} 等 {n} 项"},
     "file.add_code_chat": {"en": "Add selection to chat", "zh": "加入聊天"},
     "file.add_chat_short": {"en": "➕ Chat", "zh": "➕ 对话"},
     "file.open":    {"en": "Open", "zh": "打开"},
     "file.delete":  {"en": "Delete", "zh": "删除"},
-    "file.delete_multi": {"en": "Delete selected ({n})", "zh": "删除选中（{n} 个）"},
-    "file.del_multi": {"en": "Delete these {n} items?\n{names}",
-                       "zh": "删除这 {n} 项？\n{names}"},
-    "file.and_more": {"en": "…and {n} in total", "zh": "…等共 {n} 项"},
-    "file.del_multi_done": {"en": "Deleted {ok}, failed {fail}",
-                            "zh": "已删除 {ok} 项，失败 {fail} 项"},
     "file.deleted": {"en": "Deleted: {p}", "zh": "已删除：{p}"},
     "q.empty":      {"en": "Queued messages (Ctrl+Enter sends all)", "zh": "排队消息（Ctrl+Enter 发送全部）"},
     "q.queue":      {"en": "🕐 Queue", "zh": "🕐 排队"},
@@ -795,6 +906,8 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
                            "callees 它调用谁｜impact 影响面｜stats 概况｜build 重建"
                            "（如 /graph callers execute_tool）"},
     "cmd.cache":    {"en": "Manage cache", "zh": "管理缓存"},
+    "cmd.media":    {"en": "Image / video generation services",
+                     "zh": "图像/视频生成服务（ComfyUI/SD-WebUI/即梦）"},
     "cmd.mcp":      {"en": "Manage MCP servers", "zh": "管理 MCP 服务器"},
     "cmd.sessions": {"en": "Search/list sessions", "zh": "会话搜索/全部"},
     "cmd.delete":   {"en": "Delete current session", "zh": "删除当前会话"},
@@ -843,6 +956,7 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "cmd.novel_publish": {"en": "Export/publish: /novel publish txt|md|epub|html|wattpad|webhook",
                           "zh": "导出/发布：/novel publish txt|md|epub|html|wattpad|webhook"},
     "novel.started": {"en": "Pipeline started ({pid})", "zh": "流水线已启动（{pid}）"},
+    "novel.running":   {"en": "Pipeline running…", "zh": "流水线运行中…"},
     "novel.badge_running": {"en": "Writing", "zh": "写小说中"},
     "novel.status_running": {"en": "✍ Novel production running…", "zh": "✍ 小说生产进行中…"},
     "novel.pause_review": {"en": "⏸ 「{stage}」done, paused", "zh": "⏸ 「{stage}」完成，已暂停"},
@@ -896,80 +1010,152 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
                      "zh": "当前书：{pid}（{t}）"},
     "novel.no_book": {"en": "Manuscript not found", "zh": "书稿文件不存在"},
     "novel.no_chapters": {"en": "No finished chapters yet", "zh": "还没有已完成的章节"},
-    "novel.cfg_current": {"en": "Current video engine: {n} ({m})",
-                          "zh": "当前视频引擎：{n}（{m}）"},
-    "novel.cfg_usage": {"en": "Switch: /novel drama config <id> (fuzzy; auto = list order)",
-                        "zh": "切换：/novel drama config <id或名称片段>（模糊匹配；auto 恢复自动）"},
-    "novel.cfg_switched": {"en": "Video engine switched: {n} ({m})",
-                           "zh": "视频引擎已切换：{n}（{m}）"},
-    "novel.cfg_notfound": {"en": "No matching video provider",
-                           "zh": "没有匹配的视频供应商"},
-    "novel.cfg_env": {"en": "env override", "zh": "环境变量"},
-    "novel.cfg_no_video_provider": {"en": "No provider has video_model configured",
-                                    "zh": "还没有供应商配置 video_model"},
-    "novel.cfg_img_current":    {"en": "Current image engine: {n} ({m})",
-                                 "zh": "当前图像引擎：{n}（{m}）"},
-    "novel.cfg_img_switched":   {"en": "Image engine switched: {n} ({m})",
-                                 "zh": "图像引擎已切换：{n}（{m}）"},
-    "novel.cfg_img_notfound":   {"en": "No matching image provider",
-                                 "zh": "没有匹配的图像供应商"},
-    "novel.cfg_no_image_provider": {"en": "No provider has image_model configured",
-                                    "zh": "还没有供应商配置 image_model"},
-    "novel.cfg_img_usage":      {"en": "Switch: /novel drama config image <id> (fuzzy; auto = list order)",
-                                 "zh": "切换：/novel drama config image <id或名称片段>（模糊匹配；auto 恢复自动）"},
     "novel.drama_video_done": {"en": "Episode video ready: {p}",
                                "zh": "本集成片完成：{p}"},
     "novel.help": {
         "en": "See zh text (zh-only product)",
-        "zh": "📖 /novel 命令手册\n"
+        "zh": "📖 /novel 命令手册 · 从零到成书 / 短剧 / 漫画的完整流程\n"
               "\n"
-              "■ 写书主流程\n"
-              "/novel start <灵感> [章数] [auto]   开新书（auto=不逐阶段暂停）\n"
-              "/novel status   查看进度        /novel ok    通过当前阶段继续\n"
-              "/novel adjust <修改意见>  修订当前阶段\n"
-              "/novel stage <阶段名> [意见]  重跑某个阶段\n"
-              "/novel show N   查看第 N 章    /novel ledger  事实账本\n"
-              "/novel stat     全书统计      /novel stop | resume  中断/续跑\n"
-              "/novel use [pid]  切换书      /novel deconstruct <txt>  拆书\n"
+              "═══════════════════════════════════════════════\n"
+              "【A 路：写小说】\n"
+              "═══════════════════════════════════════════════\n"
               "\n"
-              "■ 章节修订\n"
-              "/novel rewrite N [反馈]  重写    /novel insert N  在 N 前插章\n"
-              "/novel polish N [要求]  润色    /novel drop N    删除第 N 章\n"
-              "/novel expand N   扩写        /novel rename N <标题>  改标题\n"
-              "/novel condense N 压缩        /novel check N   第 N 章一致性审查\n"
-              "/novel extend N   续写        /novel compare N  修订前后对比\n"
-              "/novel set 风格 <写法要求>  设文风（下一章起每章注入）\n"
-              "/novel set 每章 <N>  设每章字数目标    /novel set  查看当前\n"
+              "① 起一本书（灵感 + 章数；auto=不逐阶段暂停，否则每阶段结束会弹窗）\n"
+              "  /novel start 《井通万界》双界倒爷，种田日常 30\n"
               "\n"
-              "■ 短剧（AI 成片）\n"
-              "/novel drama            打开短剧工作台（大纲/资产/分镜三步，可编辑）\n"
-              "/novel drama new <灵感> [集数]  原创短剧（不依赖小说）\n"
-              "/novel drama 1-3         第 1-3 章改编短剧剧本\n"
-              "/novel drama video 1     第 1 章成片：角色/场景/道具资产 → 分镜 →\n"
-              "                        关键帧（多图合成）→ 镜头视频（图生视频，\n"
-              "                        台词由模型自带语音说出）→ ffmpeg 合成整集\n"
-              "/novel drama video 1-3 redo  删掉范围内关键帧/片段重做\n"
-              "/novel drama stop       停止生成（产物保留，重跑续造）\n"
-              "/novel drama reset      清空全部短剧产物，从零重做（正文不动）\n"
-              "/novel drama style     弹出风格管理面板（预设+自定义+默认）\n"
-              "/novel drama assets [N | N-M]  只生成资产（含/不含章节专属），先期调整\n"
-              "/novel drama config [名]  查看/切换视频生成引擎（agnes/火山/auto = 列表序）\n"
-              "/novel drama config image [名]  查看/切换图像生成引擎（修图模型）\n"
-              "（断点续造：重跑命令自动跳过已有产物，只补缺失的镜头；\n"
-              "  想换成 TTS 配音：短剧工作台「分集视频」页勾选 TTS 配音）\n"
+              "② 设置中央配置（章数 / 字数 / 语气 / 视角 / 主角 / 模型）\n"
+              "  /novel config\n"
+              "  说明：弹窗默认显示概要 4 行，点「编辑全部」可调 13 项\n"
               "\n"
-              "■ 漫画\n"
-              "/novel comic 1-3   第 1-3 章漫画分镜表（含出图提示词）\n"
-              "/novel comic cast   角色设定图提示词（跨格形象一致）\n"
+              "②·补 直接编辑某阶段产出（/novel config 同款体验）\n"
+              "  /novel edit <阶段名>     例：/novel edit 世界观\n"
+              "  可用：setup|outline|world|contract|characters|volume|chapter_plan\n"
+              "  或中文：项目设定|宏观规划|世界观|故事合约|角色|卷战略|节奏拆章\n"
               "\n"
-              "■ 封面与发布\n"
-              "/novel cover          生成书封（图像服务）\n"
-              "/novel publish txt|md|docx|wattpad [起-止]  导出/发布\n"
+              "③ 流水线自动跑 7 个规划阶段（每阶段弹窗可编辑/重生成/按意见重试）\n"
+              "   项目设定 → 宏观规划 → 本书世界 → 故事合约 → 角色 → 卷战略 → 节奏拆章\n"
+              "   每阶段完成后：弹产物条 → 你点 [确认] / [按意见重试] / [重新生成]\n"
+              "                 → 自动跑下一阶段（不用再敲 /novel ok）\n"
               "\n"
-              "■ 前置条件\n"
-              "· 成片/封面需要图像服务：供应商管理给 Agnes 或 商汤 填 API Key\n"
-              "· 配音与整集合成需要 ffmpeg（docs/novel-setup.md）；\n"
-              "  配音质量建议 pip install edge-tts"},
+              "④ 章节生成（最后一个阶段：逐章执行 + 五维审校）\n"
+              "   自动跑完所有章节，每章 ⏳ → ✅ 显示用时\n"
+              "\n"
+              "⑤ 全书统计 / 看账本 / 看章节\n"
+              "  /novel stat        # 章数 / 字数 / 均章 / 质量债 / 未回收伏笔\n"
+              "  /novel ledger      # 事实账本 / 伏笔台账 / 质量债（含主题归并 + 重复警示）\n"
+              "  /novel show N      # 查看第 N 章\n"
+              "  /novel status      # 当前进度 + cursor\n"
+              "\n"
+              "⑥ 章节级修订（任意阶段都可回来改单章）\n"
+              "  /novel rewrite N [反馈]    # 整章重写\n"
+              "  /novel polish  N [要求]    # 润色\n"
+              "  /novel expand  N [要求]    # 扩写\n"
+              "  /novel condense N [要求]    # 压缩\n"
+              "  /novel insert N            # 在 N 前插章\n"
+              "  /novel drop   N            # 删 N 章（后续章号顺移）\n"
+              "  /novel rename N <标题>     # 改 N 章标题\n"
+              "  /novel check  N            # 一致性审查\n"
+              "  /novel compare N           # 修订前后对比\n"
+              "\n"
+              "⑦ 续写 / 重跑 / 拆书\n"
+              "  /novel extend N            # 续写 N 章（完成后回到步骤 ④）\n"
+              "  /novel stage <阶段> [意见]  # 重跑某规划阶段（如 outline / chapter_plan）\n"
+              "  /novel adjust <修改意见>   # 修订当前阶段（阶段条上的「按意见重试」等价）\n"
+              "  /novel stop | resume       # 中断 / 续跑（重启后磁盘可恢复）\n"
+              "  /novel deconstruct <txt>   # 把外部小说 txt 拆成主线 7 阶段产物\n"
+              "\n"
+              "⑧ 封面 / 发布\n"
+              "  /novel cover                       # 生成书封（需图像服务）\n"
+              "  /novel publish txt|md|docx|wattpad [起-止]   # 导出/发布\n"
+              "\n"
+              "═══════════════════════════════════════════════\n"
+              "【B 路：写小说 → 生成短剧】\n"
+              "═══════════════════════════════════════════════\n"
+              "\n"
+              "先按 A 路写完 → 正文存在 books/<书名>/正文/\n"
+              "短剧自动切到 ALWAYS 模式（不再每次问审批）。\n"
+              "\n"
+              "① 改剧本：把第 1-3 章的正文改成短剧剧本（写剧本而非写小说）\n"
+              "  /novel drama 1-3         # 改写 + 出短剧剧本表\n"
+              "\n"
+              "② 生成资产：角色设定图 / 场景图 / 道具图（先期调整形象）\n"
+              "  /novel drama assets       # 生成全书资产\n"
+              "  /novel drama assets 1-3   # 同时生成 1-3 章专属资产\n"
+              "  → 工作台「资产」页可重选 / 重生成单张\n"
+              "\n"
+              "③ 成片：把第 1 章做成完整短视频\n"
+              "  /novel drama video 1      # 1 章 → 角色/场景/道具 → 分镜 →\n"
+              "                             # 关键帧（多图合成）→ 镜头视频（图生视频）→\n"
+              "                             # 台词自带语音 → ffmpeg 合成整集\n"
+              "  /novel drama video 1-3    # 一次做 1-3 章\n"
+              "  /novel drama video 1-3 redo  # 删范围关键帧/片段重做\n"
+              "  → 失败/中断时：/novel drama resume [pid] 续造\n"
+              "\n"
+              "④ 短剧工作台（桌面工作流）：/novel drama\n"
+              "  → 大纲 / 资产 / 分集视频 三步可编辑\n"
+              "  → 「分集视频」页勾选 TTS 配音可换语音\n"
+              "\n"
+              "⑤ 风格管理：/novel drama style   # 预设 + 自定义 + 默认（一本书选一次）\n"
+              "\n"
+              "⑥ 重置：/novel drama reset     # 清空全部短剧产物，正文不动\n"
+              "\n"
+              "═══════════════════════════════════════════════\n"
+              "【C 路：写小说 → 画漫画】\n"
+              "═══════════════════════════════════════════════\n"
+              "\n"
+              "先按 A 路写完 → 正文存在 books/<书名>/正文/\n"
+              "\n"
+              "① 角色设定图：跨格形象一致（先调好形象再画分镜）\n"
+              "  /novel comic cast\n"
+              "\n"
+              "② 漫画分镜表：把第 1-3 章拆成画面（含出图提示词）\n"
+              "  /novel comic 1-3\n"
+              "\n"
+              "═══════════════════════════════════════════════\n"
+              "【D 路：纯原创短剧（不依赖小说）】\n"
+              "═══════════════════════════════════════════════\n"
+              "\n"
+              "/novel drama new <灵感> [集数]   # 一句话灵感直接做短剧\n"
+              "→ 自动跑 剧本 → 资产 → 成片\n"
+              "\n"
+              "═══════════════════════════════════════════════\n"
+              "【通用命令】\n"
+              "═══════════════════════════════════════════════\n"
+              "\n"
+              "/novel list          # 列出磁盘全部书（pid/状态/标题/债）\n"
+              "/novel use [pid]     # 切换当前书\n"
+              "/novel help          # 本手册\n"
+              "/novel config        # 编辑当前书配置\n"
+              "/novel stat          # 全书统计\n"
+              "/novel status        # 当前书进度\n"
+              "/novel ledger        # 事实账本+伏笔+质量债（含主题归并）\n"
+              "/novel ledger 全部   # 展开全部\n"
+              "\n"
+              "═══════════════════════════════════════════════\n"
+              "【典型时间线】\n"
+              "═══════════════════════════════════════════════\n"
+              "\n"
+              "00:00  /novel start <灵感> 30            → 流水线起跑\n"
+              "00:01  📋 项目设定  产物弹窗  ✅ 完成（用时 ~10s）\n"
+              "00:02  📋 宏观规划  产物弹窗  ✅ 完成（用时 ~20s）\n"
+              "00:03  📋 本书世界  …                  ✅ 完成（~30s）\n"
+              "00:04  📋 故事合约  …                  ✅ 完成（~50s）\n"
+              "00:05  📋 角色      …                  ✅ 完成（~60s）\n"
+              "00:07  📋 卷战略    …                  ✅ 完成（~30s）\n"
+              "00:09  📋 节奏拆章  …                  ✅ 完成（~80s）\n"
+              "00:11  ▶ 章节执行  逐章 ⏳ → ✅         → 全部完成（按字数/模型速度）\n"
+              "按 [确认] / [按意见重试] / [重新生成] / [下一阶段配置] 控制每阶段\n"
+              "按意见重试完成后自动跑下一阶段（不用再敲 /novel ok）\n"
+              "\n"
+              "═══════════════════════════════════════════════\n"
+              "【前置条件】\n"
+              "═══════════════════════════════════════════════\n"
+              "\n"
+              "· 成片 / 封面 / 漫画：需要图像服务（供应商管理里给\n"
+              "  Agnes / 商汤 / Volcengine 等填 API Key）\n"
+              "· 配音 / 整集合成：需要 ffmpeg（docs/novel-setup.md）；\n"
+              "  配音质量建议 pip install edge-tts\n"
+              "· 风格、合约、章节等模板可在 novel_chain.py:STAGE_STATE_KEYS 查看"},
     "ds.title":     {"en": "Drama Studio · {t}", "zh": "短剧工作台 · {t}"},
     "ds.ready":     {"en": "Ready", "zh": "就绪"},
     "ds.busy":      {"en": "Busy — wait for the current job", "zh": "生成中，请稍候"},
@@ -1023,6 +1209,18 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
     "novel.drama_reset_done": {"en": "Drama reset: {n} files deleted. Run /novel drama video to rebuild.",
                                "zh": "短剧已重置：删除 {n} 个文件。重跑 /novel drama video 从零重建。"},
     "sp.title":         {"en": "Drama Style Manager", "zh": "短剧风格管理"},
+    "nc.title":         {"en": "Novel Config · {pid} ({t})",
+                          "zh": "小说配置 · 《{t}》({pid})"},
+    "sr.title":        {"en": "Stage Review · {stage} · {pid}",
+                          "zh": "阶段产物 · {stage} · {pid}"},
+    "sr.hint":         {"en": "Edit below. Confirm to lock the output, "
+                                "regen to rerun this stage, or adjust "
+                                "to rerun with feedback.",
+                          "zh": "下方可编辑。「确认」锁定产物；「重新生成」"
+                                "再跑一次；「按意见重试」带反馈再跑；"
+                                "「下一阶段配置」调 novel_config。"},
+    "sr.bar_title":    {"en": "{stage} output ready · 《{t}》",
+                          "zh": "「{stage}」产物就绪 · 《{t}》"},
     "sp.current_book":  {"en": "Current book style:", "zh": "本书当前风格："},
     "sp.apply_book":    {"en": "Apply to book", "zh": "应用到此书"},
     "sp.applied_book":  {"en": "Saved as this book's drama_style",
@@ -1087,6 +1285,32 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
                                  "adoption still work)",
                            "zh": "预览首帧需要 ffmpeg（不影响生成与采用）"},
     "ds.speech_hint": {"en": "speech needs ≥{n}s", "zh": "读完需≥{n}秒"},
+    "ds.video_model":       {"en": "Video model", "zh": "视频模型"},
+    "ds.video_model_auto":  {"en": "auto", "zh": "自动"},
+    "ds.moderation_retry":  {"en": "Switch model & retry", "zh": "切模型重试"},
+    "ds.moderation_msg":    {"en": "Moderation rejected: {n} — {h}",
+                              "zh": "内容审核拒绝：{n}（{h}）"},
+    "ds.no_alt_provider":   {"en": "No alternate video provider configured",
+                              "zh": "没有可切换的备选视频模型（先去供应商管理填 Key）"},
+    "ds.concat_skip":       {"en": "Concat: skipped {n} missing clip(s): {names}",
+                              "zh": "拼接：跳过 {n} 个未生成镜头：{names}"},
+    "ds.batch_title":       {"en": "Batch generate chapter clips",
+                              "zh": "批量生成本章视频"},
+    "ds.batch_confirm":     {"en": "Chapter {ch}: {todo}/{n} clips to generate, "
+                                   "total ≈ {total}s. Model: {cur}; "
+                                   "Resolution: {res}. Start?",
+                              "zh": "第 {ch} 章：待生成 {todo}/{n} 个镜头，"
+                              "合计时长 ≈ {total}s。当前模型：{cur}；"
+                              "分辨率：{res}。开始生成？"},
+    "ds.batch_all_btn":     {"en": "Batch generate chapter", "zh": "批量生成本章视频"},
+    "ds.batch_retry_title": {"en": "Retry failed clips", "zh": "重试失败镜头"},
+    "ds.batch_retry_msg":   {"en": "Chapter {n}: re-run only the missing clips?",
+                              "zh": "第 {n} 章：仅重跑尚未生成 / 生成失败的镜头？"},
+    "ds.batch_retry_btn":   {"en": "Retry failed", "zh": "重试失败"},
+    "ds.batch_done":        {"en": "Batch done: {ok} generated, {skip} skipped, "
+                                   "{fail} failed",
+                              "zh": "批量完成：新生成 {ok} 个、跳过 {skip} 个、"
+                              "失败 {fail} 个"},
     "ed.result_discarded": {"en": "Generation finished, but the dialog was "
                                 "already closed — result discarded",
                             "zh": "生成完成，但弹窗已关闭——结果已丢弃"},
@@ -1316,7 +1540,6 @@ Tip: append @pid to target a specific book, e.g. /novel extend 30 @novel-2026090
     "file.exists":     {"en": "Target name already exists", "zh": "目标名称已存在"},
     "file.renamed":    {"en": "Renamed: {old} → {new}", "zh": "已重命名：{old} → {new}"},
     "file.open_dir":   {"en": "Open in file manager", "zh": "在资源管理器中打开"},
-    "file.refresh":    {"en": "Refresh", "zh": "刷新"},
     "file.dir_added":  {"en": "Directory reference inserted: {rel}/",
                         "zh": "已插入目录引用：{rel}/"},
     "file.preview":   {"en": "Preview", "zh": "预览"},

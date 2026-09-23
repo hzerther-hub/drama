@@ -46,7 +46,7 @@ def _feature(key: str, default: bool = True) -> bool:
         return default
 
 
-_BUILD_TAG = "0906-3"       # 多实例混用时一眼可辨窗口新旧
+_BUILD_TAG = "0919-1"         # 多实例混用时一眼可辨窗口新旧
 
 # 粘贴文本常夹带的零宽/格式字符：肉眼不可见，但会混进命令名导致
 # 「/novel\u200bstart」≠「/novel」这类未知命令误判。它们本质是软换行点，
@@ -548,18 +548,40 @@ def _load_bundled_fonts() -> bool:
         return False
 
 
-def _flat_button(parent, text, command, width=12, font=(FONT_UI, 10),
-                 state="normal"):
+def _flat_button(parent, text, command, width=12, font=(FONT_UI, 10)):
     """扁平按钮（令牌底色 + 悬停浅主题色反馈，无边框浮雕）。"""
     btn = tk.Button(parent, text=text, command=command, width=width,
                     font=font, relief="flat", cursor="hand2", padx=8, pady=4,
                     bg=theme.BG, fg=theme.TEXT, bd=0, highlightthickness=0,
                     activebackground=theme.ACCENT_FAINT,
-                    activeforeground=theme.TEXT, state=state)
+                    activeforeground=theme.TEXT)
 
     def _hover(on):
         if str(btn.cget("state")) == "normal":
             btn.config(bg=theme.ACCENT_FAINT if on else theme.BG)
+    btn.bind("<Enter>", lambda _e: _hover(True))
+    btn.bind("<Leave>", lambda _e: _hover(False))
+    return btn
+
+
+def _icon_text_button(parent, icon_name: str, text: str, command,
+                      font=(FONT_UI, 10)):
+    """图标 + 文字按钮（compound=left）。从 assets/icons/ 拿 PNG，与现有
+    Fluent Emoji / Material Icon Theme 风格统一。"""
+    img = _emoji_icon(icon_name)
+    if img is None:
+        return _flat_button(parent, text=text, command=command,
+                           width=max(8, len(text) + 2), font=font)
+    btn = tk.Button(parent, image=img, text=" " + text,
+                    compound="left", command=command,
+                    font=font, relief="flat", cursor="hand2",
+                    padx=6, pady=4,
+                    bg=theme.BG, fg=theme.TEXT, bd=0, highlightthickness=0,
+                    activebackground=theme.ACCENT_FAINT,
+                    activeforeground=theme.TEXT)
+    btn._icon_ref = img              # PhotoImage 防 GC
+    def _hover(on):
+        btn.config(bg=theme.ACCENT_FAINT if on else theme.BG)
     btn.bind("<Enter>", lambda _e: _hover(True))
     btn.bind("<Leave>", lambda _e: _hover(False))
     return btn
@@ -597,6 +619,7 @@ _ICON_ALIAS = {
     "1f422": "turtle",      # 🐢 推理：低
     "1f525": "flame",       # 🔥 推理：高
     "1f680": "rocket",      # 🚀 推理：最高
+    "1f4e6": "package",     # 📦 批量生成（drama workshop）
 }
 
 
@@ -1174,6 +1197,15 @@ class App:
                 "<Leave>", lambda e: self._set_status(""))
             self._update_dispatch_btn()
 
+        # 创作模式开关（🎬 短剧 / 📖 漫画）已迁到设置下拉菜单（_show_settings_menu
+        # 末尾的 checkmenu 项），不再占用顶栏位。命令分发 _novel_command +
+        # 弹窗过滤 command_candidates 双保险照旧。状态由这两个 tk 变量承担
+        # （checkmenu 直接绑 variable，免去手动同步）。
+        self._mode_drama_var = tk.BooleanVar(value=False)
+        self._mode_comic_var = tk.BooleanVar(value=False)
+        self.drama_mode_btn = None
+        self.comic_mode_btn = None
+
         # 量化产品：策略互转面板入口（其它产品不建此按钮）
         if _feature("quant", False):
             _flat_emoji_button(ctrl, "📈",
@@ -1212,8 +1244,10 @@ class App:
             self.lang_btn.pack(side="right", padx=(0, 6))
 
         # 字号调节（Aa）：聊天 / 编辑器分别 −/＋，实时生效并持久化
-        _flat_button(ctrl, text="Aa", command=self._show_font_popup,
-                     width=3, font=(FONT_MONO, theme.FS_TOOLBAR)).pack(side="right", padx=(0, 6))
+        self.font_btn = _flat_button(
+            ctrl, text="Aa", command=self._show_font_popup,
+            width=3, font=(FONT_MONO, theme.FS_TOOLBAR))
+        self.font_btn.pack(side="right", padx=(0, 6))
 
         # 状态文字（"就绪"等，置于帮助按钮左侧）
         self.status_label = tk.Label(ctrl, text=_t("top.ready"), font=(FONT_MONO, 10))
@@ -1230,6 +1264,11 @@ class App:
         self._file_views: dict = {}           # 编辑器视图注册表（无 editor 产品为空）
         if _feature("editor"):
             self._build_file_panel()          # 右：文件树(树|编辑区)
+
+        # 最大化切换：保存正常 sash 位置 → 临时隐藏侧栏/文件面板让 chat 全屏
+        self._paned_normal_sash = None
+        self._paned_maximized = False
+        self.paned.bind("<Double-Button-1>", self._toggle_maximize_center)
 
         # ---- 聊天区 ----
         # 任务步骤(todo)清单：从模型输出的步骤识别，实时显示并可在界面勾选
@@ -1300,6 +1339,29 @@ class App:
                                      font=(FONT_MONO, theme.FS_ICON))
         self.cmd_plus.config(width=1, padx=8)
         self.cmd_plus.pack(side="left")
+        self._media_menu_btn = tk.Menubutton(
+            ctrlbar, text="🎨", relief="flat", bd=0,
+            font=(FONT_MONO, theme.FS_ICON), padx=6,
+            cursor="hand2")
+        media_menu = tk.Menu(self._media_menu_btn, tearoff=0,
+                             font=(FONT_UI, 10))
+        media_menu.add_command(label=_t("media.menu_cfg"),
+                               command=self._manage_media)
+        media_menu.add_command(label=_t("media.menu_board"),
+                               command=self._open_video_board)
+        media_menu.add_separator()
+        media_menu.add_command(
+            label=_t("media.menu_image"),
+            command=lambda: self._insert_media_template("画一张："))
+        media_menu.add_command(
+            label=_t("media.menu_video"),
+            command=lambda: self._insert_media_template("生成一段视频："))
+        media_menu.add_command(
+            label=_t("media.menu_browser"),
+            command=lambda: self._insert_media_template(
+                "用 jev 打开 https:// 目标："))
+        self._media_menu_btn.config(menu=media_menu)
+        self._media_menu_btn.pack(side="left")
         self._icon_button(ctrlbar, "⏱", _t("q.queue"),
                           self._queue_current).pack(side="left", padx=(4, 0))
         self.bottom_mode_btn = self._icon_button(
@@ -1488,6 +1550,15 @@ class App:
         return items
 
     def _render_todo(self):
+        # 取消上一次 _render_todo 残留的 _fit 调度：它可能引用即将被销毁的 widget。
+        # _fit 自带 winfo_exists 守护但提前取消能省一次错误回调。
+        prev_id = getattr(self, "_todo_fit_after_id", None)
+        if prev_id:
+            try:
+                self.todo_frame.after_cancel(prev_id)
+            except Exception:        # noqa: BLE001
+                pass
+            self._todo_fit_after_id = None
         for w in self.todo_frame.winfo_children():
             w.destroy()
         self.todo_frame.config(bg=theme.PANEL)
@@ -1563,12 +1634,32 @@ class App:
         _TODO_MAX_ROWS = 6
 
         def _fit():
-            inner.update_idletasks()
-            row_h = max(22, (self.todo_rows[0].winfo_reqheight() + 4)
-                        if self.todo_rows else 26)
-            canvas.configure(height=min(inner.winfo_reqheight(),
-                                        row_h * _TODO_MAX_ROWS))
-        inner.after(10, _fit)
+            # 守护性访问：_render_todo 会在 markdown 流式追加时被反复调用（每行
+            # 可能触发一次）；进入新渲染时旧 inner / 旧 todo_rows[0] 已经销毁，
+            # 但本次 inner.after(10, _fit) 在上一帧 destroy 之前已经排队。
+            # 任何 winfo_* 触发都可能拿到已销毁的路径，报 TclError 让整个 UI 崩，
+            # 所以每个 try block 都吞掉——canvas 高度算错一次就是表面小小的不便，
+            # 比崩溃好。
+            try:
+                if not canvas.winfo_exists():
+                    return
+                inner.update_idletasks()
+            except Exception:        # noqa: BLE001
+                return
+            row_h = 26
+            for w in self.todo_rows:
+                try:
+                    if w.winfo_exists():
+                        row_h = max(22, w.winfo_reqheight() + 4)
+                        break
+                except Exception:    # noqa: BLE001
+                    continue
+            try:
+                canvas.configure(height=min(inner.winfo_reqheight(),
+                                            row_h * _TODO_MAX_ROWS))
+            except Exception:        # noqa: BLE001
+                pass
+        self._todo_fit_after_id = inner.after(10, _fit)
         # 底部一行灰显当前正在执行的工具（临时行，不进清单）
         cur = getattr(self, "_todo_tool_current", None)
         if cur:
@@ -1766,7 +1857,10 @@ class App:
 
         共享内核行为，所有带编辑器的产品线一致；目标宽 = 屏宽一半，
         同时给左侧会话栏+聊天区至少留 560px。用户拉大过就不再动。
+        编辑器最大化期间跳过（还原按钮负责恢复布局）。
         """
+        if getattr(self, "_editor_max", False):
+            return
         def _w():
             startup = getattr(self, "_editor_startup_w", 0)
             cur = self.file_frame.winfo_width()
@@ -1788,7 +1882,10 @@ class App:
         """关闭全部编辑标签：面板恢复到启动宽度（与 _editor_auto_expand 对称）。
 
         只在面板是被自动扩宽时收窄；用户手动拉大过则尊重现状不动。
+        编辑器最大化期间跳过（关闭标签不抢还原按钮的活）。
         """
+        if getattr(self, "_editor_max", False):
+            return
         def _w():
             startup = getattr(self, "_editor_startup_w", 0)
             cur = self.file_frame.winfo_width()
@@ -1965,7 +2062,6 @@ class App:
         self.file_tree.bind("<<TreeviewSelect>>", self._on_file_select)
         self.file_tree.bind("<Button-1>", self._on_file_click)
         self.file_tree.bind("<Button-3>", self._on_file_right)
-        self.file_tree.bind("<Delete>", self._delete_selected_tree)
         self._bind_file_tree_drag()   # 文件树条目可拖拽加入对话
 
         # 记录启动宽度基准（点开编辑自动扩到半屏的比较用，见 _editor_auto_expand）
@@ -2041,6 +2137,28 @@ class App:
         except Exception:            # noqa: BLE001
             return False
 
+    def _chat_drop_targets(self):
+        """内部拖拽（标签 / 文件树）松手时算命中的目标 widget 列表。
+
+        与外部 DND ``_targets = [chat, input, attach_bar]`` 对齐：附件栏也是合法落点，
+        等同把文件直接堆进待发送附件栏。注意 ``attach_bar`` 没附件时被 ``pack_forget``，
+        ``_point_over_widget`` 自然返回 False —— 此时仍可走 chat / input 命中。
+        """
+        targets = []
+        for w in (getattr(self, "chat", None),
+                  getattr(self, "input", None),
+                  getattr(self, "attach_bar", None)):
+            if w is not None:
+                targets.append(w)
+        return targets
+
+    def _hit_chat_drop_target(self, gx, gy):
+        """全局坐标 (gx, gy) 是否落在聊天三落点（chat / input / attach_bar）之一上。"""
+        for w in self._chat_drop_targets():
+            if self._point_over_widget(w, gx, gy):
+                return True
+        return False
+
     def _bind_tab_drag(self, name_lbl, view_id):
         """让文件标签可拖拽：按住拖到聊天输入区/消息区放下 = 加入对话。
 
@@ -2088,8 +2206,7 @@ class App:
                     pass
             if not drag["moved"]:
                 return
-            if self._point_over_widget(self.input, e.x_root, e.y_root) or \
-               self._point_over_widget(self.chat, e.x_root, e.y_root):
+            if self._hit_chat_drop_target(e.x_root, e.y_root):
                 self._add_selected_to_chat(path)
 
         name_lbl.bind("<Button-1>", _press, add="+")
@@ -2101,18 +2218,42 @@ class App:
 
         按下点在当前多选内且多选 >1 → 返回全部选中项（批量拖拽加对话）；
         否则只返回按下点条目；空白处返回 []。
-        必须在 Button-1 的 widget 绑定阶段调用：它先于 ttk 类绑定执行，
-        此时旧多选尚未被类绑定重置。
+
+        调前提：file_tree 自身 bindtag（``self.file_tree.bind("<Button-1>", _press,
+        add="+")``）先于 ttk.Treeview ``<Button-1>`` 类 binding 跑（默认 bindtags
+        顺序 = ``['.!treeview', 'Treeview', '.', 'all']``，widget 在前），
+        因此 _press 阶段 ``selection()`` 仍是按下前的多选。
         """
         try:
             iid = self.file_tree.identify_row(y)
         except Exception:            # noqa: BLE001
             iid = ""
         sel = list(self.file_tree.selection())
-        use = sel if (iid and iid in sel and len(sel) > 1) else ([iid] if iid else [])
+        return self._resolve_drag_items(iid, sel)
+
+    def _resolve_drag_items(self, clicked_iid, selection):
+        """核心策略：根据「按下点 iid」与「按下时的 selection」推出待拖条目。
+
+        - 按下点在多选内且多选 >1 → 返回整组多选（批量拖拽加对话）
+        - 否则只返回按下点（focus / 单条兜底）
+        - 空白处 / 没有 iid → []
+
+        与 ``_multi_drag_items`` 拆分是为了便于 pure-function 测试：
+        ``identify_row`` 需要真实像素坐标难 mock，selection 容易伪造。
+        """
+        sel = list(selection or [])
+        if clicked_iid and clicked_iid in sel and len(sel) > 1:
+            use = sel
+        elif clicked_iid:
+            use = [clicked_iid]
+        else:
+            use = []
         items = []
         for k in use:
-            vals = self.file_tree.item(k, "values")
+            try:
+                vals = self.file_tree.item(k, "values")
+            except Exception:        # noqa: BLE001
+                continue
             if vals and len(vals) >= 2 and str(vals[0]).strip():
                 items.append((vals[0], str(vals[1]).strip().lower() == "true"))
         return items
@@ -2122,6 +2263,13 @@ class App:
 
         - 文件：追加到待发送附件栏（等同右键「添加到对话」）
         - 目录：以 @引用 形式插入输入框（作为模型上下文，不转附件）
+        - 多选：Shift / Ctrl 点出来的多条选择一起拖走
+
+        关键前提：tk bindtags 默认顺序 ``['.!treeview', 'Treeview', '.', 'all']``，
+        widget 自身 tag 在前、ttk class 在后 —— 自己 ``bind("<Button-1>", _press,
+        add="+")`` 早于 ttk ``<Button-1>`` 类 binding 跑，能在 ``identify_row`` 之前
+        抓到「按下前的多选」selection。ttk 类 binding 之后才改 selection。
+
         无位移的普通点击仍走 _on_file_click（选中/展开/双击打开），不触发拖拽。
         """
         drag = {"sx": 0, "sy": 0, "moved": False, "ghost": None,
@@ -2185,7 +2333,7 @@ class App:
                     pass
             if not drag["moved"]:
                 return
-            if self._point_over_widget(self.input, e.x_root, e.y_root) or                self._point_over_widget(self.chat, e.x_root, e.y_root):
+            if self._hit_chat_drop_target(e.x_root, e.y_root):
                 items = drag["items"] or (
                     [(drag["path"], drag["isdir"])] if drag["path"] else [])
                 for path, isdir in items:
@@ -2280,22 +2428,7 @@ class App:
         if not path:
             _post_menu(menu, event.x_root, event.y_root)
             return
-        # 多选（Ctrl/Shift）且右键命中选区 → 批量删除入口（文件+目录混选）
-        sel = self.file_tree.selection()
-        if iid in sel and len(sel) > 1:
-            paths = []
-            for s in sel:
-                v = self.file_tree.item(s, "values")
-                if v and v[0]:
-                    paths.append(str(v[0]))
-            if len(paths) > 1:
-                menu.add_command(
-                    label=_t("file.delete_multi", n=len(paths)),
-                    command=lambda ps=paths: self._delete_selected_files(ps))
-                menu.add_separator()
         if is_dir:
-            menu.add_command(label=_t("file.refresh"),
-                             command=self._refresh_file_panel)
             menu.add_command(label=_t("file.open_dir"),
                              command=lambda p=path: self._open_in_explorer(p))
             menu.add_command(label=_t("file.add_chat"),
@@ -2392,67 +2525,6 @@ class App:
         except OSError as e:
             messagebox.showerror(_t("msg.save_fail"), str(e), parent=self.root)
 
-    def _delete_selected_files(self, paths):
-        """批量删除文件树选中项（文件+目录混选）；逐项容错并汇报结果。
-
-        工作区根目录本身不可删；确认框列出前几个名字防误删。
-        """
-        import shutil
-        from tkinter import messagebox
-        ws = (tools.get_workspace() or "").rstrip("/\\")
-        items = []
-        for p in paths or []:
-            if not p:
-                continue
-            rp = os.path.abspath(p).rstrip("/\\").lower()
-            if ws and rp == os.path.abspath(ws).lower():
-                continue
-            items.append(p)
-        if not items:
-            return
-        names = "、".join(os.path.basename(p.rstrip("/\\"))
-                          for p in items[:5])
-        if len(items) > 5:
-            names += " " + _t("file.and_more", n=len(items))
-        if not messagebox.askyesno(
-                _t("file.delete"),
-                _t("file.del_multi", n=len(items), names=names),
-                parent=self.root):
-            return
-        ok = fail = 0
-        for p in items:
-            try:
-                if os.path.isdir(p):
-                    shutil.rmtree(p)
-                else:
-                    os.remove(p)
-                ok += 1
-            except OSError:
-                fail += 1
-        self._refresh_file_panel()
-        self._set_status(_t("file.del_multi_done", ok=ok, fail=fail))
-
-    def _delete_selected_tree(self, _e=None):
-        """Delete 键：删文件树当前多选（无多选则删焦点项）。"""
-        sel = self.file_tree.selection()
-        if not sel:
-            return "break"
-        paths = []
-        for s in sel:
-            v = self.file_tree.item(s, "values")
-            if v and v[0]:
-                paths.append(str(v[0]))
-        if len(paths) == 1:
-            v = self.file_tree.item(sel[0], "values")
-            is_dir = len(v) >= 2 and str(v[1]).strip().lower() == "true"
-            if is_dir:
-                self._delete_tree_item(paths[0], True)
-            else:
-                self._delete_file(paths[0])
-            return "break"
-        self._delete_selected_files(paths)
-        return "break"
-
     def _on_file_select(self, _e=None):
         """选中文件（用于右键定位）；无底部标签板了，占位保留。"""
         return
@@ -2517,13 +2589,17 @@ class App:
                             kinds=attach.snippet_chip(att)))
 
     def _code_context_menu(self, event, path, text_widget):
-        """编辑器右键菜单：AI 编辑（选中=替换·光标=插入）；加聊天；全文审查。"""
+        """编辑器右键菜单：选中段→AI 优化；Ctrl+L→在光标处插入文字；全文审查。"""
         has_sel = bool(text_widget.tag_ranges("sel"))
         menu = tk.Menu(self.root, tearoff=0, font=(FONT_UI, 10))
         menu.add_command(
-            label=(_t("ed.optimize_selection") if has_sel else
-                   _t("ed.insert_at_cursor") + " (Ctrl+L)"),
-            command=lambda: self._ai_edit_here(path, text_widget))
+            label=_t("ed.optimize_selection"),
+            state=("normal" if has_sel else "disabled"),
+            command=(lambda: self._ai_optimize_selection(path, text_widget))
+            if has_sel else (lambda: None))
+        menu.add_command(
+            label=_t("ed.insert_at_cursor") + " (Ctrl+L)",
+            command=lambda: self._ai_insert_at_cursor(path, text_widget))
         menu.add_command(
             label=_t("ed.add_code_chat"),
             state=("normal" if has_sel else "disabled"),
@@ -2556,14 +2632,6 @@ class App:
 
     # ----------- 编辑器 AI：选区优化 / 光标处插入 / 全文审查 -----------
 
-    def _ai_edit_here(self, path, text_widget):
-        """编辑器 AI 统一入口：有选中→替换选中（预览确认）；
-        光标无选中→插入（生成完直接落笔）。"""
-        if text_widget.tag_ranges("sel"):
-            self._ai_optimize_selection(path, text_widget)
-        else:
-            self._ai_insert_at_cursor(path, text_widget)
-
     def _ai_optimize_selection(self, path, text_widget):
         """右键 → 选区 AI 改写：弹框输意见→AI 出新版本→预览确认→替换。"""
         sel = text_widget.tag_ranges("sel")
@@ -2578,6 +2646,7 @@ class App:
             title=_t("ed.optimize_selection"),
             hint=_t("ed.optimize_hint", n=len(original)),
             original=original,
+            anchor=self._cursor_screen_xy(text_widget, str(first)),
             apply=lambda new_text: self._apply_selection(
                 text_widget, first, last, new_text, path),
             fallback_task=lambda instr: self._ai_edit_task(
@@ -2585,29 +2654,22 @@ class App:
 
     def _ai_insert_at_cursor(self, path, text_widget):
         """Ctrl+L 或右键：在光标处弹框插入 AI 生成的文字。"""
-        # 光标索引 + 前后真实原文（性别/场景锚定，防止 AI 瞎编）
+        # 光标索引
         try:
             pos = text_widget.index(tk.INSERT)
             line = int(str(pos).split(".")[0])
         except Exception:            # noqa: BLE001
             pos = "1.0"; line = 1
-        try:
-            before = text_widget.get(f"{max(1, line - 15)}.0",
-                                     f"{line}.end")
-            after = text_widget.get(f"{line + 1}.0",
-                                    f"{line + 10}.end")
-        except Exception:            # noqa: BLE001
-            before = after = ""
         self._prompt_and_run(
             title=_t("ed.insert_at_cursor"),
             hint=_t("ed.insert_hint", line=line),
             original="",                                  # 不显示原文
+            anchor=self._cursor_screen_xy(text_widget, pos),
             insert_at=pos,
             apply=lambda new_text: self._insert_at(
                 text_widget, pos, new_text, path),
             fallback_task=lambda instr: self._ai_insert_task(
-                self._current_book_state(), instr, line, before, after),
-            auto_apply=True)                              # 生成完直接插入
+                self._current_book_state(), instr, line))
 
     def _book_review(self, path, text_widget):
         """全文逻辑审查：起后台线程，结束后把报告插入聊天 + 文件末尾。"""
@@ -2637,16 +2699,39 @@ class App:
 
         self.root.after(0, run)
 
-    def _prompt_and_run(self, *, title, hint, original, apply,
-                        insert_at=None, fallback_task, auto_apply=False):
-        """统一弹窗：原文本只读 → 用户输指令 → 后台 AI → 预览+确认 → apply。
+    def _cursor_screen_xy(self, text_widget, index=None):
+        """光标（或指定索引）处的屏幕坐标，作为弹窗锚点；取不到返回 None。
 
-        auto_apply=True（插入模式）：生成完成直接落笔、关窗——结果在
-        编辑器里看，省一次确认（插入无破坏，undo 可撤销）；替换模式
-        仍走预览→「确定替换」，因为动的是用户选中的原文。
+        返回点在字符下方 2px——弹窗标题栏贴着当前行，不遮光标。
+        """
+        try:
+            bbox = text_widget.bbox(index or tk.INSERT)
+            if not bbox:                       # 不在可视区 → 控件左上角近似
+                return (text_widget.winfo_rootx() + 8,
+                        text_widget.winfo_rooty() + 8)
+            x, y, _w, h = bbox
+            return (text_widget.winfo_rootx() + x,
+                    text_widget.winfo_rooty() + y + h + 2)
+        except Exception:                      # noqa: BLE001  控件异常不强求
+            return None
+
+    def _prompt_and_run(self, *, title, hint, original, apply,
+                         insert_at=None, fallback_task, anchor=None):
+        """统一弹窗：原文本只读 → 用户输指令 → 后台 AI → 弹预览+确认 → apply。
+
+        anchor: 屏幕 (x, y)，弹窗锚定在光标/选区处；夹紧在屏幕内。
         """
         win = tk.Toplevel(self.root)
-        win.title(title); win.configure(bg=theme.BG); win.geometry("680x560")
+        win.title(title); win.configure(bg=theme.BG)
+        win_w, win_h = 680, 560
+        sw = win.winfo_screenwidth()
+        sh = win.winfo_screenheight()
+        ax, ay = anchor or (None, None)
+        x = max(8, min(ax if ax is not None else (sw - win_w) // 2,
+                       sw - win_w - 12))
+        y = max(8, min(ay if ay is not None else (sh - win_h) // 2,
+                       sh - win_h - 60))
+        win.geometry(f"{win_w}x{win_h}+{x}+{y}")
         _make_modal(win, self.root)
         tk.Label(win, text=hint, font=(FONT_UI, 10), bg=theme.BG,
                  fg=theme.MUTED, wraplength=640, justify="left"
@@ -2654,16 +2739,16 @@ class App:
         instr = tk.Text(win, height=4, font=(FONT_UI, 10), wrap="word",
                         relief="flat", bg="white", fg=theme.TEXT, padx=8, pady=6)
         instr.pack(fill="x", padx=14)
-        if original:                     # 无选区（Ctrl+L 插入）不放原文框
-            tk.Label(win, text=_t("ed.original_label"),
-                     font=(FONT_UI, 9), bg=theme.BG, fg=theme.MUTED
-                     ).pack(anchor="w", padx=14, pady=(6, 0))
-            orig_view = tk.Text(win, height=8, font=(FONT_MONO, 9), wrap="word",
-                                relief="flat", bg=theme.BOT_BUBBLE, fg=theme.TEXT,
-                                padx=8, pady=6)
-            orig_view.pack(fill="both", expand=True, padx=14, pady=(2, 6))
+        tk.Label(win, text=_t("ed.original_label"),
+                 font=(FONT_UI, 9), bg=theme.BG, fg=theme.MUTED
+                 ).pack(anchor="w", padx=14, pady=(6, 0))
+        orig_view = tk.Text(win, height=8, font=(FONT_MONO, 9), wrap="word",
+                            relief="flat", bg=theme.BOT_BUBBLE, fg=theme.TEXT,
+                            padx=8, pady=6)
+        orig_view.pack(fill="both", expand=True, padx=14, pady=(2, 6))
+        if original:
             orig_view.insert("1.0", original)
-            orig_view.config(state="disabled")
+        orig_view.config(state="disabled")
         tk.Label(win, text=_t("ed.preview_label"),
                  font=(FONT_UI, 9), bg=theme.BG, fg=theme.MUTED
                  ).pack(anchor="w", padx=14)
@@ -2671,43 +2756,11 @@ class App:
                        relief="flat", bg="white", fg=theme.TEXT, padx=8, pady=6)
         prev.pack(fill="both", expand=True, padx=14, pady=(2, 6))
         prev.config(state="disabled")
-        # 状态条紧贴按钮上方：进度/错误必须显眼，不能挤在窗口底边被裁掉
-        status = tk.Label(win, text="", font=(FONT_UI, 10), wraplength=640,
-                          justify="left", bg=theme.BG, fg=theme.MUTED,
-                          anchor="w")
-        status.pack(fill="x", padx=14, pady=(0, 2))
-        bar = tk.Frame(win, bg=theme.BG); bar.pack(pady=(2, 10))
+        bar = tk.Frame(win, bg=theme.BG); bar.pack(pady=10)
 
-        spin = {"i": 0, "after": None, "t0": None}
-
-        def _spin(on):
-            """盲文点字等待动画：生成中逐帧转+计时，结束定格并停表。"""
-            if spin["after"]:
-                try:
-                    win.after_cancel(spin["after"])
-                except Exception:      # noqa: BLE001
-                    pass
-                spin["after"] = None
-            if on:
-                spin["t0"] = time.time()
-                _spin_step()
-
-        def _spin_step():
-            if not win.winfo_exists():
-                return
-            f = theme.SPINNER[spin["i"] % len(theme.SPINNER)]
-            spin["i"] += 1
-            el = int(time.time() - spin["t0"]) if spin["t0"] else 0
-            txt = f"{f} " + _t("ed.generating") + f" · {el}s"
-            # 大预览框同步显示进度——它才是用户盯着的地方
-            status.config(text=txt)
-            try:
-                prev.config(state="normal")
-                prev.delete("1.0", "end"); prev.insert("1.0", txt)
-                prev.config(state="disabled")
-            except Exception:          # noqa: BLE001
-                pass
-            spin["after"] = win.after(120, _spin_step)
+        status = tk.Label(win, text="", font=(FONT_UI, 9),
+                          bg=theme.BG, fg=theme.MUTED, anchor="w")
+        status.pack(fill="x", padx=14)
 
         def _ai_run():
             text = instr.get("1.0", "end-1c").strip()
@@ -2721,32 +2774,21 @@ class App:
                 try:
                     new = fallback_task(text)
                 except Exception as e:    # noqa: BLE001
-                    # except 块退出即删 e，延迟 lambda 须用默认参固化当前值
-                    self.root.after(0, lambda err=e: (
-                        _spin(False),
-                        status.config(text=f"❌ {type(err).__name__}: {err}",
-                                      fg="#dc2626"),
+                    self.root.after(0, lambda: (
+                        status.config(text=f"❌ {type(e).__name__}: {e}",
+                                       fg="#dc2626"),
                         run_btn.config(state="normal")))
                     return
                 self.root.after(0, lambda: _show_preview(new))
 
             threading.Thread(target=work, daemon=True).start()
-            _spin(True)
 
         def _show_preview(new_text):
-            _spin(False)
-            if not win.winfo_exists():
-                # 等待期间弹窗被关：结果无法落笔，至少让用户知道为什么没反应
-                self._set_status(_t("ed.result_discarded"))
-                return
             prev.config(state="normal")
             prev.delete("1.0", "end"); prev.insert("1.0", new_text)
             prev.config(state="disabled")
             status.config(text=_t("ed.preview_ready"), fg=theme.SUCCESS)
-            if auto_apply:
-                _apply()                     # 生成即落笔，同时看到结果
-            else:
-                ok_btn.config(state="normal")
+            ok_btn.config(state="normal")
 
         def _apply():
             new_text = prev.get("1.0", "end-1c").strip()
@@ -2803,19 +2845,13 @@ class App:
         return novel_chain.ai_edit(state, instr,
                                   f"<<BEGIN>>\n{original}\n<<END>>")
 
-    def _ai_insert_task(self, state, instr, around_line,
-                        before: str = "", after: str = ""):
-        ctx = (f"插入位置：第 {around_line} 行附近。\n"
-               f"【插入点之前的原文（上文，人称/场景必须衔接）】\n"
-               f"{before.strip() or '（无）'}\n\n"
-               f"【插入点之后的原文（下文，必须衔接）】\n"
-               f"{after.strip() or '（无）'}")
+    def _ai_insert_task(self, state, instr, around_line):
         return novel_chain.ai_edit(
-            state, instr, ctx,
+            state, instr,
+            f"在第 {around_line} 行附近插入一段文字。下面是上下文片段（可为空）："
+            + "（无）",
             system="你是网文作者。按作者要求写一段 1-3 段可无缝插入的文字，"
-                   "与所给上下文衔接。人名、性别、称呼、所处场景必须与"
-                   "上下文及角色设定一致，禁止发明新人物或换地点。"
-                   "只输出要插入的正文，不要说明。")
+                   "与所给上下文衔接。只输出要插入的正文，不要说明。")
 
     def _apply_file_filter(self, query: str):
         """按文件名过滤右侧文件树：命中的文件 + 其父目录显示，其余隐藏。"""
@@ -3173,21 +3209,6 @@ class App:
                                 font=(FONT_MONO, 10))
         wrap_btn.pack(side="left", before=_save_btn)
         self._bind_hint(wrap_btn, "btn.wrap")
-
-        # 动态统计：行数与字符数，打字/删改实时刷新（右侧对齐）
-        cnt_lbl = tk.Label(bar, text="", font=(FONT_UI, 9), bg=theme.BG,
-                           fg=theme.MUTED)
-        cnt_lbl.pack(side="right")
-
-        def _update_count(_e=None):
-            content = txt.get("1.0", "end-1c")
-            lines = content.count("\n") + 1 if content else 0
-            chars = len(content)
-            cnt_lbl.config(text=_t("ed.count", n=lines, c=chars))
-        txt.bind("<<Modified>>", lambda e: (txt.edit_modified(False),
-                                            _update_count()))
-        _update_count()
-
         _apply_state()
         txt.bind("<Key>", lambda e: state.__setitem__("dirty", True))
         txt.bind("<Control-s>", _save)
@@ -3218,9 +3239,9 @@ class App:
                     1200, lambda: self._lsp_diag_query(txt, frame))
         txt.bind("<KeyRelease>", _on_key_rel)
         txt.bind("<Escape>", lambda e: self._editor_hide_complete())
-        # Ctrl+L：AI 编辑——有选中=替换选中，无选中=光标处插入
+        # Ctrl+L：在光标处弹 AI 插入框（不破坏输入框的 Enter/Ctrl+Enter 绑定）
         txt.bind("<Control-l>",
-                 lambda e, p=path, w=txt: self._ai_edit_here(p, w))
+                 lambda e, p=path, w=txt: self._ai_insert_at_cursor(p, w))
         # 右键：选中代码区 → 加入聊天（附件带文件路径 + 行号范围，供 AI 分析）
         txt.bind("<Button-3>",
                  lambda e, p=path, w=txt: self._code_context_menu(e, p, w))
@@ -4150,7 +4171,7 @@ class App:
                             command=lambda k=m.key: self._select_model(k))
 
     def _show_settings_menu(self, anchor=None):
-        """独立的设置菜单：模型管理 / MCP / 缓存 / 派发 / 代码索引 / 语言。"""
+        """独立的设置菜单：模型管理 / MCP / 缓存 / 派发 / 代码索引 / 创作模式 / 语言。"""
         menu = tk.Menu(self.root, tearoff=0, font=(FONT_UI, 10))
         menu.add_command(label=_t("model.manage"),
                          command=self._manage_models)
@@ -4163,6 +4184,19 @@ class App:
                              command=self._manage_dispatch)
         menu.add_command(label=_t("model.index"),
                          command=self._rebuild_codeindex)
+        # 创作模式开关：勾选 = 开启；切换即时生效（关闭时对应 /novel 子命令
+        # 被 _novel_command / command_candidates 双保险闸门拦截）
+        flags = (config.get_mode_flags()
+                 if hasattr(config, "get_mode_flags") else {})
+        menu.add_separator()
+        menu.add_checkbutton(label="🎬  " + _t("mode.drama"),
+                             variable=self._mode_drama_var,
+                             onvalue=True, offvalue=False,
+                             command=lambda: self._toggle_mode("drama"))
+        menu.add_checkbutton(label="📖  " + _t("mode.comic"),
+                             variable=self._mode_comic_var,
+                             onvalue=True, offvalue=False,
+                             command=lambda: self._toggle_mode("comic"))
         if not _feature("zh_only", False):
             menu.add_separator()
             lang = tk.Menu(menu, tearoff=0, font=(FONT_UI, 10))
@@ -4172,6 +4206,10 @@ class App:
             lang.add_command(label=_t("lang.zh") + ("  ✓" if cur == "zh" else ""),
                              command=lambda: self._switch_lang("zh"))
             menu.add_cascade(label=_t("lang.menu"), menu=lang)
+        # 把当前 flags 同步到 tk 变量上（之前 _update_mode_btns 干这事；按钮
+        # 迁走后改在打开菜单前一刻同步——保留一处事实源 config.mode_flags）
+        self._mode_drama_var.set(bool(flags.get("drama")))
+        self._mode_comic_var.set(bool(flags.get("comic")))
         tgt = anchor or self.settings_btn
         x = tgt.winfo_rootx()
         y = tgt.winfo_rooty() + tgt.winfo_height()
@@ -4199,6 +4237,89 @@ class App:
         """缓存管理窗口（实现在 ui_panel_cache.py）。"""
         import ui_panel_cache
         ui_panel_cache.show(self)
+
+    def _manage_media(self):
+        """图像/视频生成服务面板（实现在 ui_panel_media.py）。"""
+        import ui_panel_media
+        ui_panel_media.show(self)
+
+    def _novel_drama_rewrite(self, ch_arg: str):
+        """/novel drama rewrite N：章节正文 → 格式化拍摄剧本（火宝规范）。"""
+        import drama_rewrite
+        p, err = self._novel_pick("")      # 重启后自动加载最近的书
+        if p is None:
+            self._set_status(_t("novel." + err) if err in
+                             ("none", "notfound", "ambiguous")
+                             else _t("novel.none"))
+            return
+        try:
+            ch = int((ch_arg or "").strip() or "1")
+        except ValueError:
+            self._set_status("用法：/novel drama rewrite N")
+            return
+        if not (p.state.get("chapters")):
+            self._set_status(_t("novel.no_chapters"))
+            return
+        self._novel_task_begin()
+        self._set_status(_t("novel.drama_rewrite"))
+
+        def work():
+            try:
+                path = drama_rewrite.rewrite_script(
+                    p.state, ch, force=True,
+                    on_event=lambda e: self.root.after(
+                        0, lambda: self._novel_event(e)))
+                self.root.after(0, lambda: self._novel_append(
+                    "✅ " + _t("novel.drama_rewrite_done", file=path)
+                    + "\n", "meta"))
+            except Exception as e:      # noqa: BLE001
+                err = str(e)
+                self.root.after(0, lambda: self._novel_append(
+                    "❌ " + err + "\n", "denied"))
+            finally:
+                self._novel_task_end()
+        threading.Thread(target=work, daemon=True).start()
+
+    def _pick_book_with_chapters(self):
+        """短剧命令专用：加载 state 里章节数最多的流水线。
+
+        同一本书常有多条开跑记录（废弃尝试 state 为空），按内容量选优，
+        避免「优先 paused」恢复逻辑挑中空书。
+        """
+        import pipeline as _pl
+        import novel_chain
+        best, best_n = None, -1
+        try:
+            rows = _pl.list_pipelines()
+        except Exception:              # noqa: BLE001
+            return None, 0
+        for row in rows:
+            try:
+                p = _pl.load(row["pid"], novel_chain.STAGES)
+            except Exception:          # noqa: BLE001
+                continue
+            n = len((getattr(p, "state", None) or {}).get("chapters", []))
+            if n > best_n:
+                best, best_n = p, n
+        return best, (best_n if best_n > 0 else 0)
+
+    def _open_video_board(self):
+        """打开短剧制作台（默认第一章；/novel drama board N 指定章节）。"""
+        import ui_panel_video
+        p = getattr(self, "_novel_pipe", None)
+        chapters = (getattr(p, "state", None) or {}).get("chapters", [])
+        ch = chapters[0].get("idx", 0) if chapters else 0
+        ui_panel_video.show(self, ch)
+
+    def _insert_media_template(self, text):
+        """把媒体任务模板填进输入框并聚焦（🎨 媒体下拉菜单用）。"""
+        if getattr(self, "_placeholder_active", False):
+            self.input.delete("1.0", "end")
+            self._placeholder_active = False
+        self.input.delete("1.0", "end")
+        self.input.insert("1.0", text)
+        self.input.focus_set()
+        self._set_status(_t("media.menu_filled"))
 
     def _manage_dispatch(self):
         """模型派发设置窗口（实现在 ui_panel_dispatch.py）。"""
@@ -4250,6 +4371,29 @@ class App:
         else:
             self._set_status(_t("dispatch.topbar.now_on_inactive", name=name))
 
+    def _update_mode_btns(self):
+        """按 config.get_mode_flags() 刷新顶栏模式状态——按钮已迁到下拉菜单，
+        这里只同步 tk 变量（checkmenu 用），开不开用户通过菜单复选项看到。"""
+        flags = config.get_mode_flags() if hasattr(config, "get_mode_flags") else {}
+        if getattr(self, "_mode_drama_var", None) is not None:
+            self._mode_drama_var.set(bool(flags.get("drama")))
+        if getattr(self, "_mode_comic_var", None) is not None:
+            self._mode_comic_var.set(bool(flags.get("comic")))
+
+    def _toggle_mode(self, key: str):
+        """切换创作模式开关（drama / comic）。状态变更后刷新按钮 + 状态栏。"""
+        if not hasattr(config, "set_mode_flag"):
+            return
+        flags = config.get_mode_flags() or {}
+        on = not bool(flags.get(key))
+        config.set_mode_flag(key, on)
+        self._update_mode_btns()
+        name = {"drama": "短剧", "comic": "漫画"}.get(key, key)
+        self._set_status(
+            _t("dispatch.topbar.now_on_active", name=f"{name}: {'开' if on else '关'}")
+            if on else
+            _t("dispatch.topbar.now_off"))
+
     def _manage_models(self):
         """模型管理窗口（实现在 ui_panel_models.py）。"""
         import ui_panel_models
@@ -4284,6 +4428,23 @@ class App:
         if hasattr(self, "bottom_mode_btn"):
             _set_btn_icon(self.bottom_mode_btn, MODE_ICON.get(mode, "🛡"))
         self._persist_session_ui()
+
+    def _auto_always_for_creative_run(self, label: str) -> None:
+        """三类作品（小说/短剧/漫画）启动运行时自动切到 ALWAYS：
+
+        - 用户意图就是长期生成，挡了写工具无法跑流水线
+        - 写状态栏 + 一行简短的解释，让用户知道模式已自动切换
+        - 不切回原模式（用户可以自己手动切回 ask/readonly）
+        """
+        import agent as agent_mod
+        if self.mode == agent_mod.MODE_ALWAYS:
+            return
+        prev = self.mode
+        self._select_mode(agent_mod.MODE_ALWAYS)
+        self._append(
+            f"⚡ 进入「{label}」运行：自动切换为「总是允许」模式"
+            f"（原：{_mode_label(prev)}）。写工具不再每次问。"
+            f"需要收紧时手动改回 🛡 询问模式。\n", "meta")
 
     def _session_ui_state(self) -> dict:
         """当前会话绑定的界面状态：模型 + 权限模式（思考等级随模型走）。"""
@@ -4636,6 +4797,45 @@ class App:
         self._status_text = text           # 供 /命令 回显的「└ 结果」镜像
         self.root.after(0, lambda: self.status_label.config(text=text))
 
+    # ================= 居中最大化切换 =================
+
+    def _toggle_maximize_center(self, _e=None) -> None:
+        """双击 PanedWindow 切换中间 chat 区最大化（隐藏侧栏+文件面板）。
+
+        再双击恢复原样。
+        """
+        if self._paned_maximized:
+            # 恢复：把两个隐藏 pane 用 paneconfigure show 出来
+            for pane in (self.sidebar_frame, getattr(self, "file_frame", None)):
+                if pane is None:
+                    continue
+                try:
+                    self.paned.paneconfigure(pane, hide=False)
+                except tk.TclError:
+                    pass
+            if self._paned_normal_sash:
+                try:
+                    self.paned.sashpos(0, self._paned_normal_sash)
+                except tk.TclError:
+                    pass
+            self._paned_maximized = False
+            self._set_status("已恢复原布局")
+            return
+        # 进入最大化：记当前 sash、隐藏侧栏和文件面板（不 forget，只 hide）
+        try:
+            self._paned_normal_sash = self.paned.sashpos(0)
+        except tk.TclError:
+            self._paned_normal_sash = None
+        for pane in (self.sidebar_frame, getattr(self, "file_frame", None)):
+            if pane is None:
+                continue
+            try:
+                self.paned.paneconfigure(pane, hide=True)
+            except tk.TclError:
+                pass
+        self._paned_maximized = True
+        self._set_status("中间面板已最大化（双击分隔条恢复）")
+
     # ================= 右侧动态状态徽标 =================
     BADGE_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -4984,6 +5184,7 @@ class App:
         ("/index", "cmd.index", "index"),
         ("/graph", "cmd.graph", "graph"),
         ("/cache", "cmd.cache", "cache"),
+        ("/media", "cmd.media", "media"),
         ("/mcp", "cmd.mcp", "mcp"),
         ("/sessions", "cmd.sessions", "sessions"),
         ("/delete", "cmd.delete", "delete"),
@@ -5028,6 +5229,8 @@ class App:
                 self._rebuild_codeindex()
             elif cmd == "/cache":
                 self._manage_cache()
+            elif cmd == "/media":
+                self._manage_media()
             elif cmd == "/mcp":
                 self._manage_mcp()
             elif cmd == "/sessions":
@@ -5176,14 +5379,195 @@ class App:
             return p, None
         rows = _pl.list_pipelines()
         if not rows:
+            self._novel_pick_reason = "none"
             return None, "none"
-        p = _pl.load(rows[0]["pid"], novel_chain.STAGES)
+        # 重启恢复：优先 paused（与 /novel ok 期望的状态对齐），
+        # 没 paused 才退到最近更新的那本，告知用户发生了什么。
+        paused = [r for r in rows if r.get("pipeline_status") == "paused"]
+        if paused:
+            row = paused[0]
+            self._novel_pick_reason = "paused"
+        else:
+            row = rows[0]
+            self._novel_pick_reason = row.get("pipeline_status") or "unknown"
+        p = _pl.load(row["pid"], novel_chain.STAGES)
         if p is None:
             return None, "notfound"
         if load:
             self._novel_pipe = p
             self._novel_stepwise = p.pipeline_status == "paused"
         return p, None
+
+    def _novel_list(self):
+        """列出磁盘上的全部流水线（pid/状态/标题/债/时间）——重启后用户最直接的诊断入口。"""
+        import pipeline as _pl
+        rows = _pl.list_pipelines()
+        if not rows:
+            self._append("⚠ 还没有流水线记录（先 /novel start <灵感>）\n", "meta")
+            return
+        self._append(f"📚 共 {len(rows)} 本：\n", "meta")
+        for r in rows:
+            self._append(f"  · {r['pid']} [{r['pipeline_status']}] "
+                         f"{r['title'] or '（无标题）'}（债 {r['debts']}）\n", "meta")
+        self._append("💡 /novel use <pid> 切入 / /novel resume [pid] 续跑 / "
+                     "/novel ok 在 paused 上继续\n", "meta")
+
+    def _novel_diagnose(self):
+        """/novel diagnose：自动诊断重复 / 占位 / 卡死 / 可续写 的书。"""
+        import pipeline as _pl
+        import time as _time
+        import os as _os
+        from collections import defaultdict as _dd
+
+        rows = _pl.list_pipelines()
+        if not rows:
+            self._append("⚠ 还没有流水线记录\n", "meta")
+            return
+
+        now = _time.time()
+        STUCK_MIN = 30 * 60  # running 超过 30 分钟视为卡死
+
+        # ① 同 idea / 同 title 重复
+        title_clusters: dict[str, list] = _dd(list)
+        idea_clusters: dict[str, list] = _dd(list)
+        for r in rows:
+            title = (r.get("title") or "").strip()
+            if title:
+                title_clusters[title[:80]].append(r)
+            # idea 不直接拿到（list_pipelines 没返回 idea），但 title 第一行常含主关键词
+            for k in title.split("\n")[0:1]:
+                if k.strip():
+                    idea_clusters[k.strip()[:40]].append(r)
+
+        dup_titles = {k: v for k, v in title_clusters.items() if len(v) >= 2}
+
+        # ② 占位：title 空 或 chapters==0 且无任何产物；idea==pid
+        for r in rows:
+            pass  # 占位判定需要看 state（list_pipelines 没给）
+
+        # ③ 卡死：running 且 updated > 30 分钟前
+        stuck = []
+        for r in rows:
+            if r.get("pipeline_status") == "running" and \
+                    now - (r.get("updated") or 0) > STUCK_MIN:
+                stuck.append(r)
+
+        # ④ 可续写：paused 且 cursor 在某规划阶段
+        resumable = [r for r in rows
+                     if r.get("pipeline_status") == "paused" and r.get("cursor")]
+
+        # ⑤ 已完成：done
+        done = [r for r in rows if r.get("pipeline_status") == "done"]
+
+        # ⑥ 失败：failed
+        failed = [r for r in rows if r.get("pipeline_status") == "failed"]
+
+        # 输出
+        lines = [f"🔍 诊断结果（共 {len(rows)} 本）：", ""]
+        if dup_titles:
+            lines.append(f"⚠ 重复标题 {len(dup_titles)} 组：")
+            for k, v in dup_titles.items():
+                pids = "、".join(r["pid"] for r in v)
+                lines.append(f"   · {k[:50]!r} × {len(v)} 本  → [{pids}]")
+                lines.append(
+                    f"     💡 推荐：选 1 本继续，其余 /novel use <pid> 切过去 → "
+                    f"/novel adjust \"改成不同方向\" → 保留多样性；或 /novel drop 删掉")
+            lines.append("")
+        if stuck:
+            lines.append(f"⚠ 卡死 {len(stuck)} 本（running > 30min）：")
+            for r in stuck:
+                age = int((now - (r.get("updated") or 0)) / 60)
+                lines.append(f"   · {r['pid']} 已停 {age}min [{r['pipeline_status']}] "
+                             f"{r.get('title','')[:50]!r}")
+                lines.append(
+                    f"     💡 推荐：/novel stop 后 /novel resume — 或 /novel use 切到 paused 那本 /novel ok")
+            lines.append("")
+        if resumable:
+            lines.append(f"📖 可续写 {len(resumable)} 本（paused）：")
+            for r in resumable:
+                lines.append(f"   · {r['pid']} cursor={r['cursor']} "
+                             f"{r.get('title','')[:50]!r}")
+                lines.append(
+                    f"     💡 推荐：/novel use {r['pid']} 切入 → /novel ok 继续")
+            lines.append("")
+        if failed:
+            lines.append(f"❌ 失败 {len(failed)} 本（可重跑）：")
+            for r in failed:
+                lines.append(f"   · {r['pid']} {r.get('title','')[:50]!r}")
+                lines.append(
+                    f"     💡 推荐：/novel use {r['pid']} → /novel ok（model_key 已兜底）")
+            lines.append("")
+        if done:
+            lines.append(f"✅ 已完成 {len(done)} 本：")
+            for r in done:
+                lines.append(f"   · {r['pid']} {r.get('title','')[:50]!r}")
+                lines.append(
+                    f"     💡 推荐：/novel use {r['pid']} → /novel extend N 加写 / "
+                    f"/novel cover /publish")
+            lines.append("")
+
+        # 总量过载提示
+        if len(rows) > 8:
+            lines.append(
+                f"💡 全部 {len(rows)} 本里 {len(done)} 已完成 + {len(resumable)} 可续。\n"
+                f"   建议清理：每类选 1 本保留，其余 /novel drop <pid> 删。\n"
+                f"   （drop 当前会删 state、不会清 books/ 下的 md 文件；如有需要手动 rm）")
+
+        # 自动给一句"最优解"
+        if resumable and not stuck:
+            lines.append("") 
+            lines.append(f"⚡ **最优解**：先 /novel use {resumable[0]['pid']} → /novel ok "
+                         f"继续第一本最进度的。其它后续处理。")
+
+        self._append("\n".join(lines) + "\n", "meta")
+
+    def _resolve_stage_name(self, name: str) -> str:
+        """/novel edit 的阶段名解析：英文名/中文标签/常见别名 → 阶段名。"""
+        n = (name or "").strip().lower()
+        if not n:
+            return ""
+        keys = list(novel_chain.STAGE_STATE_KEYS.keys())
+        if n in keys:
+            return n
+        for s, label in novel_chain.STAGE_LABELS.items():
+            if s not in keys:
+                continue
+            if n == label.lower() or n in label.lower() or label.lower() in n:
+                return s
+        alias = {"世界观": "world", "设定集": "world", "大纲": "outline",
+                 "总纲": "outline", "合约": "contract", "角色": "characters",
+                 "人物": "characters", "卷": "volume", "拆章": "chapter_plan",
+                 "任务单": "chapter_plan", "卖点": "setup"}
+        return alias.get(n, "")
+
+    def _novel_edit(self, arg: str):
+        """/novel edit <阶段名>：直接打开某阶段产物的编辑条（config 同款体验）。
+
+        支持英文名（world/outline/…）与中文（世界观/大纲/角色…）。
+        已完稿的书也可编辑产出文本（保存但不重跑流水线）。
+        """
+        p, err = self._novel_pick("")
+        if p is None:
+            self._set_status(_t("novel." + err) if err in
+                             ("none", "notfound") else _t("novel.none"))
+            return
+        name = (arg or "").strip()
+        stage = self._resolve_stage_name(name)
+        if not stage:
+            keys = "、".join(novel_chain.STAGE_STATE_KEYS.keys())
+            self._append(
+                f"⚠ 未知阶段：{name or '（空）'}\n"
+                f"💡 /novel edit <阶段名>，可用：{keys}，"
+                f"或中文如 世界观／大纲／角色／合约\n", "denied")
+            return
+        key = novel_chain.STAGE_STATE_KEYS.get(stage)
+        label = novel_chain.STAGE_LABELS.get(stage, stage)
+        if not (p.state.get(key) or "").strip():
+            self._append(
+                f"⚠ 「{label}」还没有产物——先 /novel stage {stage} 生成\n",
+                "denied")
+            return
+        self._stage_review_then(stage)
 
     def _graph_command(self, arg: str):
         """/graph 子命令：search <名> | outline <文件> | callers <名> | callees <名> |
@@ -5294,20 +5678,13 @@ class App:
         cover | publish 格式 | deconstruct <txt>。
         各命令可用 [pid] 指定操作哪本书（省略=当前书）；默认逐阶段暂停供调定。
         drama 子命令（video / assets / reset）运行前首次自动弹出风格确认；
-        选完或用 Default 后此书不再弹出；
-        drama config [image] [名] = 切换视频/图像生成引擎（全局）。"""
+        选完或用 Default 后此书不再弹出。"""
         import novel_chain
         import pipeline as _pl
         sub = (arg or "").split(None, 1)
         head = sub[0] if sub else "status"
         rest = sub[1] if len(sub) > 1 else ""
         # _novel_pipe 是内存态，重启后丢失；需要它的命令在此自动载入最近一本书。
-        # drama config 是全局设置（视频/图像引擎切换），不依赖任何书——提前于闸门分发。
-        _drama_sub = (rest.strip().split()[0].lower()
-                      if head == "drama" and rest.strip().split() else "")
-        if _drama_sub == "config":
-            self._novel_drama_config(rest.strip()[6:].strip())
-            return
         if head not in ("start", "status", "help", "deconstruct", "use", "resume") \
                 and not getattr(self, "_novel_pipe", None):
             p, _err = self._novel_pick("")
@@ -5322,8 +5699,22 @@ class App:
                 import ui_panel_style_pick as _spick
                 if not _spick.ensure_picked(self, self.root):
                     return                       # 用户关窗取消
+                self._auto_always_for_creative_run("生成短剧")
         if head == "help":
             self._append(_t("novel.help") + "\n", "meta")
+            return
+        if head == "list":
+            self._novel_list()
+            return
+        if head == "diagnose":
+            self._novel_diagnose()
+            return
+        if head == "edit":
+            self._novel_edit(rest.strip())
+            return
+        if head == "config":
+            import ui_panel_novel_config as _nc
+            _nc.show(self, self.root)
             return
         if head == "use":
             p, err = self._novel_pick(rest)
@@ -5355,14 +5746,13 @@ class App:
             p = novel_chain.new_pipeline(idea, total, model_key)
             self._novel_pipe = p
             self._novel_stepwise = not auto
+            self._auto_always_for_creative_run("写小说")
             self._novel_task_begin()
             self._novel_run(p, until=("setup" if self._novel_stepwise else None))
         elif head == "ok":
             self._novel_ok()
         elif head == "adjust":
             self._novel_adjust(rest.strip())   # 内部自取当前书（重启后可用）
-        elif head == "set":
-            self._novel_set(rest.strip())
         elif head == "stage":
             self._novel_stage(rest.strip())
         elif head == "ledger":
@@ -5415,6 +5805,24 @@ class App:
             if rest.strip().startswith("assets"):
                 self._novel_drama_assets(rest.strip()[6:].strip())
                 return
+            if rest.strip().startswith("rewrite"):
+                self._novel_drama_rewrite(rest.strip()[7:].strip())
+                return
+            if rest.strip().startswith("board"):
+                m = re.match(r"^board\s*(\d*)", rest.strip())
+                p, n = self._pick_book_with_chapters()
+                if p is not None:
+                    self._novel_pipe = p
+                import ui_panel_video
+                ui_panel_video.show(self, int(m.group(1) or 0))
+                return
+            stage_map = {"shots": "shots", "frames": "keyframes",
+                         "clips": "clips", "compose": "compose"}
+            for sw, sa in stage_map.items():
+                if rest.strip().startswith(sw):
+                    self._novel_drama_video(rest.strip()[len(sw):].strip(),
+                                            stop_after=sa)
+                    return
             if rest.strip() == "style":
                 import ui_panel_style
                 ui_panel_style.show(self)
@@ -5451,7 +5859,7 @@ class App:
                 import ui_panel_drama
                 ui_panel_drama.show(self)
                 return
-            p = getattr(self, "_novel_pipe", None)
+            p, err = self._novel_pick("")   # 重启后自动加载最近的书
             m = re.match(r"^(\d+)\s*-\s*(\d+)$", rest.strip())
             if not (p and p.state.get("chapters")) or not m:
                 self._set_status(_t("novel.no_chapters"))
@@ -5477,6 +5885,7 @@ class App:
                     self._novel_task_end()
             threading.Thread(target=drama_work, daemon=True).start()
         elif head == "comic":
+            self._auto_always_for_creative_run("生成漫画")
             self._novel_comic(rest.strip())
         elif head == "extend":
             rest, pid = _split_pid(rest)
@@ -5630,17 +6039,61 @@ class App:
             p2, err = self._novel_pick("")
             if p2 is None:
                 self._set_status(_t("novel.none"))
+                self._append("⚠ " + _t("novel.none")
+                             + "（先 /novel start <灵感> 或 /novel list 看看）\n", "meta")
                 return
             if p2.pipeline_status == "done":
                 self._set_status(_t("novel.done_hint"))
                 self._append("💡 " + _t("novel.done_hint") + "\n", "meta")
                 return
-            if p2.pipeline_status != "paused":
+            if p2.pipeline_status == "failed":
+                # 磁盘上的书是 failed（最常见：上次撞了 model_key 找不到）。
+                # 清掉失败标记，让 pipeline 从 cursor 之前那个阶段重跑——
+                # 等价于自动 /novel adjust，无需用户多敲一条命令。
+                self._novel_pipe = p2
+                p2.pipeline_status = "running"
+                if p2.cursor:
+                    p2.status[p2.cursor] = "pending"
+                try:
+                    p2.save()
+                except Exception:        # noqa: BLE001  落盘失败不影响跑
+                    pass
+                self._append(
+                    f"⚠ 磁盘上的 {p2.pid}「{p2.title}」是 failed，"
+                    f"自动从 cursor={p2.cursor} 重跑上一阶段\n", "denied")
+                p = p2
+            elif p2.pipeline_status != "paused":
+                # 重启恢复最常踩到的坑：磁盘上的书不在 paused 上。
+                # 不再笼统「还没有流水线记录」，而是说清实际状态。
+                st = p2.pipeline_status or "unknown"
+                hint = {
+                    "running": "这本书还在跑——/novel resume 续跑；如不再想跑 /novel stop",
+                }.get(st, "先用 /novel use <pid> 切入这本，再用 /novel ok / adjust")
                 self._set_status(_t("novel.none"))
+                self._append(
+                    f"⚠ 磁盘上只有 [{st}] 状态的书（{p2.pid}「{p2.title}」），"
+                    f"无法直接 /novel ok。\n💡 {hint}\n", "denied")
                 return
-            p = p2
+            else:
+                p = p2
+        elif p.pipeline_status == "failed":
+            # 当前书挂了：常见原因是重启前最后那次 ok 撞了 model_key 找不到。
+            # 现在 model_key 兜底已修，丢掉这个失败句柄让上面的 p=None 分支重新
+            # 从磁盘 pick 一本 paused/最新 更新的书 —— 一行命令就能脱困。
+            self._novel_pipe = None
+            hint_extra = "（之前那次失败可能是 model_key 找不到；现在已兜底，可重试）"
+            self._append(f"⚠ 当前书 [failed] 自动重置，/_novel_pick 重新载入\n{hint_extra}\n",
+                         "denied")
+            return self._novel_ok()
         elif p.pipeline_status != "paused":
+            st = p.pipeline_status or "unknown"
+            hint = {
+                "running": "当前书还在跑——等任务结束或 /novel stop",
+                "done": _t("novel.done_hint"),
+            }.get(st, "/novel use <pid> 切入其他书，或 /novel list 看磁盘状态")
             self._set_status(_t("novel.none"))
+            self._append(f"⚠ 当前书 [{st}]，无法 /novel ok 继续。\n💡 {hint}\n",
+                         "denied")
             return
         if self._novel_task_busy():
             return
@@ -5651,50 +6104,12 @@ class App:
             until = p.cursor
         self._novel_run(p, until=until)
 
-    def _novel_set(self, rest: str):
-        """/novel set：查看/设定当前书的 写法风格 与 每章字数。
+    def _novel_adjust(self, feedback: str, p=None, run_to_end: bool = False):
+        """按作者意见调整刚完成的规划阶段产出。
 
-        /novel set                     查看当前设定
-        /novel set 风格 <写法要求>      设文风（注入每章「写法要求」）
-        /novel set 每章 <N>            设每章字数目标（下一章起生效）
-        """
-        p, err = self._novel_pick("")
-        if p is None:
-            self._set_status(_t("novel.none"))
-            return
-        st = p.state
-        m = re.match(r"^(?:风格|style)\s*[:：]?\s*(.+)$", rest, re.I | re.S)
-        if m:
-            st["style"] = m.group(1).strip()
-            p.save()
-            self._append("✅ " + _t("novel.set_style") + "\n", "meta")
-            self._set_status(_t("novel.set_style"))
-            return
-        m = re.match(r"^(?:每章|字数|words)\s*[:：]?\s*(\d{3,5})\s*字?\s*$",
-                     rest, re.I)
-        if m:
-            st["ch_words"] = max(500, min(int(m.group(1)), 20000))
-            p.save()
-            self._append("✅ " + _t("novel.set_words",
-                                    n=st["ch_words"]) + "\n", "meta")
-            self._set_status(_t("novel.set_words", n=st["ch_words"]))
-            return
-        if rest:
-            self._set_status(_t("novel.set_usage"))
-            self._append("💡 " + _t("novel.set_usage") + "\n", "meta")
-            return
-        self._append("ℹ " + _t(
-            "novel.set_show",
-            sty=st.get("style") or _t("novel.unset"),
-            n=st.get("ch_words") or _t("novel.set_default_words")) + "\n",
-            "meta")
-
-    def _novel_adjust(self, feedback: str, p=None):
-        """按作者意见调整刚完成的规划阶段产出，之后可 /novel ok 继续。
-
-        p 为空时自动取当前书（重启后内存态丢失也能用）。
-        「刚完成的阶段」优先用暂停时记录的 _novel_last_done；
-        重启后丢失则从 cursor 反推（cursor 的前一个已完成阶段）。
+        run_to_end=True（阶段条「按意见重试」专用）：adjust 完成后
+        自动 _novel_ok() 推进下一阶段，不再卡 until=cursor。
+        run_to_end=False（/novel adjust 命令）：保持原行为，用户自己 /novel ok。
         """
         import novel_chain
         if p is None:
@@ -5736,9 +6151,27 @@ class App:
             except Exception as e:          # noqa: BLE001
                 self._novel_append(
                     "❌ " + str(e) + "\n", "denied")
+                return
             finally:
                 self._novel_task_end()
+            if run_to_end:
+                # adjust 完成 → 推进下一阶段（不传 until 让 pipeline 跑完所有规划阶段）
+                self.root.after(50, self._novel_ok_run_to_end)
         threading.Thread(target=adj_work, daemon=True).start()
+
+    def _novel_ok_run_to_end(self) -> None:
+        """阶段条 adjust 用：跑完所有规划阶段，每阶段结束再弹产物条。"""
+        p = getattr(self, "_novel_pipe", None)
+        if p is None:
+            return
+        # 防御：已 done 的书禁止重跑（会覆盖全部正文）
+        if p.pipeline_status == "done":
+            self._append(
+                f"💡 《{p.title or p.pid}》已完成。用 /novel extend N 加写，"
+                f"或 /novel rewrite/polish 单章修订。\n", "meta")
+            return
+        # until=None 表示一路跑到 chapters 完成；每个规划阶段都会触发 pipeline_paused + 弹窗
+        self._novel_run(p, until=None)
 
     def _novel_stage(self, rest: str):
         """指定重做任一规划阶段：/novel stage <阶段> <意见>。
@@ -5790,7 +6223,11 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def _novel_ledger(self, rest: str):
-        """查看事实账本 / 伏笔台账 / 质量债：/novel ledger [全部]（默认最近 20 条）。"""
+        """查看事实账本 / 伏笔台账 / 质量债：/novel ledger [全部]（默认最近 20 条）。
+
+        输出布局：顶部摘要（含分级警示） → 主题归并（高频词聚合+重复警示）
+        → 未回收伏笔 → 质量债 → 事实账本。
+        """
         import novel_chain
         p, err = self._novel_pick("")
         if p is None:
@@ -5803,17 +6240,77 @@ class App:
         fsh = st.get("foreshadows", []) or []
         debts = st.get("debts", []) or []
         open_fsh = [f for f in fsh if not f.get("closed_ch")]
+
+        def _level(n: int) -> str:
+            """分级：0-3 正常 / 4-10 注意 / >10 警告"""
+            return "🟢" if n <= 3 else "🟡" if n <= 10 else "🔴"
+
         lines = ["📒 " + (st.get("title") or p.pid) + " 台账",
-                 f"· 事实/伏笔记录 {len(led)} 条，伏笔 {len(fsh)} 条"
-                 f"（未回收 {len(open_fsh)}），质量债 {len(debts)} 条"]
+                 f"· 事实/伏笔记录 {len(led)} 条  ·  伏笔 {len(fsh)} 条  "
+                 f"（未回收 {_level(len(open_fsh))} {len(open_fsh)}）  ·  "
+                 f"质量债 {_level(len(debts))} {len(debts)} 条"]
+
+        # ---- 主题归并 ----
+        # 用 2/3 字高频子串聚合（不依赖外部分词库）；取出现 ≥ 2 次且占比 ≥ 30% 的主题
+        _STOP = ("一个一些人我们的你你的我我的他她的它的这那这些那些"
+                 "是了有在被把比及等与和或也都不就还能而而且但是可是所以"
+                 "了的上下过出说做看到时间年月日第章回")
+        def _topics(items, key):
+            cnt: dict[str, int] = {}
+            for it in items:
+                text = str(it.get(key, "")) if isinstance(it, dict) else str(it)
+                hits = set()
+                for n in (2, 3):
+                    for i in range(len(text) - n + 1):
+                        sub = text[i:i + n]
+                        if any(s in sub for s in _STOP.split()):
+                            continue
+                        if sub[0].isdigit() or sub[-1].isdigit():
+                            continue
+                        if any("一" <= ch <= "鿿" for ch in sub):
+                            hits.add(sub)
+                for h in hits:
+                    cnt[h] = cnt.get(h, 0) + 1
+            total = max(1, len(items))
+            strong = [(k, c) for k, c in cnt.items()
+                      if c >= 2 and c / total >= 0.3]
+            strong.sort(key=lambda x: -x[1])
+            return strong[:5]
+
+        topics_open = _topics(open_fsh, "text")
+        topics_debt = _topics(debts, "detail")
+        if topics_open or topics_debt:
+            lines.append("— 主题归并 —")
+            if topics_debt:
+                tag = " ⚠重复≥3" if topics_debt and topics_debt[0][1] >= 3 else ""
+                lines.append(f"  · 质量债{tag}：")
+                for k, c in topics_debt[:3]:
+                    lines.append(f"      「{k}」×{c}")
+            if topics_open:
+                tag = " ⚠重复≥3" if topics_open and topics_open[0][1] >= 3 else ""
+                lines.append(f"  · 未回收伏笔{tag}：")
+                for k, c in topics_open[:3]:
+                    lines.append(f"      「{k}」×{c}")
+            heavy = [k for k, c in topics_debt if c >= 3]
+            if heavy:
+                lines.append(
+                    f"💡 同类问题 ≥3 次，建议 /novel adjust <统一意见> 重做上一阶段，"
+                    f"或调一下 MASTER_SETTING 里的契约词。")
+            elif topics_debt or topics_open:
+                lines.append(
+                    "💡 /novel adjust <意见> 可一次性消化同主题条目；"
+                    "/novel rewrite N <反馈> 改单章。")
+
         if open_fsh:
             lines.append("— 未回收伏笔 —")
             for f in open_fsh[-12:]:
-                lines.append(f"  · 第{f['open_ch']}章 {f['text']}")
+                tag = f.get("kind", "").strip()
+                kind = f" [{tag}]" if tag else ""
+                lines.append(f"  · 第{f['open_ch']}章{kind}  {f['text']}")
         if debts:
             lines.append("— 质量债 —")
             for d in debts[-12:]:
-                lines.append(f"  · 第{d['chapter']}章 {d['detail']}")
+                lines.append(f"  · 第{d['chapter']}章  {d['detail']}")
         if led:
             tail = led if show_all else led[-20:]
             lines.append("— 事实账本" + ("" if show_all else "（最近 20 条，"
@@ -6083,6 +6580,11 @@ class App:
                     out = novel_chain.comic_cast(p.state)
                     msg = f"🎨 角色设定图提示词：{out}\n"
                     self._novel_append(msg, "meta")
+                    # 注：自动调本地 ComfyUI（Rust 代理）出图被 Mimosa 安全层拦了。
+                    # 你可手动复制 prompt 到 http://127.0.0.1:8188/ 跑出图，
+                    # 或用本地 curl: curl -X POST http://127.0.0.1:8189/v1/images/generations \
+                    #       -H 'Content-Type: application/json' \
+                    #       -d '{"model":"animagine-xl-4","prompt":"<上面 prompt>","n":1,"size":"512x512"}'
                 except Exception as e:      # noqa: BLE001
                     self._novel_append(
                         "❌ " + str(e) + "\n", "denied")
@@ -6096,121 +6598,44 @@ class App:
             self._append("💡 /novel comic <起>-<止> 生成分镜表；"
                          "/novel comic cast 生成角色设定图提示词\n", "meta")
             return
-        lo, hi = int(m.group(1)), int(m.group(2))
-        self._novel_task_begin()
+            lo, hi = int(m.group(1)), int(m.group(2))
+            self._novel_task_begin()
 
-        def comic_work():
-            try:
-                out = novel_chain.comic_adapt(
-                    p.state, lo, hi,
-                    on_event=lambda e: self.root.after(
-                        0, lambda: self._append(
-                            f"🎬 第 {e['idx']} 章分镜完成\n", "meta")))
-                msg = f"✅ 漫画分镜表：{out}\n"
-                self._novel_append(msg, "meta")
-            except Exception as e:          # noqa: BLE001
-                self._novel_append(
-                    "❌ " + str(e) + "\n", "denied")
-            finally:
-                self._novel_task_end()
-        threading.Thread(target=comic_work, daemon=True).start()
+            def comic_work():
+                try:
+                    out = novel_chain.comic_adapt(
+                        p.state, lo, hi,
+                        on_event=lambda e: self.root.after(
+                            0, lambda: self._append(
+                                f"🎬 第 {e['idx']} 章分镜完成\n", "meta")))
+                    msg = f"✅ 漫画分镜表：{out}\n"
+                    self._novel_append(msg, "meta")
+                except Exception as e:          # noqa: BLE001
+                    self._novel_append(
+                        "❌ " + str(e) + "\n", "denied")
+                finally:
+                    self._novel_task_end()
+            threading.Thread(target=comic_work, daemon=True).start()
 
-    def _novel_drama_config(self, arg: str):
-        """/novel drama config [image] [名]：查看/切换视频/图像生成引擎（全局，不需书）。
-
-        - /novel drama config            → 视频引擎（向后兼容）
-        - /novel drama config image      → 图像引擎（修图模型）
-
-        无参：列出所有对应供应商与当前生效者；
-        传 id/名称片段（如 agnes / volcengine / 火山 / auto）切换；
-        auto = 清除偏好，回到列表序第一个命中。
-        """
-        import config as _cfg
-        arg = (arg or "").strip()
-        if arg.lower().startswith("image"):
-            name = arg[5:].strip()                  # /novel drama config image [名]
-            kind = "image"
-            prov_field, prov_global = "image_model", "image_provider"
-            i18n_no, i18n_nf = ("novel.cfg_no_image_provider",
-                                "novel.cfg_img_notfound")
-            i18n_cur, i18n_swi = ("novel.cfg_img_current",
-                                  "novel.cfg_img_switched")
-            i18n_usage, svc_fn = ("novel.cfg_img_usage", _cfg.image_service)
-            icon = "🎨"
-        else:
-            name = arg                              # 默认 = video（向后兼容）
-            kind = "video"
-            prov_field, prov_global = "video_model", "video_provider"
-            i18n_no, i18n_nf = ("novel.cfg_no_video_provider",
-                                "novel.cfg_notfound")
-            i18n_cur, i18n_swi = ("novel.cfg_current", "novel.cfg_switched")
-            i18n_usage, svc_fn = ("novel.cfg_usage", _cfg.video_service)
-            icon = "🎬"
-        try:
-            data = _cfg._load_models_data()
-            providers = data.get("providers", [])
-        except Exception as e:              # noqa: BLE001
-            self._append(f"❌ 配置读取失败：{e}\n", "denied")
-            return
-        cands = [p for p in providers if isinstance(p, dict)
-                 and str(p.get(prov_field, "") or "").strip()]
-        if not cands:
-            self._append("⚠ " + _t(i18n_no) + "\n", "denied")
-            return
-        svc = svc_fn()
-        cur = svc.get("provider_id", "") or _t("novel.cfg_env")
-        if not name:
-            lines = [f"· {p.get('id')}（{p.get('name', '')}"
-                     f" · {p.get(prov_field, '')}）"
-                     + (" ✅ 当前" if p.get("id") == cur else "")
-                     for p in cands]
-            self._append(f"{icon} " + _t(i18n_cur, n=cur,
-                                         m=svc.get("model", "")) + "\n"
-                         + "\n".join(lines) + "\n"
-                         + "💡 " + _t(i18n_usage) + "\n", "meta")
-            return
-        if name.lower() in ("auto", "自动"):
-            (data.setdefault("globals", {}) or {}).pop(prov_global, None)
-        else:
-            hit = next((p for p in cands
-                        if name.lower() in (str(p.get("id", "")).lower()
-                                            + str(p.get("name", "")).lower()
-                                            + ("火山volcesark方舟seedance豆包"
-                                               if "volces" in str(p.get("base_url", ""))
-                                               or str(p.get(prov_field, ""))
-                                               .startswith("doubao-") else "")
-                                            + ("agnes"
-                                               if "agnes" in str(p.get("base_url", ""))
-                                               .lower() else ""))), None)
-            if hit is None:
-                self._set_status(_t(i18n_nf))
-                return
-            (data.setdefault("globals", {}) or {})[prov_global] = hit["id"]
-        try:
-            _cfg._save_models_data(data)
-        except Exception as e:              # noqa: BLE001
-            self._append(f"❌ 配置保存失败：{e}\n", "denied")
-            return
-        svc = svc_fn()
-        self._append("✅ " + _t(i18n_swi,
-                                n=svc.get("provider_id", "") or _t("novel.cfg_env"),
-                                m=svc.get("model", "")) + "\n", "meta")
-
-    def _novel_drama_assets(self, arg: str):
-        """/novel drama assets [N | N-M] [redo]：只生成资产，先期调整。
-
-        redo=已有图的资产也重新生成并覆盖原图（默认跳过已有图省钱）。
-        """
+    def _novel_drama_assets(self, arg):
+        """/novel drama assets [N | N-M]：只生成资产（全书 + 可选章节专属），先期调整。"""
         import dramavideo
-        p = getattr(self, "_novel_pipe", None)
+        p, _n = self._pick_book_with_chapters()
+        if p is not None:
+            self._novel_pipe = p
+        else:
+            p, err = self._novel_pick("")
+            if p is None:
+                self._set_status(_t("novel." + err) if err in
+                                 ("none", "notfound", "ambiguous")
+                                 else _t("novel.none"))
+                return
         if not (p and p.state.get("chapters")):
             self._set_status(_t("novel.no_chapters"))
             return
         if self._novel_task_busy():
             self._set_status(_t("novel.busy"))
             return
-        redo = "redo" in arg.lower()
-        arg = re.sub(r"\bredo\b", "", arg, flags=re.I).strip()
         a, b = 0, 0
         m = re.match(r"^(\d+)(?:\s*-\s*(\d+))?", arg.strip())
         if m:
@@ -6223,7 +6648,7 @@ class App:
         def work():
             try:
                 res = dramavideo.run_assets(
-                    p.state, a, b, stop=stop, redo=redo,
+                    p.state, a, b, stop=stop,
                     on_event=lambda e: self.root.after(
                         0, lambda: self._novel_event(e)))
                 msg = _t("novel.drama_assets_done",
@@ -6244,13 +6669,24 @@ class App:
                 self._novel_task_end()
         threading.Thread(target=work, daemon=True).start()
 
-    def _novel_drama_video(self, arg: str):
+    def _novel_drama_video(self, arg: str, stop_after: str = ""):
         """/novel drama video N | N-M [redo]：形象资产→分镜→关键帧→镜头视频→整集合成。
 
         追加 redo 参数：删除该章关键帧/片段后全部重新生成（形象与分镜保留）。
+        stop_after 非空时为手动分步模式：跑到该阶段停下，产物可手工调整后
+        再跑下一阶段命令续造（已完成产物自动跳过）。
         """
         import dramavideo
-        p = getattr(self, "_novel_pipe", None)
+        p, _n = self._pick_book_with_chapters()
+        if p is not None:
+            self._novel_pipe = p
+        else:
+            p, err = self._novel_pick("")
+            if p is None:
+                self._set_status(_t("novel." + err) if err in
+                                 ("none", "notfound", "ambiguous")
+                                 else _t("novel.none"))
+                return
         redo = bool(re.search(r"\bredo|重做|强制重生成\b", arg, re.I))
         m = re.match(r"^(\d+)(?:\s*-\s*(\d+))?\b", arg.strip())
         if not (p and p.state.get("chapters")) or not m:
@@ -6270,8 +6706,19 @@ class App:
 
         def work():
             try:
+                # 拍摄剧本应用：改写过的章节以剧本替代原文出分镜
+                import drama_rewrite
+                for ch_i in range(a, b + 1):
+                    try:
+                        drama_rewrite.apply_script(p.state, ch_i)
+                    except Exception:       # noqa: BLE001  无剧本则跳过
+                        pass
+            except Exception:               # noqa: BLE001
+                pass
+            try:
                 outs = dramavideo.run(
                     p.state, a, b, redo=redo, stop=stop,
+                    stop_after=stop_after,
                     on_event=lambda e: self.root.after(
                         0, lambda: self._novel_event(e)))
             except novel_chain.StageStopError as e:
@@ -6355,6 +6802,113 @@ class App:
         finally:
             self._rec.run = saved
 
+    def _after_adjust_then_ok(self, label: str) -> None:
+        """等 _novel_adjust 的 worker 完成后，自动 _novel_ok 进入下一阶段。
+
+        用 root.after 轮询 _novel_task_busy；完成后调 _novel_ok()。
+        设 5 分钟超时防止 worker 死循环。
+        """
+        deadline_ms = 5 * 60 * 1000
+        tick_ms = 500
+
+        def _poll(remaining: int):
+            if not self._novel_task_busy():
+                self._novel_ok()
+                return
+            if remaining <= 0:
+                self._append(f"⏰ {label} 调整超时（5分钟），/novel ok 手动继续\n",
+                             "denied")
+                return
+            self.root.after(tick_ms, lambda: _poll(remaining - tick_ms))
+
+        self.root.after(tick_ms, lambda: _poll(deadline_ms - tick_ms))
+
+    def _stage_review_then(self, stage: str) -> None:
+        """阶段产物编辑条嵌入聊天区，按用户选择执行 ok / regen / adjust / config。
+
+        在 _novel_event_impl(pipeline_paused) 里被调用；不再弹独立窗口、不阻塞。
+        """
+        import ui_panel_stage_review as _sr
+        p = getattr(self, "_novel_pipe", None)
+        if p is None:
+            return
+        state = p.state
+        key = novel_chain.STAGE_STATE_KEYS.get(stage)
+        if not key:
+            return
+        content = state.get(key, "") or ""
+        label = novel_chain.STAGE_LABELS.get(stage, stage)
+
+        # 把按钮回调直接闭包到状态/动作上 —— 用户在聊天区点按钮即触发
+        def _on_action(action: str, value: str = "", feedback: str = "") -> None:
+            # 完稿的书：允许「确认」保存产出修改（/novel edit 入口），但
+            # ok/regen/adjust 一律不跑——防止把已完成书稿从头覆盖。
+            if p.pipeline_status == "done":
+                if action == "ok":
+                    if value and value != (state.get(key) or ""):
+                        state[key] = value
+                        try:
+                            p.save()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        self._append(f"✅ 已保存 {label} 修改（完稿书不重跑）\n",
+                                     "meta")
+                    else:
+                        self._append("ℹ 未做修改\n", "meta")
+                    self._set_status("已保存（完稿书）")
+                    return
+                self._append(
+                    f"💡 《{p.title or p.pid}》已完成全部章节。"
+                    f"用 /novel extend N 加写，或 /novel rewrite/polish 单章修订。\n",
+                    "meta")
+                self._set_status("已完成 — 用 extend 加写或 rewrite 单章修订")
+                return
+            if action == "ok":
+                if value and value != (state.get(key) or ""):
+                    state[key] = value
+                    try:
+                        p.save()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    self._append(f"✅ 已锁定 {label} 产物（已编辑）\n", "meta")
+                else:
+                    self._append(f"✅ 已确认 {label} 产物\n", "meta")
+                self._set_status(_t("novel.pause_review", stage=label))
+                self._novel_ok()
+                return
+            if action == "regen":
+                # chapters 是不可逆的贵重阶段，禁用 regen 防误操作
+                if stage == "chapters":
+                    self._append(
+                        f"⚠ chapters 阶段不能用「重新生成」（会重做全书）。"
+                        f"改用 /novel rewrite N <反馈> 单章重写，或 /novel polish/condense。\n",
+                        "denied")
+                    return
+                state.pop(key, None)
+                self._append(f"♻ 重新生成 {label}（删旧产物、调 LLM 重做本阶段、继续下一阶段）\n", "meta")
+                self._novel_ok()
+                return
+            if action == "adjust":
+                fb = feedback or ""
+                if fb:
+                    state["_last_adjust"] = fb
+                self._append(f"♻ 按意见重做 {label}\n", "meta")
+                # revise_stage 改完时 pipeline_status 仍是 paused、cursor 不变；
+                # _novel_ok 算 until=cursor 会立即命中 → 不跑下一阶段。
+                # 修复：adjust 内部 run_to_end 跑完所有规划阶段、每个阶段再弹窗。
+                self._novel_adjust(fb, run_to_end=True)
+                return
+            if action == "config":
+                import ui_panel_novel_config as _nc
+                try:
+                    _nc.show(self, self.root, p)
+                except Exception:       # noqa: BLE001
+                    pass
+                # 调完配置后面板已销毁，用户继续点按钮或敲 /novel ok 即可
+                return
+
+        _sr.show(self, self.center, p, stage, on_action=_on_action)
+
     def _novel_event_impl(self, e):
         """流水线事件 → 聊天区（工具提示同款样式）。"""
         t = e.get("type")
@@ -6366,9 +6920,36 @@ class App:
         if t == "pipeline_started":
             self._append("🛠 " + _t("novel.started",
                                     pid=e["pid"]) + "\n", "toolhead")
+            # 流水线起跑即启动 spinner + 状态栏同步
+            _spinner = getattr(self, "_spinner_start", None)
+            if _spinner: _spinner(_t("novel.running"))
+            _set_status = getattr(self, "_set_status", None)
+            if _set_status: _set_status(f"⏳ {e['title']} 流水线运行中…")
         elif t == "stage_start":
-            self._append("🛠 " + _t("novel.stage", label=labels.get(
-                e["name"], e["name"])) + "\n", "toolhead")
+            stage_label = labels.get(e["name"], e["name"])
+            self._append("🛠 " + _t("novel.stage", label=stage_label) + "\n", "toolhead")
+            _spinner = getattr(self, "_spinner_start", None)
+            if _spinner: _spinner(f"{stage_label} 生成中…")
+            _set_status = getattr(self, "_set_status", None)
+            if _set_status: _set_status(f"⏳ {stage_label} 生成中…")
+            # 记录阶段起始时间，stage_done 时算用时
+            if not hasattr(self, "_novel_stage_t0"):
+                self._novel_stage_t0 = {}
+            self._novel_stage_t0[e["name"]] = time.time()
+        elif t == "stage_done":
+            name = e["name"]
+            stage_label = labels.get(name, name)
+            elapsed = ""
+            if hasattr(self, "_novel_stage_t0"):
+                t0 = self._novel_stage_t0.pop(name, None)
+                if t0:
+                    s = int(time.time() - t0)
+                    elapsed = f"（用时 {s}s）"
+            self._append(f"   ✅ {stage_label} 完成{elapsed}\n", "meta")
+            _spinner = getattr(self, "_spinner_start", None)
+            if _spinner: _spinner("→ 准备下一阶段…")
+            _set_status = getattr(self, "_set_status", None)
+            if _set_status: _set_status(f"⏸ {stage_label} 已暂停 · 等审校")
         elif t == "chapter_done":
             self._append(_t("novel.chapter", n=e["idx"], t=e["title"],
                             w=e["words"]) + "\n", "toolresult")
@@ -6384,6 +6965,11 @@ class App:
             self._append(_t("novel.done_msg",
                                     file=file) + "\n", "meta")
             self._schedule_fs_refresh()
+            # 全书完成 → 关 spinner，状态栏写"已完成"
+            _spinner_stop = getattr(self, "_spinner_stop", None)
+            if _spinner_stop: _spinner_stop()
+            _set_status = getattr(self, "_set_status", None)
+            if _set_status: _set_status(f"✅ 《{p.title or ''}》全部完成")
         elif t == "pipeline_paused":
             last = getattr(self, "_novel_last_done", None)
             key = novel_chain.STAGE_STATE_KEYS.get(last, "")
@@ -6394,11 +6980,26 @@ class App:
                 self._append((p.state.get(key) or "")[:1200] + "\n", "meta")
                 self._append("💡 /novel ok 继续 ｜ /novel adjust <修改意见> 调定\n",
                              "meta")
+                # 阶段暂停 → spinner 显式停（避免一直转）
+                _spinner_stop = getattr(self, "_spinner_stop", None)
+                if _spinner_stop: _spinner_stop()
+                _set_status = getattr(self, "_set_status", None)
+                if _set_status:
+                    _set_status(f"⏸ {labels.get(last, last)} 产物就绪 · 待确认")
+                # C 档：阶段后弹窗编辑产物
+                if getattr(self, "_stage_review_enabled", True):
+                    self._stage_review_then(last)
             else:
                 self._append("⏸ " + _t("novel.paused_msg") + "\n", "meta")
+                _spinner_stop = getattr(self, "_spinner_stop", None)
+                if _spinner_stop: _spinner_stop()
         elif t == "pipeline_failed":
             self._append("❌ " + _t("novel.failed_msg",
                                     e=e.get("detail", "")) + "\n", "denied")
+            _spinner_stop = getattr(self, "_spinner_stop", None)
+            if _spinner_stop: _spinner_stop()
+            _set_status = getattr(self, "_set_status", None)
+            if _set_status: _set_status("❌ 流水线失败")
         elif t == "drama_media":
             kind = e.get("kind")
             if kind == "done":
@@ -6911,14 +7512,8 @@ class App:
     # 帮助正文统一取自 i18n 的 help.text（中英跟随界面语言）。
 
     def _show_help(self):
-        """帮助窗口（实现在 ui_panel_help.py）。"""
-        import ui_panel_help
-        ui_panel_help.show(self)
-
-    def _help_drag(self, win, e):
-        """帮助窗口拖动（实现在 ui_panel_help.py）。"""
-        import ui_panel_help
-        ui_panel_help._drag(self, win, e)
+        """直接往聊天里追加 help.text（不再弹窗——与 /novel help 同款 inline）。"""
+        self._append(_t("help.text") + "\n", "meta")
 
     # ================= 附件与媒体展示 =================
     def _pick_attachments(self):
@@ -7127,7 +7722,7 @@ class App:
             mcp.get_manager().stop_all()
         except Exception:  # noqa: BLE001
             pass
-        self.root.destroy()
+            self.root.destroy()
 
     # ================= 会话管理 =================
     def _show_session_menu(self, anchor=None):
@@ -7677,9 +8272,17 @@ class App:
             self.cache_saved_tokens += event.get("saved", 0)
             self._render_usage()
         elif etype == "context_compact":
-            self._append(
-                _t("evt.compact", before=event["before"], after=event["after"])+"\n",
-                "meta")
+            tail = _t("evt.compact", before=event["before"], after=event["after"])
+            detail_bits = []
+            if event.get("images_stripped"):
+                detail_bits.append(_t("evt.compact_images", n=event["images_stripped"]))
+            if event.get("tools_truncated"):
+                detail_bits.append(_t("evt.compact_tools", n=event["tools_truncated"]))
+            if event.get("rounds_collapsed"):
+                detail_bits.append(_t("evt.compact_rounds", n=event["rounds_collapsed"]))
+            if detail_bits:
+                tail += " · " + " / ".join(detail_bits)
+            self._append(tail + "\n", "meta")
         elif etype == "tool_denied":
             self._append(_t("evt.denied", name=event["name"])+"\n", "denied")
         elif etype == "media":
@@ -7694,9 +8297,19 @@ class App:
 
     # ================= 字号调节（聊天 / 编辑器） =================
     def _show_font_popup(self):
-        """Aa 弹窗：聊天与编辑器两行 −/＋ 调节，实时生效并持久化。"""
+        """Aa 弹窗：聊天与编辑器两行 −/＋ 调节，实时生效并持久化。
+
+        弹窗位置 = Aa 按钮正下方 + 6px；超出屏幕或 root 右/下边界时自动
+        翻折到按钮上方或向左夹紧。早期版本用 `root.winfo_width()-260` 硬算
+        在多屏 / DPI 缩放下常落到屏幕外，肉眼无任何反馈 → 误以为"无效"。
+        """
+        # 先关闭已存在的同款弹窗，避免叠多
+        for child in list(self.root.winfo_children()):
+            if isinstance(child, tk.Toplevel) and getattr(child, "_font_pop", False):
+                child.destroy()
         pop = tk.Toplevel(self.root)
         pop.title("")
+        pop._font_pop = True                # 标记：再次点击时可识别关闭
         try:
             pop.overrideredirect(True)
         except Exception:                # noqa: BLE001
@@ -7704,11 +8317,6 @@ class App:
         pop.transient(self.root)
         pop.configure(bg=theme.PANEL, highlightthickness=1,
                       highlightbackground="#d4d4d4")
-        # 定位到 Aa 按钮下方（用 lang 按钮附近的右上角：取 ❓ 位置近似）
-        self.root.update_idletasks()
-        rx = self.root.winfo_rootx() + self.root.winfo_width() - 260
-        ry = self.root.winfo_rooty() + 60
-        pop.geometry("240x120+%d+%d" % (max(rx, 0), ry))
 
         tk.Label(pop, text="Aa " + _t("font.title"), bg=theme.PANEL,
                  font=(FONT_UI, 10, "bold")).pack(anchor="w", padx=10, pady=(8, 2))
@@ -7734,9 +8342,37 @@ class App:
             _flat_button(row, text="－", width=2, font=(FONT_MONO, 10),
                          command=lambda w=which: self._adjust_font(w, -1)
                          ).pack(side="right")
-        # Esc / ✕ 关闭（不绑 FocusOut：点 ＋/－ 会让焦点在弹窗内移动，误触关闭）
+
+        # 计算位置：先 update 让 popup 拿到真实宽高，再贴 Aa 按钮下方
+        pop.update_idletasks()
+        btn = getattr(self, "font_btn", None)
+        if btn is not None:
+            self.root.update_idletasks()
+            bx, by = btn.winfo_rootx(), btn.winfo_rooty()
+            bw, bh = btn.winfo_width(), btn.winfo_height()
+            pw, ph = pop.winfo_width(), pop.winfo_height()
+            # 默认：紧贴按钮下方 + 6px
+            px = bx + bw - pw              # 右对齐按钮右缘
+            py = by + bh + 6
+            # 越界夹紧：右/下溢出 root 时翻折到按钮上方或左对齐
+            rx2 = self.root.winfo_rootx() + self.root.winfo_width()
+            ry2 = self.root.winfo_rooty() + self.root.winfo_height()
+            if px + pw > rx2:
+                px = max(self.root.winfo_rootx(), bx + bw - pw)
+            if py + ph > ry2:
+                py = max(self.root.winfo_rooty(), by - ph - 6)
+            # 仍溢出屏幕 → 退回 root 右上角（兜底）
+            sw = pop.winfo_screenwidth()
+            sh = pop.winfo_screenheight()
+            if px < 0 or py < 0 or px + pw > sw or py + ph > sh:
+                px = max(0, sw - pw - 20)
+                py = max(0, sh - ph - 40)
+            pop.geometry(f"+{px}+{py}")
+
+        # Esc 关闭（不绑 FocusOut：点 ＋/－ 会让焦点在弹窗内移动，误触关闭）
         pop.bind("<Escape>", lambda _e: pop.destroy())
-        pop.focus_set()
+        pop.lift()
+        pop.focus_force()
 
     def _adjust_font(self, which: str, delta: int):
         lo, hi = config.FONT_SIZE_MIN, config.FONT_SIZE_MAX

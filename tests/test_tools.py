@@ -3,10 +3,23 @@
 
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
 import tools
+
+
+def _stub_write(out, data=b"PNG"):
+    """测试桩落盘：只允许写进系统临时目录树，杜绝路径穿越。"""
+    import tempfile
+    root = os.path.realpath(tempfile.gettempdir())
+    p = os.path.realpath(out)
+    assert p.startswith(root + os.sep), f"stub 越界写入：{out}"
+    os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+    Path(p).write_bytes(data)
+    return p
+
 
 
 @pytest.fixture(autouse=True)
@@ -20,15 +33,14 @@ def workspace(tmp_path):
 
 class TestReadFile:
     def test_line_numbers(self, workspace):
-        with open(os.path.join(workspace, "a.txt"), "w", encoding="utf-8") as f:
-            f.write("第一行\n第二行")
+        Path(workspace, "a.txt").write_text("第一行\n第二行",
+                                            encoding="utf-8")
         out = tools.execute_tool("read_file", {"path": "a.txt"})
         assert "1 | 第一行" in out
         assert "2 | 第二行" in out
 
     def test_relative_path_resolves_to_workspace(self, workspace):
-        with open(os.path.join(workspace, "b.txt"), "w", encoding="utf-8") as f:
-            f.write("x")
+        Path(workspace, "b.txt").write_text("x", encoding="utf-8")
         assert "x" in tools.execute_tool("read_file", {"path": "b.txt"})
 
     def test_missing_file_returns_error(self):
@@ -40,7 +52,7 @@ class TestReadFile:
         assert "错误" in out
 
     def test_empty_file(self, workspace):
-        open(os.path.join(workspace, "empty.txt"), "w").close()
+        Path(workspace, "empty.txt").write_text("", encoding="utf-8")
         assert tools.execute_tool("read_file", {"path": "empty.txt"}) == "(空文件)"
 
 
@@ -62,7 +74,7 @@ class TestWriteFile:
 class TestListDir:
     def test_marks_directories(self, workspace):
         os.makedirs(os.path.join(workspace, "subdir"))
-        open(os.path.join(workspace, "f.txt"), "w").close()
+        Path(workspace, "f.txt").write_text("", encoding="utf-8")
         out = tools.execute_tool("list_dir", {"path": "."})
         assert "subdir/" in out
         assert "f.txt" in out
@@ -76,8 +88,8 @@ class TestListDir:
 
 class TestGlobSearch:
     def test_pattern(self, workspace):
-        open(os.path.join(workspace, "x.py"), "w").close()
-        open(os.path.join(workspace, "y.md"), "w").close()
+        Path(workspace, "x.py").write_text("", encoding="utf-8")
+        Path(workspace, "y.md").write_text("", encoding="utf-8")
         out = tools.execute_tool("glob_search", {"pattern": "*.py"})
         assert "x.py" in out and "y.md" not in out
 
@@ -88,15 +100,15 @@ class TestGlobSearch:
 
 class TestGrepSearch:
     def test_regex_hit_with_line_number(self, workspace):
-        with open(os.path.join(workspace, "g.py"), "w", encoding="utf-8") as f:
-            f.write("def foo():\n    return 42\n")
+        Path(workspace, "g.py").write_text("def foo():\n    return 42\n",
+                                           encoding="utf-8")
         out = tools.execute_tool("grep_search",
                                  {"pattern": "return \\d+", "path": "."})
         assert "g.py:2:" in out
 
     def test_invalid_regex_falls_back_to_literal(self, workspace):
-        with open(os.path.join(workspace, "h.txt"), "w", encoding="utf-8") as f:
-            f.write("price is ((5))\n")
+        Path(workspace, "h.txt").write_text("price is ((5))\n",
+                                            encoding="utf-8")
         out = tools.execute_tool("grep_search",
                                  {"pattern": "((5))", "path": "."})
         assert "h.txt:1:" in out
@@ -104,8 +116,8 @@ class TestGrepSearch:
     def test_skips_hidden_dirs(self, workspace):
         hidden = os.path.join(workspace, ".hidden")
         os.makedirs(hidden)
-        with open(os.path.join(hidden, "s.txt"), "w", encoding="utf-8") as f:
-            f.write("secret-keyword\n")
+        Path(hidden, "s.txt").write_text("secret-keyword\n",
+                                         encoding="utf-8")
         out = tools.execute_tool("grep_search",
                                  {"pattern": "secret-keyword", "path": "."})
         assert "未找到" in out
@@ -312,22 +324,22 @@ class TestGitBranch:
     def test_reads_branch_from_head(self, workspace):
         git = os.path.join(workspace, ".git")
         os.makedirs(git)
-        with open(os.path.join(git, "HEAD"), "w", encoding="utf-8") as f:
-            f.write("ref: refs/heads/dev\n")
+        Path(git, "HEAD").write_text("ref: refs/heads/dev\n",
+                                     encoding="utf-8")
         assert tools.git_branch(workspace) == "dev"
 
     def test_nested_feature_branch(self, workspace):
         git = os.path.join(workspace, ".git")
         os.makedirs(git)
-        with open(os.path.join(git, "HEAD"), "w", encoding="utf-8") as f:
-            f.write("ref: refs/heads/feature/foo\n")
+        Path(git, "HEAD").write_text("ref: refs/heads/feature/foo\n",
+                                     encoding="utf-8")
         assert tools.git_branch(workspace) == "feature/foo"
 
     def test_walks_up_to_parent_repo(self, workspace):
         git = os.path.join(workspace, ".git")
         os.makedirs(git)
-        with open(os.path.join(git, "HEAD"), "w", encoding="utf-8") as f:
-            f.write("ref: refs/heads/master\n")
+        Path(git, "HEAD").write_text("ref: refs/heads/master\n",
+                                     encoding="utf-8")
         sub = os.path.join(workspace, "src", "pkg")
         os.makedirs(sub)
         assert tools.git_branch(sub) == "master"
@@ -335,8 +347,8 @@ class TestGitBranch:
     def test_detached_head_short_hash(self, workspace):
         git = os.path.join(workspace, ".git")
         os.makedirs(git)
-        with open(os.path.join(git, "HEAD"), "w", encoding="utf-8") as f:
-            f.write("abcdef1234567890\n")
+        Path(git, "HEAD").write_text("abcdef1234567890\n",
+                                     encoding="utf-8")
         assert tools.git_branch(workspace) == "abcdef1"
 
     def test_worktree_gitdir_file(self, workspace, tmp_path):
@@ -344,8 +356,8 @@ class TestGitBranch:
         real_git.mkdir()
         (real_git / "HEAD").write_text("ref: refs/heads/wt-branch\n",
                                        encoding="utf-8")
-        with open(os.path.join(workspace, ".git"), "w", encoding="utf-8") as f:
-            f.write(f"gitdir: {real_git}\n")
+        Path(workspace, ".git").write_text(f"gitdir: {real_git}\n",
+                                           encoding="utf-8")
         assert tools.git_branch(workspace) == "wt-branch"
 
 
@@ -363,9 +375,7 @@ class TestMediaGenTools:
         monkeypatch.setattr("imggen.available", lambda: True)
 
         def fake_generate(prompt, out, size=""):
-            os.makedirs(os.path.dirname(out), exist_ok=True)
-            with open(out, "wb") as f:
-                f.write(b"PNG")
+            out = _stub_write(out, b"PNG")
             return out
 
         monkeypatch.setattr("imggen.generate", fake_generate)
@@ -391,9 +401,7 @@ class TestMediaGenTools:
                                          "error": ""})
 
         def fake_download(url, out):
-            os.makedirs(os.path.dirname(out), exist_ok=True)
-            with open(out, "wb") as f:
-                f.write(b"MP4")
+            out = _stub_write(out, b"MP4")
             return out
 
         monkeypatch.setattr("videogen.download", fake_download)

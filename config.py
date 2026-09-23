@@ -154,22 +154,19 @@ SYSTEM_PROMPT = (
     "也不要声称把任务派给了别的模型。"
     "始终精炼作答：只给结论与必要依据，绝不输出大段文件内容或重复列表。"
     "修改/增强代码文件时，必须调用 write_file 把改动真正写回文件（不要只把新内容输出在回复里）；"
-    "写完允许用 read_file 抽查一次，但不要反复读回、逐段重读或改后又疑神疑鬼地推倒重来。"
+    "写完再用 read_file 抽查确认。"
     "完成纪律（必须遵守）："
     "1) 多步任务动手前必须先调用 task_plan 建立计划（3~8 步，每步写『做什么、达成什么』"
     "的功能描述，不要罗列工具名/文件名），之后每完成一步就调用 task_plan 更新状态"
     "（已完成步骤文本前加 '[x] '），全部步骤完成后再给最终答复；"
     "2) 改完必须用 lsp_diagnostics 或运行相关测试/脚本验证，发现问题就修，直到通过；"
     "3) 只有当所有步骤完成且验证通过、目标真正达成时，才给出最终答复；"
-    "绝不在半途（改了一部分、还没验证通过）就草草结束；"
-    "4) 完成即停：用户可见目标达成后立即给最终答复，禁止继续调用工具"
-    "反复自检（例如对图片逐像素扫描、对同一结果反复采样确认）；"
-    "验证最多一次且用最直接的方式（读回文件/跑一次脚本）；"
-    "自检通过后再出现新的怀疑也不得继续，直接汇报结果；"
-    "工具调用轮次接近上限时必须立即收尾作答。"
-    "请始终基于真实工具/委派结果作答，不要编造文件内容。"
+    "绝不在半途（改了一部分、还没验证通过）就草草结束。"
+    "请始终基于真实工具结果作答，不要编造文件内容。"
     "用户消息可能附带本地媒体文件（图片/音频/视频）路径：图片直接以视觉输入提供；"
     "音频/视频可用 run_shell 调 ffmpeg（ffprobe）提取信息后再分析。"
+    "短剧资产（角色/场景/道具）改图请求：默认走 image_gen(asset_name=...) 替换"
+    "原图，不要另存新图；asset_name 不确定时先读 短剧资产/全书/cast.json 找匹配。"
 )
 
 
@@ -280,6 +277,7 @@ def load_models() -> tuple[list[ModelConfig], str]:
     data = _load_models_data()      # 已归一：providers/models 必为 list[dict]
 
     models: list[ModelConfig] = []
+    seen_keys: set = set()          # 脏数据防御：key 重复的条目只保留首个
     for provider in data["providers"]:
         pid = provider.get("id", "")
         pname = provider.get("name", pid)
@@ -290,8 +288,12 @@ def load_models() -> tuple[list[ModelConfig], str]:
         for m in provider["models"]:
             mid = m.get("id", "")
             mname = m.get("name", mid)
+            key = f"{pid}/{mid}"
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
             models.append(ModelConfig(
-                key=f"{pid}/{mid}",
+                key=key,
                 provider_name=pname,
                 model_id=mid,
                 display_name=mname,
@@ -363,6 +365,35 @@ def set_standalone(on: bool):
     data = _load_models_data()
     if bool(data.get("standalone", False)) != bool(on):
         data["standalone"] = bool(on)
+        _save_models_data(data)
+
+
+# ---------------- 创作模式开关（顶栏 🎬短剧 / 📖漫画） ----------------
+# 开关关闭时，对应的 /novel drama、/novel comic 系列快捷命令被闸门拦截，
+# 命令弹窗与速查菜单同步隐藏。drama 默认开（兼容既有用户习惯）。
+_MODE_DEFAULTS = {"drama": True, "comic": False}
+
+
+def get_mode_flags() -> dict:
+    """返回模式开关状态，缺失字段用默认值补齐。"""
+    data = _load_models_data()
+    modes = data.get("modes")
+    if not isinstance(modes, dict):
+        modes = {}
+    return {k: bool(modes.get(k, v)) for k, v in _MODE_DEFAULTS.items()}
+
+
+def set_mode_flag(key: str, on: bool):
+    """开关某个创作模式（变更才写盘）。"""
+    if key not in _MODE_DEFAULTS:
+        return
+    data = _load_models_data()
+    modes = data.get("modes")
+    if not isinstance(modes, dict):
+        modes = {}
+    if bool(modes.get(key, _MODE_DEFAULTS[key])) != bool(on):
+        modes[key] = bool(on)
+        data["modes"] = modes
         _save_models_data(data)
 
 
@@ -672,33 +703,41 @@ def _save_models_data(data: dict):
 
 
 def _media_service(env_base: str, env_model: str, env_key: str,
-                   provider_field: str, prefer_global: str = "") -> dict:
-    """图像/视频生成服务解析（公共逻辑）。
+                   provider_field: str, section: str = "",
+                   env_kind: str = "", kind_field: str = "") -> dict:
+    """图像/视频生成服务解析（公共逻辑），优先级从高到低：
 
-    环境变量优先（本地 SD/ComfyUI 网关等场景，key 可空）；
-    其次扫描供应商配置里带 provider_field（image_model / video_model）
-    且已填 API Key 的供应商——面板里填上 key 即激活。
-    prefer_global 非空时读 globals[prefer_global]（供应商 id）命中的优先
-    （/novel drama config 切视频引擎用），其余按列表序。
-    返回 {"base_url","model","api_key","provider_id"}；未配置返回 {}。
+    1. 环境变量（本地 SD/ComfyUI 网关等场景，key 可空；kind 为本地后端时
+       model 也可空）；
+    2. models.json 的 "media" 段（本地后端持久化：{"image": {...},
+       "video": {...}}，各含 base_url/model/api_key/kind）——产品场景
+       客户在面板/配置文件填写，不依赖环境变量；
+    3. 供应商配置里带 provider_field（image_model / video_model）且已填
+       API Key 的供应商。
+
+    返回 {"base_url","model","api_key","kind","provider_id"}；未配置返回 {}。
     """
     url = os.environ.get(env_base, "").strip().rstrip("/")
     mdl = os.environ.get(env_model, "").strip()
-    if url and mdl:
+    kind = os.environ.get(env_kind, "").strip() if env_kind else ""
+    if url and (mdl or kind in ("comfyui", "a1111")):
         return {"base_url": url, "model": mdl,
                 "api_key": os.environ.get(env_key, "").strip(),
-                "provider_id": ""}
+                "kind": kind, "provider_id": ""}
     try:
         data = _load_models_data()
-        providers = data.get("providers", [])
-        prefer = (str((data.get("globals") or {}).get(prefer_global, "")
-                       or "").strip() if prefer_global else "")
     except Exception:                  # noqa: BLE001  配置损坏时按未配置降级
-        providers, prefer = [], ""
-    ordered = [p for p in providers if isinstance(p, dict)
-               and str(p.get("id", "")).strip() == prefer]
-    ordered += [p for p in providers if p not in ordered]
-    for p in ordered:
+        data = {}
+    sec = (data.get("media") or {}).get(section) if section else None
+    if isinstance(sec, dict):
+        sbase = str(sec.get("base_url", "") or "").strip().rstrip("/")
+        skind = str(sec.get("kind", "") or "").strip()
+        smdl = str(sec.get("model", "") or "").strip()
+        if sbase and (smdl or skind in ("comfyui", "a1111")):
+            return {"base_url": sbase, "model": smdl,
+                    "api_key": str(sec.get("api_key", "") or "").strip(),
+                    "kind": skind, "provider_id": ""}
+    for p in data.get("providers", []) or []:
         if not isinstance(p, dict):
             continue
         mdl = str(p.get(provider_field, "") or "").strip()
@@ -706,28 +745,182 @@ def _media_service(env_base: str, env_model: str, env_key: str,
         base = str(p.get("base_url", "") or "").strip().rstrip("/")
         if mdl and base and key and key != "local-noauth":
             return {"base_url": base, "model": mdl, "api_key": key,
+                    "kind": str(p.get(kind_field, "") or "").strip(),
                     "provider_id": str(p.get("id", ""))}
     return {}
 
 
 def image_service() -> dict:
-    """图像生成服务：LAS_IMAGE_* 优先，其次带 image_model 的供应商。
-
-    globals.image_provider 指定的供应商优先（/novel drama config image 切换）。
-    """
+    """图像生成服务：LAS_IMAGE_* 优先，其次 media.image 段，再其次
+    带 image_model 的供应商。"""
     return _media_service("LAS_IMAGE_BASE_URL", "LAS_IMAGE_MODEL",
                           "LAS_IMAGE_API_KEY", "image_model",
-                          prefer_global="image_provider")
+                          section="image", env_kind="LAS_IMAGE_KIND",
+                          kind_field="image_kind")
 
 
 def video_service() -> dict:
-    """视频生成服务：LAS_VIDEO_* 优先，其次带 video_model 的供应商。
-
-    globals.video_provider 指定的供应商优先（/novel drama config 切换）。
-    """
+    """视频生成服务：LAS_VIDEO_* 优先，其次 media.video 段，再其次
+    带 video_model 的供应商。"""
     return _media_service("LAS_VIDEO_BASE_URL", "LAS_VIDEO_MODEL",
                           "LAS_VIDEO_API_KEY", "video_model",
-                          prefer_global="video_provider")
+                          section="video", env_kind="LAS_VIDEO_KIND",
+                          kind_field="video_kind")
+
+
+def get_media() -> dict:
+    """models.json 的 media 段（图像/视频生成后端配置，产品客户可视化编辑）。"""
+    try:
+        media = _load_models_data().get("media")
+    except Exception:                  # noqa: BLE001  配置损坏按空处理
+        media = {}
+    return media if isinstance(media, dict) else {}
+
+
+_MEDIA_KEYS = ("base_url", "model", "api_key", "kind", "clip1", "clip2",
+               "vae")
+
+
+def set_media(section: str, cfg: dict | None) -> None:
+    """写 media.image / media.video 段；cfg 为 None 或空 base_url 时整段删除。
+
+    只保留 _MEDIA_KEYS 里的白名单字段，其余输入一律丢弃（防脏数据入库）。
+    """
+    assert section in ("image", "video"), f"未知 media 段：{section}"
+    data = _load_models_data()
+    media = data.get("media") if isinstance(data.get("media"), dict) else {}
+    if not isinstance(cfg, dict) or not str(cfg.get("base_url", "") or "").strip():
+        media.pop(section, None)
+    else:
+        clean = {k: str(cfg.get(k, "") or "").strip()
+                 for k in _MEDIA_KEYS if cfg.get(k) is not None}
+        clean["base_url"] = clean.get("base_url", "").rstrip("/")
+        media[section] = clean
+    if media:
+        data["media"] = media
+    else:
+        data.pop("media", None)
+    _save_models_data(data)
+
+
+_JEV_KEYS = ("api_key", "install_dir", "model")
+
+
+def get_browser() -> dict:
+    """浏览器智能体行为配置：headed（可见窗口）、proxy（system/direct）。"""
+    try:
+        b = _load_models_data().get("browser")
+    except Exception:                  # noqa: BLE001
+        b = {}
+    return b if isinstance(b, dict) else {}
+
+
+_BROWSER_KEYS = ("headed", "proxy")
+
+
+def set_browser(cfg: dict | None) -> None:
+    """写 browser 段；cfg 为 None 清空。值白名单同前。"""
+    data = _load_models_data()
+    b = data.get("browser") if isinstance(data.get("browser"), dict) else {}
+    if not isinstance(cfg, dict) or not cfg:
+        b.clear()
+    else:
+        clean = {k: str(cfg.get(k, "") or "").strip()
+                 for k in _BROWSER_KEYS if cfg.get(k) is not None}
+        b.clear()
+        b.update(clean)
+    if b:
+        data["browser"] = b
+    else:
+        data.pop("browser", None)
+    _save_models_data(data)
+
+
+_DRAMA_KEYS = ("image_size", "image_ratio", "video_size",
+               "comic_size", "comic_ratio")
+
+
+def get_drama() -> dict:
+    """短剧/漫画生成尺寸配置段；未配置的键由调用方按默认值兜底。"""
+    try:
+        d = _load_models_data().get("drama")
+    except Exception:                  # noqa: BLE001
+        d = {}
+    return d if isinstance(d, dict) else {}
+
+
+def set_drama(cfg: dict | None) -> None:
+    """写 drama 段（尺寸五键）；cfg 为 None 清空。"""
+    data = _load_models_data()
+    d = data.get("drama") if isinstance(data.get("drama"), dict) else {}
+    if not isinstance(cfg, dict) or not cfg:
+        d.clear()
+    else:
+        clean = {k: str(cfg.get(k, "") or "").strip()
+                 for k in _DRAMA_KEYS if cfg.get(k) is not None}
+        d.clear()
+        d.update(clean)
+    if d:
+        data["drama"] = d
+    else:
+        data.pop("drama", None)
+    _save_models_data(data)
+
+
+def get_jev() -> dict:
+    """浏览器智能体（jev-ultrafast）配置段；未配置返回 {}。
+
+    每个用户在自己的机器上填自己的 TypeSafe API Key，互不相通。
+    """
+    try:
+        jev = _load_models_data().get("jev")
+    except Exception:                  # noqa: BLE001  配置损坏按空处理
+        jev = {}
+    return jev if isinstance(jev, dict) else {}
+
+
+def set_jev(cfg: dict | None) -> None:
+    """写 jev 段；cfg 为 None 或空 api_key 时整段删除。白名单同 set_media。"""
+    data = _load_models_data()
+    jev = data.get("jev") if isinstance(data.get("jev"), dict) else {}
+    if not isinstance(cfg, dict) or not str(cfg.get("api_key", "") or "").strip():
+        jev.clear()
+    else:
+        clean = {k: str(cfg.get(k, "") or "").strip()
+                 for k in _JEV_KEYS if cfg.get(k) is not None}
+        jev.clear()
+        jev.update(clean)
+    if jev:
+        data["jev"] = jev
+    else:
+        data.pop("jev", None)
+    _save_models_data(data)
+
+
+def video_services() -> list:
+    """枚举所有视频供应商（带 video_model 字段；UI 顶栏下拉数据源）。
+
+    返回 [{provider_id, name, base_url, model, api_key}, ...]，按 models.json
+    顺序。未填 api_key 的也返回，调用方自己标记 has_key。
+    """
+    out = []
+    data = _load_models_data()
+    pid = (data.get("globals") or {}).get("video_provider", "") or ""
+    rows = list(data.get("providers", []))
+    if pid:
+        rows = sorted(rows, key=lambda p: 0 if p.get("id") == pid else 1)
+    for p in rows:
+        vm = (p.get("video_model") or "").strip()
+        if not vm:
+            continue
+        out.append({
+            "provider_id": p.get("id", ""),
+            "name": p.get("name", p.get("id", "")),
+            "base_url": (p.get("base_url") or "").rstrip("/"),
+            "model": vm,
+            "api_key": p.get("api_key", "") or "",
+        })
+    return out
 
 
 def add_custom_model(model_ids, base_url: str, api_key: str,

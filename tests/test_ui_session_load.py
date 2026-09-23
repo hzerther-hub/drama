@@ -20,6 +20,9 @@ class StubApp:
     """只提供 _load_session 依赖的最小接口。"""
 
     _load_session = ui.App._load_session
+    _apply_session_ui = lambda self, ui_state: None   # 桩上无模型/权限还原
+    _run_of = lambda self, sid: None                  # 桩上无运行中会话
+    _side_poll = lambda self, force=False: None       # 桩上无侧栏
 
     def __init__(self):
         self.session_id = ""
@@ -27,6 +30,9 @@ class StubApp:
         self.messages = []
         self.lines = []
         self.sess_btn = _StubBtn()
+        self.send_btn = _StubBtn()
+        self._runs = {}                   # 桩上无运行中任务
+        self.send_btn = _StubBtn()
 
     def clear(self):
         self.lines = []

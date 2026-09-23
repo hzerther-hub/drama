@@ -29,7 +29,11 @@ def _fmt_tokens(n) -> str:
 
 
 def _add_provider_dialog(app, parent, on_done):
-    """新建 provider：id + name + 可选的 base_url/api_key/api_type。"""
+    """新建 provider：id + name + 可选的 base_url/api_key/api_type。
+
+    顶部 4 个预设按钮（ComfyUI 本地/火山方舟/商汤/硅基流动）一键填表，
+    用户也可手动改。
+    """
     import ui
     FONT_UI, FONT_MONO = ui.FONT_UI, ui.FONT_MONO
     _make_modal = ui._make_modal
@@ -37,12 +41,32 @@ def _add_provider_dialog(app, parent, on_done):
     win = tk.Toplevel(parent)
     win.configure(bg=theme.PANEL)
     win.title(_t("dlg.add_provider"))
-    win.geometry("520x460")
+    win.geometry("560x540")
     win.transient(parent)
 
     win.grid_columnconfigure(1, weight=1)
 
-    def _row(label, initial, row, show=None, hint=None):
+    # 预设按钮行（一键填表）
+    tk.Label(win, text=_t("add_provider.preset_hint"),
+             font=(FONT_UI, 9), fg="#666666").grid(
+        row=0, column=0, columnspan=2, sticky="w", padx=16, pady=(10, 4))
+    preset_bar = tk.Frame(win)
+    preset_bar.grid(row=1, column=0, columnspan=2, sticky="ew", padx=16, pady=(0, 8))
+
+    PRESETS = [
+        # (label_key, id, name, base_url, api_type)
+        ("add_provider.preset_comfyui",    "comfyui",   "ComfyUI（本地）",
+         "http://127.0.0.1:8188/v1",      "openai_compatible"),
+        ("add_provider.preset_volc",       "volcengine","火山方舟",
+         "https://ark.cn-beijing.volces.com/api/v3", "openai_compatible"),
+        ("add_provider.preset_sensenova",  "sensenova", "商汤日日新",
+         "https://api.sensenova.cn/v1/llm", "openai_compatible"),
+        ("add_provider.preset_silicon",    "siliconflow","硅基流动",
+         "https://api.siliconflow.cn/v1",  "openai_compatible"),
+    ]
+    # 下面 4 个表单字段（id/name/url/key）
+    form_widgets = {}
+    def _row(label, initial, row, show=None, hint=None, key=None):
         tk.Label(win, text=label, font=(FONT_UI, 10)).grid(
             row=row, column=0, sticky="w", padx=(16, 4), pady=6)
         e = tk.Entry(win, font=(FONT_MONO, 10), show=show)
@@ -52,43 +76,63 @@ def _add_provider_dialog(app, parent, on_done):
         if hint:
             tk.Label(win, text=hint, font=(FONT_UI, 9), fg="#666666").grid(
                 row=row + 1, column=1, sticky="w", padx=(0, 16), pady=(0, 4))
+        if key:
+            form_widgets[key] = e
         return e
 
-    id_entry = _row(_t("add_provider.id"), "custom", 0,
-                    hint=_t("add_provider.id_hint"))
-    name_entry = _row(_t("add_provider.name"), "自定义", 2,
-                      hint=_t("add_provider.name_hint"))
-    url_entry = _row(_t("add_provider.base_url"), "", 4)
-    key_entry = _row(_t("add_provider.api_key"), "", 6, show="*")
+    id_entry = _row(_t("add_provider.id"), "", 2,
+                    hint=_t("add_provider.id_hint"), key="id")
+    name_entry = _row(_t("add_provider.name"), "", 4,
+                      hint=_t("add_provider.name_hint"), key="name")
+    url_entry = _row(_t("add_provider.base_url"), "", 6, key="url")
+    key_entry = _row(_t("add_provider.api_key"), "", 8, show="*", key="key")
 
     api_type_var = tk.StringVar(value="openai_compatible")
     tk.Label(win, text=_t("add_provider.api_type"),
-             font=(FONT_UI, 10)).grid(row=8, column=0, sticky="w",
+             font=(FONT_UI, 10)).grid(row=10, column=0, sticky="w",
                                       padx=(16, 4), pady=6)
-    ttk.Combobox(win, textvariable=api_type_var,
-                 values=("openai_compatible", "anthropic"),
-                 state="readonly", font=(FONT_UI, 10)).grid(
-        row=8, column=1, sticky="ew", padx=(0, 16))
+    api_type_box = ttk.Combobox(win, textvariable=api_type_var,
+                                 values=("openai_compatible", "anthropic"),
+                                 state="readonly", font=(FONT_UI, 10))
+    api_type_box.grid(row=10, column=1, sticky="ew", padx=(0, 16))
+
+    # 预设按钮：一键填表
+    def _apply_preset(preset):
+        label_key, pid, name, url, atype = preset
+        form_widgets["id"].delete(0, "end"); form_widgets["id"].insert(0, pid)
+        form_widgets["name"].delete(0, "end"); form_widgets["name"].insert(0, name)
+        form_widgets["url"].delete(0, "end"); form_widgets["url"].insert(0, url)
+        form_widgets["key"].delete(0, "end")  # API Key 用户自己填
+        api_type_var.set(atype)
+
+    for i, preset in enumerate(PRESETS):
+        b = tk.Button(preset_bar, text=_t(preset[0]),
+                      command=lambda p=preset: _apply_preset(p),
+                      font=(FONT_UI, 9), bd=0, relief="flat",
+                      bg=theme.PANEL, fg=theme.ACCENT,
+                      cursor="hand2", padx=8, pady=3)
+        b.grid(row=0, column=i, padx=(0, 6), sticky="w")
 
     msg = tk.Label(win, text="", font=(FONT_UI, 9), fg="red")
-    msg.grid(row=10, column=0, columnspan=2, sticky="w", padx=16)
+    msg.grid(row=12, column=0, columnspan=2, sticky="w", padx=16)
 
     def _save():
         err = config.add_provider(
-            id_entry.get().strip(),
-            name_entry.get().strip(),
-            base_url=url_entry.get().strip(),
-            api_key=key_entry.get().strip(),
+            form_widgets["id"].get().strip(),
+            form_widgets["name"].get().strip(),
+            base_url=form_widgets["url"].get().strip(),
+            api_key=form_widgets["key"].get().strip(),
             api_type=api_type_var.get().strip() or "openai_compatible")
         if err:
             msg.config(text=err)
             return
         on_done(_t("add_provider.done",
-                   name=name_entry.get().strip() or id_entry.get().strip()))
+                   name=form_widgets["name"].get().strip() or
+                        form_widgets["id"].get().strip()))
         win.destroy()
 
     tk.Button(win, text=_t("btn.save"), command=_save, width=12).grid(
-        row=11, column=0, columnspan=2, pady=14)
+        row=13, column=0, columnspan=2, pady=14)
     _make_modal(win, parent)
 
 
@@ -319,6 +363,8 @@ def show_manager(app):
             if getattr(m, "reasoning", False):
                 caps += " 🧠"
             display = f"{m.display_name}{caps}{mark}"
+            if model_tree.exists(m.key):   # 脏数据防御：重复 key 只插一次
+                continue
             model_tree.insert("", "end", iid=m.key,
                               values=(display, m.model_id,
                                       _fmt_tokens(getattr(m, "context_window", 0)),

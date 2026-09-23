@@ -21,6 +21,7 @@ import tkinter as tk
 from tkinter import ttk
 
 import dramavideo
+import videogen
 from i18n import t as _t
 import theme
 
@@ -157,6 +158,70 @@ def show(app):
     ch_box.pack(side="right")
     ch_box.bind("<<ComboboxSelected>>", lambda e: _on_chapter())
 
+    # ---- 顶栏：视频模型 + 分辨率档位（provider 切换 → resolution 联动） ----
+    video_providers = videogen.available_providers()
+    provider_labels = ([f"自动（{_t('ds.video_model_auto') or 'auto'}）"]
+                          + [f"{vp['name']}（{vp['model']}）"
+                             + ("" if vp['has_key'] else " · 未填 Key")
+                             for vp in video_providers])
+    video_provider_var = tk.StringVar(
+        value=state.get("drama_video_provider_label") or provider_labels[0])
+    video_resolution_var = tk.StringVar(
+        value=state.get("drama_video_resolution") or "")
+
+    def _provider_index():
+        """当前 provider 选中索引（0=自动；≥1=providers[i-1]）。"""
+        s = video_provider_var.get()
+        if s in provider_labels:
+            return provider_labels.index(s)
+        return 0
+
+    def _current_provider_id() -> str:
+        idx = _provider_index()
+        return "" if idx == 0 else video_providers[idx - 1]["provider_id"]
+
+    def _current_resolution_tiers() -> tuple:
+        idx = _provider_index()
+        if idx == 0:
+            return videogen.provider_resolution_tiers("agnes")
+        kind = video_providers[idx - 1].get("kind", "agnes")
+        return videogen.provider_resolution_tiers(kind)
+
+    def _on_provider_change(*_a):
+        tiers = _current_resolution_tiers()
+        res_box["values"] = tiers
+        if video_resolution_var.get() not in tiers:
+            video_resolution_var.set(tiers[0] if tiers else "")
+        state["drama_video_provider"] = _current_provider_id()
+        state["drama_video_provider_label"] = video_provider_var.get()
+        state["drama_video_resolution"] = video_resolution_var.get().strip()
+        try:
+            p.save()
+        except Exception:                  # noqa: BLE001
+            pass
+
+    def _on_resolution_change(*_a):
+        state["drama_video_resolution"] = video_resolution_var.get().strip()
+        try:
+            p.save()
+        except Exception:                  # noqa: BLE001
+            pass
+
+    tk.Label(top, text=_t("ds.video_model"), font=(FONT_UI, 9),
+             bg=theme.BG, fg=theme.MUTED).pack(side="right", padx=(8, 0))
+    res_box = ttk.Combobox(top, textvariable=video_resolution_var, width=8,
+                           state="readonly", font=(FONT_UI, 9),
+                           values=_current_resolution_tiers())
+    res_box.pack(side="right", padx=(4, 0))
+    res_box.bind("<<ComboboxSelected>>", lambda e: _on_resolution_change())
+    if video_resolution_var.get() not in _current_resolution_tiers():
+        video_resolution_var.set(_current_resolution_tiers()[0])
+    prov_box = ttk.Combobox(top, textvariable=video_provider_var, width=22,
+                            state="readonly", font=(FONT_UI, 9),
+                            values=provider_labels)
+    prov_box.pack(side="right", padx=(4, 0))
+    prov_box.bind("<<ComboboxSelected>>", lambda e: _on_provider_change())
+
     # ---- 风格设置：预设 + 自由输入，保存进书状态（影响后续所有生成） ----
     style_row = tk.Frame(win, bg=theme.BG)
     style_row.pack(fill="x", padx=14, pady=(2, 0))
@@ -204,6 +269,46 @@ def show(app):
     ui._flat_button(stat_foot, text=_t("ds.stop"), width=12,
                     font=(FONT_UI, 9), command=_stop_gen
                     ).pack(side="right", padx=(8, 0))
+
+    # 内容审核拒绝时的「切模型重试」按钮（默认隐藏；moderation 事件触发显示）
+    def _on_moderation_retry():
+        """把 provider 切到列表里的下一个非当前选项，重新生成当前镜头。"""
+        last = st.get("_moderation_last") or {}
+        cur_pid = last.get("provider_id") or ""
+        # 找到下一个不同的 provider
+        nxt = ""
+        for vp in video_providers:
+            if vp["provider_id"] and vp["provider_id"] != cur_pid and vp["has_key"]:
+                nxt = vp["provider_id"]
+                break
+        if not nxt:
+            status(_t("ds.no_alt_provider"), busy=False)
+            return
+        state["drama_video_provider"] = nxt
+        state["drama_video_provider_label"] = next(
+            (l for l, v in zip(provider_labels[1:], video_providers)
+             if v["provider_id"] == nxt), provider_labels[0])
+        # resolution 联动
+        tiers = _current_resolution_tiers()
+        res_box["values"] = tiers
+        if video_resolution_var.get() not in tiers:
+            video_resolution_var.set(tiers[0] if tiers else "")
+        state["drama_video_resolution"] = video_resolution_var.get().strip()
+        video_provider_var.set(state["drama_video_provider_label"])
+        try:
+            p.save()
+        except Exception:                  # noqa: BLE001
+            pass
+        st["_moderation_last"] = None
+        mod_btn.pack_forget()
+        # 重跑当前镜头
+        _gen("clip")
+
+    mod_btn = ui._icon_text_button(stat_foot, "shield",
+                                   _t("ds.moderation_retry"),
+                                   command=_on_moderation_retry,
+                                   font=(FONT_UI, 9))
+    # 不 pack，由 moderation 事件触发显示
 
     steps = {}
 
@@ -673,6 +778,155 @@ def show(app):
     desc_t = tk.Text(center3, height=8, font=(FONT_UI, 10), wrap="word",
                      relief="flat", bg="white", fg=theme.TEXT, padx=8, pady=6)
     desc_t.pack(fill="both", expand=True, padx=10)
+
+    # ---- @角色名 自动补全（描述编辑框输入 @ 弹候选菜单，选中插入 @name） ----
+    _role_popup = {"top": None, "lb": None, "items": [],
+                   "prefix": "", "insert_index": None}
+
+    def _role_names() -> list:
+        """当前 cast 里所有角色名（全书 + 本章专属），按长度排序短前缀优先。"""
+        names = []
+        for k in _cast():
+            if not k.startswith("_") and isinstance(_cast()[k], dict):
+                names.append(k)
+        return sorted(set(names), key=lambda s: (len(s), s))
+
+    def _close_role_popup():
+        top = _role_popup["top"]
+        if top is not None:
+            try:
+                top.destroy()
+            except tk.TclError:
+                pass
+        _role_popup["top"] = None
+        _role_popup["lb"] = None
+        _role_popup["items"] = []
+        _role_popup["prefix"] = ""
+        _role_popup["insert_index"] = None
+
+    def _show_role_popup(prefix: str):
+        """在光标位置显示 popup，列出以 prefix 开头的角色名。"""
+        names = _role_names()
+        if prefix:
+            cands = [n for n in names if n.startswith(prefix)]
+        else:
+            cands = names[:10]                 # 无前缀时取前 10 个
+        if not cands:
+            _close_role_popup()
+            return
+        # 关旧 popup（如有）
+        if _role_popup["top"] is not None:
+            _close_role_popup()
+        top = tk.Toplevel(win, bg=theme.PANEL)
+        top.wm_overrideredirect(True)
+        # 定位到 desc_t 光标处（屏幕坐标）
+        try:
+            x, y, _, _ = desc_t.bbox("insert") or (0, 0, 0, 0)
+            ax = desc_t.winfo_rootx() + x
+            ay = desc_t.winfo_rooty() + y + 20
+        except Exception:                  # noqa: BLE001
+            ax, ay = win.winfo_rootx() + 50, win.winfo_rooty() + 100
+        top.geometry(f"+{ax}+{ay}")
+        lb = tk.Listbox(top, font=(FONT_UI, 10), bg=theme.PANEL,
+                        fg=theme.TEXT, relief="flat", highlightthickness=1,
+                        highlightbackground=theme.BORDER,
+                        selectbackground=theme.ACCENT,
+                        selectforeground="#ffffff",
+                        width=18, height=min(8, len(cands)))
+        lb.pack()
+        for n in cands:
+            lb.insert("end", n)
+        lb.selection_clear(0)
+        lb.selection_set(0)
+        lb.activate(0)
+        lb.focus_set()
+        _role_popup["top"] = top
+        _role_popup["lb"] = lb
+        _role_popup["items"] = cands
+        _role_popup["prefix"] = prefix
+
+        def _pick(_e=None):
+            sel = lb.curselection()
+            if sel:
+                name = cands[sel[0]]
+                idx = _role_popup["insert_index"]
+                _insert_at_cursor(f"@{name}", idx)
+            _close_role_popup()
+            return "break"
+
+        def _on_arrow(e):
+            cur = lb.curselection()
+            n = len(cands)
+            if not cur:
+                return
+            i = cur[0]
+            if e.keysym == "Down" and i < n - 1:
+                lb.selection_clear(i)
+                lb.selection_set(i + 1)
+                lb.activate(i + 1)
+                lb.see(i + 1)
+            elif e.keysym == "Up" and i > 0:
+                lb.selection_clear(i)
+                lb.selection_set(i - 1)
+                lb.activate(i - 1)
+                lb.see(i - 1)
+            return "break"
+
+        lb.bind("<Return>", _pick)
+        lb.bind("<Double-Button-1>", _pick)
+        lb.bind("<Escape>", lambda e: (_close_role_popup(), "break"))
+        lb.bind("<Down>", _on_arrow)
+        lb.bind("<Up>", _on_arrow)
+        # 点 popup 外关闭
+        top.bind("<FocusOut>", lambda e: win.after(50, _close_role_popup))
+
+    def _insert_at_cursor(text: str, default_index: str = None):
+        """在 desc_t 光标处插入 text，并保持光标在文本后。"""
+        try:
+            if default_index:
+                desc_t.mark_set("insert", default_index)
+            desc_t.insert("insert", text)
+        except tk.TclError:
+            desc_t.insert("end", text)
+
+    def _filter_role_popup():
+        """输入更多字符时按当前 @ 前缀过滤已显示的 popup。"""
+        if _role_popup["top"] is None:
+            return
+        # 读取 desc_t 当前 insert 位置往前最近的 @ 到 insert 之间的内容作为新前缀
+        idx = desc_t.index("insert")
+        line, ch = idx.split(".")
+        ch = int(ch)
+        line_text = desc_t.get(f"{line}.0", idx)
+        at_pos = line_text.rfind("@")
+        if at_pos < 0:
+            _close_role_popup()
+            return
+        prefix = line_text[at_pos + 1:]
+        # 去掉中间含空白/中文逗号的——视为已结束输入
+        if any(c in prefix for c in " \t，。；、"):
+            _close_role_popup()
+            return
+        # prefix 里有角色名完整字符串 → 自动收尾（说明选中后继续打字）
+        names = _role_names()
+        for n in names:
+            if prefix.startswith(n) and len(prefix) > len(n):
+                _close_role_popup()
+                return
+        _show_role_popup(prefix)
+
+    def _on_desc_key(e):
+        """监听 desc_t 按键——`@` 触发候选菜单；其它键过滤已展开 popup。"""
+        if e.char == "@" and _role_names():
+            # 记录光标插入位置（@ 即将插入的地方），popup 选中后写入此处
+            _role_popup["insert_index"] = desc_t.index("insert")
+            win.after(0, lambda: _show_role_popup(""))
+        elif _role_popup["top"] is not None:
+            win.after(0, _filter_role_popup)
+
+    desc_t.bind("<Key>", _on_desc_key)
+    # 失焦 / 点击 popup 外部时关 popup
+    desc_t.bind("<FocusOut>", lambda e: win.after(80, _close_role_popup))
     tk.Label(center3, text=_t("ds.narration"), font=(FONT_UI, 10),
              bg=theme.PANEL, fg=theme.MUTED).pack(anchor="w", padx=10)
     narr_e = tk.Entry(center3, font=(FONT_UI, 10), relief="flat",
@@ -709,6 +963,83 @@ def show(app):
                     command=lambda: _gen("take")).pack(pady=3)
     ui._flat_button(right3, text=_t("ds.concat"), width=18, font=(FONT_UI, 10),
                     command=lambda: _gen("concat")).pack(pady=3)
+
+    # ---- 批量生成视频 + 重试失败（参考火宝 v3.1 选择模式 + 预生成确认） ----
+    def _batch_all():
+        """批量生成本章全部镜头视频（已有文件跳过）；弹确认窗。"""
+        if st["busy"]:
+            status(_t("ds.busy"), busy=True)
+            return
+        shots = _shots()
+        if not shots:
+            status(_t("ds.need_shots", n=st["ch"]))
+            return
+        ch, n = st["ch"], len(shots)
+        existing = sum(
+            1 for i in range(1, n + 1)
+            if os.path.exists(os.path.join(book, dramavideo._CLIP_DIR,
+                                          f"{ch}-{i:02d}.mp4")))
+        todo = n - existing
+        total_sec = sum(max(int(s.get("duration") or 5), 5) for s in shots)
+        cur_label = (video_provider_var.get() or "(自动)")
+        cur_res = (video_resolution_var.get() or "(自动)")
+        msg = _t("ds.batch_confirm",
+                 ch=ch, todo=todo, total=total_sec,
+                 n=n, cur=cur_label, res=cur_res)
+        from tkinter import messagebox
+        if not messagebox.askyesno(_t("ds.batch_title"), msg, parent=win):
+            return
+
+        def work():
+            try:
+                res = dramavideo.run_clips_batch(state, ch, on_event=ev)
+                win.after(0, lambda: status(
+                    _t("ds.batch_done",
+                       ok=len(res.get("ok") or []),
+                       skip=len(res.get("skipped_existing") or []),
+                       fail=len(res.get("fail") or []))))
+            except dramavideo.DramaModerationError:
+                pass
+            except Exception as e:       # noqa: BLE001
+                win.after(0, lambda err=e: status(
+                    f"❌ {type(err).__name__}: {err}"))
+
+        status(_t("ds.generating", n=_t("ds.batch_all_btn", n=ch)), busy=True)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _batch_retry():
+        """重试本章失败任务（同 batch_all，但显式提示这是补完流程）。"""
+        if st["busy"]:
+            status(_t("ds.busy"), busy=True)
+            return
+        ch = st["ch"]
+        from tkinter import messagebox
+        if not messagebox.askyesno(_t("ds.batch_retry_title"),
+                                   _t("ds.batch_retry_msg", n=ch),
+                                   parent=win):
+            return
+
+        def work():
+            try:
+                res = dramavideo.run_clips_batch(state, ch, on_event=ev)
+                win.after(0, lambda: status(
+                    _t("ds.batch_done",
+                       ok=len(res.get("ok") or []),
+                       skip=len(res.get("skipped_existing") or []),
+                       fail=len(res.get("fail") or []))))
+            except dramavideo.DramaModerationError:
+                pass
+            except Exception as e:       # noqa: BLE001
+                win.after(0, lambda err=e: status(
+                    f"❌ {type(err).__name__}: {err}"))
+
+        status(_t("ds.generating", n=_t("ds.batch_retry_btn", n=ch)), busy=True)
+        threading.Thread(target=work, daemon=True).start()
+
+    ui._icon_text_button(right3, "package", _t("ds.batch_all_btn"),
+                       command=_batch_all, font=(FONT_UI, 10)).pack(pady=3)
+    ui._icon_text_button(right3, "refresh", _t("ds.batch_retry_btn"),
+                       command=_batch_retry, font=(FONT_UI, 10)).pack(pady=3)
     ui._flat_button(right3, text=_t("ds.open_out"), width=18,
                     font=(FONT_UI, 10),
                     command=lambda: os.startfile(os.path.join(
@@ -919,16 +1250,38 @@ def show(app):
             _refresh_cast()
 
     _GEN_KIND = {"frame": "关键帧", "clip": "镜头视频", "dub": "配音",
-                 "cast": "形象", "shots": "分镜"}
+                 "cast": "形象", "shots": "分镜",
+                 "redo": "重做", "concat_skip": "拼接跳过",
+                 "moderation": "审核拒绝", "debt": "失败"}
 
     def _gen_event(e):
         """生成子步骤（关键帧/镜头视频/配音）→ 状态栏分步提示。"""
-        if e.get("type") == "drama_media" and e.get("label"):
-            k = _GEN_KIND.get(e.get("kind"), "")
-            extra = f"{e['label']}{('·' + k) if k else ''}"
-            if e.get("sec"):
-                extra += f"（出片 {int(float(e['sec']))}s）"
-            st["_gen_base"] = _t("ds.generating", n=extra)
+        if e.get("type") == "drama_media":
+            if e.get("kind") == "moderation":
+                st["_moderation_last"] = {
+                    "label": e.get("label"),
+                    "hint": e.get("hint"),
+                    "original": e.get("original"),
+                    "provider_id": e.get("provider_id"),
+                    "model": e.get("model"),
+                }
+                status(_t("ds.moderation_msg",
+                          n=(e.get("label") or ""),
+                          h=(e.get("hint") or "")[:120]))
+                mod_btn.pack(side="right", padx=(6, 0))
+                return
+            if e.get("kind") == "concat_skip":
+                names = e.get("names") or []
+                status(_t("ds.concat_skip",
+                          n=len(names),
+                          names="、".join(names)[:120]))
+                return
+            if e.get("label"):
+                k = _GEN_KIND.get(e.get("kind"), "")
+                extra = f"{e['label']}{('·' + k) if k else ''}"
+                if e.get("sec"):
+                    extra += f"（出片 {int(float(e['sec']))}s）"
+                st["_gen_base"] = _t("ds.generating", n=extra)
 
     def _gen_work(kind):
         ch, i = st["ch"], st["shot"] + 1

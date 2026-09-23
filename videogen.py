@@ -1,12 +1,19 @@
 # -*- coding: utf-8 -*-
 """视频生成：多供应商异步任务 API（stdlib urllib）。
 
-支持两种端点（按 base_url/model 自动识别）：
+支持的供应商（按 base_url/model 自动识别）：
 - 火山方舟 Ark（doubao-seedance 系列）：
     POST {base}/contents/generations/tasks   建任务（content 数组：文本+首帧图）
     GET  {base}/contents/generations/tasks/{id}  轮询
     succeeded 后从 content.video_url 下载；参数以 --resolution/--dur 等
     文本指令写入 prompt 头部，--audio true 启用原生音频（台词口型）。
+- MiniMax H3（MiniMax/MiniMax）：
+    POST {base}/video_generation             建任务（model + prompt + duration + resolution + image_url?）
+    GET  {base}/video_generation/{id}        轮询；返回 status / file_url
+- 阿里百炼 Wan 3.0（dashscope / bailian / aliyuncs / wan-* 模型）：
+    POST {base}/api/v1/services/aigc/video-generation/video-synthesis
+                                             建任务（input.media[] + parameters.duration/resolution）
+    GET  {base}/api/v1/tasks/{id}            轮询；返回 task_status / results[].url
 - Agnes 兼容（默认）：
     POST {base}/videos                       建任务（文生视频/图生视频）
     GET  {root}/agnesapi?video_id=<ID>       轮询（root = base 去掉尾部 /v1；
@@ -14,10 +21,20 @@
     status=completed 后从 metadata.url 下载 MP4。
 
 服务来源（优先级从高到低）：
-1. 环境变量 LAS_VIDEO_BASE_URL / LAS_VIDEO_MODEL / LAS_VIDEO_API_KEY
-2. 供应商管理里带 "video_model" 字段且已填 API Key 的供应商（列表序取先）
+1. preferred_provider_id（UI 顶栏 Combobox 当前选择）
+2. globals.video_provider（/novel drama config 切换）
+3. 环境变量 LAS_VIDEO_BASE_URL / LAS_VIDEO_MODEL / LAS_VIDEO_API_KEY
+4. 供应商管理里带 "video_model" 字段且已填 API Key 的供应商（列表序取先）
+
+分辨率按供应商分级（_PROVIDER_RESOLUTION_TIERS）：
+- Ark/Seedance: "480p" / "720p"
+- MiniMax H3: "768P" / "2K"
+- Wan 3.0: "480P" / "720P" / "1080P"
+- Agnes 兼容: "WxH" 像素串（1152x768 / 1280x720 等）
 
 失败抛 VidError（内部错误，工具层转为中文错误字符串）。
+错误分类：classify_error() 把错误字符串拆成 moderation / rate_limit / auth / server / other，
+UI 顶栏可据此提示「切模型重试」（moderation）等。
 """
 
 from __future__ import annotations
@@ -38,20 +55,90 @@ _MAX_FRAMES = 441        # Agnes 上限；帧数须为 8n+1
 _DEFAULT_SECONDS = 5.0
 _DEFAULT_FPS = 24
 
+# 每供应商原生分辨率档位（顶栏 Combobox 选项来源；与 _ark_flags 等旗标对应）
+_PROVIDER_RESOLUTION_TIERS = {
+    "ark":     ("480p", "720p"),
+    "minimax": ("768P", "2K"),
+    "bailian": ("480P", "720P", "1080P"),
+    "agnes":   ("1152x768", "1280x720", "720x1280", "1024x1024"),
+}
 
-def _service() -> dict:
-    """当前生效的视频服务：env 优先，其次供应商配置。"""
+
+def provider_resolution_tiers(provider_kind: str) -> tuple:
+    """某 provider 的分辨率档位元组（provider_kind ∈ ark/minimax/bailian/agnes）。"""
+    return _PROVIDER_RESOLUTION_TIERS.get(
+        (provider_kind or "").lower(),
+        _PROVIDER_RESOLUTION_TIERS["agnes"])
+
+
+def _service(preferred_provider_id: str = "") -> dict:
+    """当前生效的视频服务。
+
+    preferred_provider_id 非空 → 先按 provider 找；其次 globals.video_provider；
+    再其次环境变量；最后供应商列表序第一个。
+    """
+    # 1. UI 顶栏 / 调用方指定的 provider 优先
+    if preferred_provider_id:
+        try:
+            import config
+            for s in config.video_services():
+                if s.get("provider_id") == preferred_provider_id and s.get("base_url"):
+                    return s
+        except Exception:                  # noqa: BLE001
+            pass
+    # 2. 环境变量
     url = os.environ.get("LAS_VIDEO_BASE_URL", "").strip().rstrip("/")
     mdl = os.environ.get("LAS_VIDEO_MODEL", "").strip()
     if url and mdl:
         return {"base_url": url, "model": mdl,
                 "api_key": os.environ.get("LAS_VIDEO_API_KEY", "").strip(),
                 "provider_id": ""}
+    # 3. config 兜底（globals.video_provider 优先；再否则第一个）
     try:
         import config
         return config.video_service()
     except Exception:                  # noqa: BLE001  config 异常时按未配置降级
         return {}
+
+
+def _provider_kind(svc: dict) -> str:
+    """当前 svc 属于哪家供应商。返回 ark / minimax / bailian / agnes。"""
+    if _is_ark(svc):
+        return "ark"
+    if _is_minimax(svc):
+        return "minimax"
+    if _is_bailian(svc):
+        return "bailian"
+    return "agnes"
+
+
+def classify_error(err_str: str) -> dict:
+    """把视频服务返回的错误字符串分类。
+
+    返回 {"category": str, "hint": str|None}：
+    - moderation: 内容审核/敏感/人脸等，UI 应提示切模型重试
+    - rate_limit: 请求被限流
+    - auth: API Key 失效或缺失
+    - server: 服务端 5xx 等临时异常
+    - other: 其它（默认）
+    """
+    s = (err_str or "").lower()
+    if any(k in s for k in ("sensitive", "moderation", "policy", "safety",
+                            "nsfw", "r18", "compliance",
+                            "审核", "敏感", "违规", "真人", "人脸")):
+        return {"category": "moderation",
+                "hint": "内容疑似敏感/真人脸，模型拒绝生成"}
+    if any(k in s for k in ("rate", "limit", "quota", "throttle",
+                            "限流", "频率", "超限")):
+        return {"category": "rate_limit", "hint": "请求被限流，请稍后重试"}
+    if any(k in s for k in ("auth", "apikey", "api_key", "unauthorized",
+                            "forbidden", "401", "403",
+                            "鉴权", "未授权", "密钥")):
+        return {"category": "auth", "hint": "API Key 失效或缺失"}
+    if any(k in s for k in ("500", "502", "503", "504", "server", "internal",
+                            "服务端", "服务异常", "网关")):
+        return {"category": "server", "hint": "服务暂时异常，可稍后重试"}
+    return {"category": "other", "hint": None}
 
 
 def available() -> bool:
@@ -171,19 +258,43 @@ def _is_ark(svc: dict) -> bool:
             or str(svc.get("model", "")).startswith("doubao-"))
 
 
-def _ark_flags(seconds: float) -> str:
-    """Seedance 文本指令头：时长钳 4-15s、竖屏 9:16、关水印、开原生音频。"""
+def _is_minimax(svc: dict) -> bool:
+    """MiniMax H3 端点识别：base_url 含 minimaxi.com 或模型名以 MiniMax- 开头。"""
+    b = str(svc.get("base_url", "")).lower()
+    m = str(svc.get("model", "")).lower()
+    return ("minimaxi.com" in b or "MiniMax" in b or "MiniMax" in b
+            or m.startswith("MiniMax-") or m.startswith("MiniMax-"))
+
+
+def _is_bailian(svc: dict) -> bool:
+    """阿里百炼 Wan 3.0 端点识别：base_url 含 bailian/dashscope/aliyun，或模型名 wan-* 前缀。"""
+    b = str(svc.get("base_url", "")).lower()
+    m = str(svc.get("model", "")).lower()
+    return any(k in b for k in ("bailian", "dashscope", "aliyuncs", "aliyun")) \
+        or m.startswith("wan-") or m.startswith("wan2")
+
+
+def _ark_flags(seconds: float, resolution: str = "") -> str:
+    """Seedance 文本指令头：时长钳 4-15s、竖屏 9:16、关水印、开原生音频。
+
+    resolution 非空（480p/720p）时优先用之；空则走 720p 默认。
+    """
     try:
         dur = int(round(float(seconds))) if seconds else 5
     except (TypeError, ValueError):
         dur = 5
     dur = max(4, min(15, dur))
-    return (f"--resolution 720p --ratio 9:16 --dur {dur} "
+    res = (resolution or "720p").strip().lower()
+    if res not in ("480p", "720p", "1080p"):
+        res = "720p"
+    return (f"--resolution {res} --ratio 9:16 --dur {dur} "
             "--fps 24 --watermark false --audio true")
 
 
-def _ark_create(prompt: str, image: str, seconds: float, svc: dict) -> str:
-    content = [{"type": "text", "text": _ark_flags(seconds) + "\n" + prompt}]
+def _ark_create(prompt: str, image: str, seconds: float, svc: dict,
+                resolution: str = "") -> str:
+    content = [{"type": "text",
+                "text": _ark_flags(seconds, resolution) + "\n" + prompt}]
     if image:
         content.append({"type": "image_url", "image_url": {"url": image}})
     data = _post(f"{svc['base_url']}/contents/generations/tasks",
@@ -193,6 +304,91 @@ def _ark_create(prompt: str, image: str, seconds: float, svc: dict) -> str:
     if not vid:
         raise VidError(f"Ark 未返回任务 ID：{json.dumps(data, ensure_ascii=False)[:300]}")
     return vid
+
+
+def _minimax_create(prompt: str, image: str, seconds: float, svc: dict,
+                    resolution: str = "") -> str:
+    """MiniMax H3 建任务。resolution 默认 768P，可选 2K。"""
+    try:
+        dur = int(round(float(seconds))) if seconds else 5
+    except (TypeError, ValueError):
+        dur = 5
+    dur = max(2, min(15, dur))
+    body = {"model": svc["model"], "prompt": prompt,
+            "duration": dur,
+            "resolution": (resolution or "768P").strip()}
+    if image:
+        body["image_url"] = image
+    base = svc["base_url"].rstrip("/")
+    data = _post(f"{base}/video_generation", body, svc.get("api_key", ""))
+    return _pick_id(data)
+
+
+def _minimax_query(video_id: str, svc: dict) -> dict:
+    """MiniMax H3 轮询。"""
+    base = svc["base_url"].rstrip("/")
+    data = _get(f"{base}/video_generation/{video_id}",
+                svc.get("api_key", ""))
+    status = str(data.get("status", "") or "").strip().lower()
+    err = ""
+    e = data.get("error")
+    if isinstance(e, dict):
+        err = str(e.get("message") or e.get("code") or "")
+    elif e:
+        err = str(e)
+    inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+    url = str(inner.get("file_url") or data.get("file_url") or "").strip()
+    if status == "succeeded" and url:
+        return {"status": "completed", "url": url, "error": ""}
+    if status in ("failed", "rejected", "cancelled"):
+        return {"status": "failed", "url": "", "error": err or "MiniMax 未给出原因"}
+    return {"status": status or "unknown", "url": "", "error": err}
+
+
+def _bailian_create(prompt: str, image: str, seconds: float, svc: dict,
+                    resolution: str = "") -> str:
+    """阿里百炼 Wan 3.0 建任务（DashScope 异步视频合成）。"""
+    try:
+        dur = int(round(float(seconds))) if seconds else 5
+    except (TypeError, ValueError):
+        dur = 5
+    dur = max(3, min(10, dur))         # Wan 3.0 时长档位 3/5/10
+    res = (resolution or "720P").strip().upper()
+    if res not in ("480P", "720P", "1080P"):
+        res = "720P"
+    media = []
+    if image:
+        media.append({"type": "image", "value": image})
+    body = {"model": svc["model"],
+            "input": {"prompt": prompt, **({"media": media} if media else {})},
+            "parameters": {"duration": dur, "resolution": res,
+                           "prompt_extend": False}}
+    base = svc["base_url"].rstrip("/")
+    data = _post(f"{base}/api/v1/services/aigc/video-generation/video-synthesis",
+                 body, svc.get("api_key", ""))
+    inner = data.get("output") if isinstance(data.get("output"), dict) else data
+    return _pick_id(inner) or _pick_id(data)
+
+
+def _bailian_query(video_id: str, svc: dict) -> dict:
+    """阿里百炼轮询（/api/v1/tasks/{id}）。"""
+    base = svc["base_url"].rstrip("/")
+    data = _get(f"{base}/api/v1/tasks/{video_id}", svc.get("api_key", ""))
+    inner = data.get("output") if isinstance(data.get("output"), dict) else data
+    status = str(inner.get("task_status") or data.get("task_status") or ""
+                 ).strip().lower()
+    if status == "succeeded":
+        url = ""
+        results = inner.get("results") or []
+        if isinstance(results, list) and results:
+            url = str(results[0].get("url") or "").strip()
+        return {"status": "completed" if url else "unknown",
+                "url": url, "error": "" if url else "结果为空"}
+    if status in ("failed", "canceled"):
+        err = (inner.get("message") or data.get("message") or
+               inner.get("code") or data.get("code") or "")
+        return {"status": "failed", "url": "", "error": str(err).strip()}
+    return {"status": status or "pending", "url": "", "error": ""}
 
 
 def _ark_query(video_id: str, svc: dict) -> dict:
@@ -216,21 +412,43 @@ def _ark_query(video_id: str, svc: dict) -> dict:
     return {"status": status or "unknown", "url": "", "error": err}
 
 
-def create(prompt: str, image: str = "", size: str = "",
-           seconds: float = 0, frame_rate: int = _DEFAULT_FPS) -> str:
-    """建任务，返回任务 ID；失败抛 VidError。"""
-    svc = _service()
+def create(prompt: str, image: str = "", size: str = "", resolution: str = "",
+           seconds: float = 0, frame_rate: int = _DEFAULT_FPS,
+           preferred_provider_id: str = "") -> str:
+    """建任务，返回任务 ID；失败抛 VidError。
+
+    size：Agnes 兼容模式像素串（"1152x768"），新代码走 resolution 即可。
+    resolution：按当前 provider 原生档位传入（ark: 480p/720p、minimax: 768P/2K、
+                bailian: 480P/720P/1080P）。Agnes 兼容模式下等同 size。
+    preferred_provider_id：UI 顶栏当前选中的 provider（覆盖 globals/env）。
+    """
+    svc = _service(preferred_provider_id=preferred_provider_id)
     if not (svc.get("base_url") and svc.get("model")):
         raise VidError("未配置视频生成服务（LAS_VIDEO_BASE_URL / LAS_VIDEO_MODEL，"
                        "或在供应商管理里给视频供应商填 API Key）")
+    res = (resolution or "").strip()
     if _is_ark(svc):
         try:
-            return _ark_create(prompt, image, seconds, svc)
+            return _ark_create(prompt, image, seconds, svc, res)
         except VidError:
             raise
         except Exception as e:         # noqa: BLE001
             raise VidError(f"视频任务创建失败：{e}") from e
-    w, h = _parse_size(size)
+    if _is_minimax(svc):
+        try:
+            return _minimax_create(prompt, image, seconds, svc, res)
+        except VidError:
+            raise
+        except Exception as e:         # noqa: BLE001
+            raise VidError(f"视频任务创建失败：{e}") from e
+    if _is_bailian(svc):
+        try:
+            return _bailian_create(prompt, image, seconds, svc, res)
+        except VidError:
+            raise
+        except Exception as e:         # noqa: BLE001
+            raise VidError(f"视频任务创建失败：{e}") from e
+    w, h = _parse_size(res or size)
     body = {"model": svc["model"], "prompt": prompt,
             "width": w, "height": h,
             "num_frames": _frames(seconds, frame_rate),
@@ -256,6 +474,16 @@ def query(video_id: str) -> dict:
     if _is_ark(svc):
         try:
             return _ark_query(video_id, svc)
+        except Exception as e:         # noqa: BLE001
+            raise VidError(f"视频任务查询失败：{e}") from e
+    if _is_minimax(svc):
+        try:
+            return _minimax_query(video_id, svc)
+        except Exception as e:         # noqa: BLE001
+            raise VidError(f"视频任务查询失败：{e}") from e
+    if _is_bailian(svc):
+        try:
+            return _bailian_query(video_id, svc)
         except Exception as e:         # noqa: BLE001
             raise VidError(f"视频任务查询失败：{e}") from e
     q = urllib.parse.urlencode({"video_id": video_id})
@@ -305,10 +533,16 @@ def download(url: str, out_path: str) -> str:
 
 
 def generate(prompt: str, out_path: str, image: str = "", size: str = "",
-             seconds: float = 0, timeout: float = 150.0,
-             poll: float = 5.0) -> str:
-    """端到端：建任务 → 轮询 → 下载 MP4。超时抛 VidError（附任务 ID 可续查）。"""
-    vid = create(prompt, image=image, size=size, seconds=seconds)
+             resolution: str = "", seconds: float = 0, timeout: float = 150.0,
+             poll: float = 5.0, preferred_provider_id: str = "") -> str:
+    """端到端：建任务 → 轮询 → 下载 MP4。超时抛 VidError（附任务 ID 可续查）。
+
+    resolution：与 create() 同义，按当前 provider 原生档位传入。
+    preferred_provider_id：与 create() 同义，UI 顶栏 provider 选择优先。
+    """
+    vid = create(prompt, image=image, size=size, resolution=resolution,
+                 seconds=seconds,
+                 preferred_provider_id=preferred_provider_id)
     deadline = time.monotonic() + max(10.0, timeout)
     while time.monotonic() < deadline:
         st = query(vid)
@@ -319,3 +553,34 @@ def generate(prompt: str, out_path: str, image: str = "", size: str = "",
         time.sleep(max(1.0, poll))
     raise VidError(f"视频生成超时（>{int(timeout)}s）：任务 {vid} 仍在进行，"
                    f"稍后可用 video_status 工具查询并下载。")
+
+
+def available_providers() -> list:
+    """枚举当前可用的视频 provider 列表（[{provider_id, name, base_url, model, has_key}]）。
+
+    用于 UI 顶栏下拉；供方未填 api_key 时仍列出但 has_key=False，
+    让用户看到「未配置」状态而不是默默消失。
+    """
+    out = []
+    try:
+        import config
+        for s in config.video_services():
+            out.append({
+                "provider_id": s.get("provider_id", ""),
+                "name": s.get("name", s.get("provider_id", "")),
+                "base_url": s.get("base_url", ""),
+                "model": s.get("model", ""),
+                "has_key": bool(s.get("api_key")),
+                "kind": _provider_kind(s),
+            })
+    except Exception:                  # noqa: BLE001
+        pass
+    # env 直配的也算一项
+    env_url = os.environ.get("LAS_VIDEO_BASE_URL", "").strip().rstrip("/")
+    env_model = os.environ.get("LAS_VIDEO_MODEL", "").strip()
+    if env_url and env_model:
+        out.insert(0, {"provider_id": "", "name": "环境变量",
+                       "base_url": env_url, "model": env_model,
+                       "has_key": bool(os.environ.get("LAS_VIDEO_API_KEY")),
+                       "kind": "agnes"})
+    return out

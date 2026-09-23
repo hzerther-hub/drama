@@ -23,6 +23,7 @@ import hashlib
 import os
 import re
 import time
+from pathlib import Path
 
 import config
 import llm
@@ -58,6 +59,55 @@ _MAX_LEDGER = 60
 _MAX_OPEN_FORESHADOW = 8
 _ARC_EVERY = 4                   # 每 4 章压缩一段卷段记忆
 _MAX_DECONSTRUCT = 60000
+
+# state["novel_config"] 默认值；UI 中央配置面板与阶段前配置共用。
+# 各字段独立缺省，未设置时回退到全局行为（= 现有体验）。
+_DEFAULT_NOVEL_CONFIG = {
+    "total_chapters": 30,
+    "chapters_per_arc": _ARC_EVERY,
+    # 风格语气
+    "tone": "neutral",           # neutral | sweet | angsty | dark | comedic | epic
+    "pov": "third_limited",      # first | third_limited | third_omniscient
+    "style_notes": "",           # 自由文本补充，影响 contract 注入
+    # 人物
+    "mc_gender": "any",          # male | female | any
+    "mc_age": "adult",           # teen | adult | middle_aged | elder
+    "side_chars": 3,             # 配角数 2-5
+    # 章节
+    "words_per_chapter": 1800,
+    "auto_adjust": True,         # 审校问题自动修一次（沿用现状）
+    "allow_rework": True,
+    # 模型（空字符串=用 models.json default 或当前 current_model）
+    "model_default": "",
+    "model_planner": "",
+    "model_writer": "",
+    "model_reviewer": "",
+}
+
+
+def get_novel_config(state: dict) -> dict:
+    """取 state["novel_config"]，缺字段用默认值补全（不写回 state）。"""
+    raw = state.get("novel_config") or {}
+    cfg = dict(_DEFAULT_NOVEL_CONFIG)
+    cfg.update({k: v for k, v in raw.items() if v is not None})
+    return cfg
+
+
+def set_novel_config(state: dict, **kwargs) -> None:
+    """部分更新 state["novel_config"]，未提供的键保留旧值。"""
+    cfg = get_novel_config(state)
+    for k, v in kwargs.items():
+        if v is not None and k in _DEFAULT_NOVEL_CONFIG:
+            cfg[k] = v
+    state["novel_config"] = cfg
+
+
+def resolve_model_for(state: dict, role: str = "default") -> str | None:
+    """按 role 返回 state.novel_config 里的 model key，找不到或空都返回 None
+    （让 _resolve_model 走全局 default 兜底）。"""
+    cfg = get_novel_config(state)
+    key = cfg.get(f"model_{role}") or cfg.get("model_default") or ""
+    return key or None
 
 # 书稿目录布局（对齐 webnovel-writer 生态惯例：书名作目录名，按内容类型分目录）：
 #   novels/<书名>/大纲/总纲.md          ← 全书规划（framing→chapter_plan）
@@ -515,6 +565,12 @@ def new_pipeline(idea: str, total: int, model_key: str,
              "ledger": [], "foreshadows": [], "arc_summaries": [],
              "pid": pid, "dir": book_dir, "title": title,
              "file": os.path.join(book_dir, _DIR_OUTLINE, _OUTLINE_FILE)}
+    # 初始化 novel_config：total/words/tone 等用默认，model_default 用入口传入的 model_key
+    cfg = dict(_DEFAULT_NOVEL_CONFIG)
+    cfg["total_chapters"] = total
+    if model_key:
+        cfg["model_default"] = model_key
+    state["novel_config"] = cfg
     # 强制初始化短剧风格——回退链（用户输入 → 全局默认 → DEFAULT_STYLE），
     # 让 state 始终携带有效风格，资产生成/工作台/导出都有据可循
     import dramavideo as _dv
@@ -866,18 +922,21 @@ def check_compliance(state: dict, ch_start: int, ch_end: int,
                 if ch_start <= c["idx"] <= ch_end]
     if not chapters:
         raise StageStopError("所选范围没有已完成章节")
-    out = os.path.join(_book_dir(state), "合规检查.md")
+    root_r = os.path.realpath(_book_dir(state))
+    out = os.path.realpath(os.path.join(root_r, "合规检查.md"))
+    if ".." in out.split(os.sep) or not out.startswith(root_r + os.sep):
+        raise StageStopError(f"路径越出目录，已拒绝写入：{out}")
     high = 0
-    with open(out, "w", encoding="utf-8") as f:
-        f.write(f"# 合规检查报告（第 {ch_start}-{ch_end} 章）\n\n")
-        for c in chapters:
-            rep = _ask(state, _SYS_COMPLIANCE,
-                       f"第{c['idx']}章《{c['title']}》正文：\n{c['text']}")
-            f.write(f"## 第{c['idx']}章《{c['title']}》\n\n{rep}\n\n")
-            if "高｜" in rep or "高|" in rep:
-                high += 1
-            on_event({"type": "compliance_chapter", "idx": c["idx"]})
-        f.write(f"\n---\n共检查 {len(chapters)} 章，含高风险 {high} 章。\n")
+    parts = [f"# 合规检查报告（第 {ch_start}-{ch_end} 章）\n\n"]
+    for c in chapters:
+        rep = _ask(state, _SYS_COMPLIANCE,
+                   f"第{c['idx']}章《{c['title']}》正文：\n{c['text']}")
+        parts.append(f"## 第{c['idx']}章《{c['title']}》\n\n{rep}\n\n")
+        if "高｜" in rep or "高|" in rep:
+            high += 1
+        on_event({"type": "compliance_chapter", "idx": c["idx"]})
+    parts.append(f"\n---\n共检查 {len(chapters)} 章，含高风险 {high} 章。\n")
+    Path(out).write_text("".join(parts), encoding="utf-8")
     return out
 
 
@@ -894,7 +953,7 @@ def compare_draft(state: dict, idx: int, model_keys: list[str]) -> list[dict]:
     prompt = (f"以下是第 {idx} 章《{old['title']}》原正文：\n{old['text']}\n\n"
               + _chapter_prompt(state, idx)
               + "\n请重写本章，输出完整新正文（正文前第一行是章节标题）。")
-    outdir = os.path.join(_book_dir(state), "对比出稿")
+    outdir = os.path.realpath(os.path.join(_book_dir(state), "对比出稿"))
     os.makedirs(outdir, exist_ok=True)
     results = []
     for key in keys:
@@ -906,9 +965,9 @@ def compare_draft(state: dict, idx: int, model_keys: list[str]) -> list[dict]:
             raise StageFail(f"模型 {key} 出稿过短，已跳过")
         text = _strip_title(text, old["title"])
         safe = _safe_name(key.replace("/", "-")) or "model"
-        path = os.path.join(outdir, f"第{idx:04d}章-{safe}.md")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(f"# {old['title']}（{key}）\n\n{text}\n")
+        path = _book_file(outdir, f"第{idx:04d}章-{safe}.md")
+        Path(path).write_text(f"# {old['title']}（{key}）\n\n{text}\n",
+                              encoding="utf-8")
         results.append({"model": key, "path": path, "words": len(text)})
     return results
 
@@ -935,15 +994,15 @@ def comic_adapt(state: dict, ch_start: int, ch_end: int,
                 if ch_start <= c["idx"] <= ch_end]
     if not chapters:
         raise StageStopError("所选范围没有已完成章节")
-    out_path = os.path.join(_book_dir(state), "漫画分镜.md")
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write(f"# 漫画分镜表（第 {ch_start}-{ch_end} 章）\n\n")
-        for c in chapters:
-            body = _ask(state, _SYS_COMIC,
-                        f"第 {c['idx']} 章《{c['title']}》正文：\n{c['text']}\n"
-                        "请输出该章漫画分镜表（含英文出图提示词）。")
-            f.write(f"\n{body}\n")
-            on_event({"type": "comic_chapter", "idx": c["idx"]})
+    out_path = _book_file(_book_dir(state), "漫画分镜.md")
+    parts = [f"# 漫画分镜表（第 {ch_start}-{ch_end} 章）\n\n"]
+    for c in chapters:
+        body = _ask(state, _SYS_COMIC,
+                    f"第 {c['idx']} 章《{c['title']}》正文：\n{c['text']}\n"
+                    "请输出该章漫画分镜表（含英文出图提示词）。")
+        parts.append(f"\n{body}\n")
+        on_event({"type": "comic_chapter", "idx": c["idx"]})
+    Path(out_path).write_text("".join(parts), encoding="utf-8")
     return out_path
 
 
@@ -954,9 +1013,9 @@ def comic_cast(state: dict) -> str:
         raise StageStopError("还没有角色设定（先跑完「角色」阶段）")
     body = _ask(state, _SYS_CAST,
                 f"角色设定：\n{cast}\n请为每个角色输出设定图提示词。")
-    out_path = os.path.join(_book_dir(state), "角色设定图.md")
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write(f"# 角色设定图提示词\n\n{body}\n")
+    out_path = _book_file(_book_dir(state), "角色设定图.md")
+    Path(out_path).write_text(f"# 角色设定图提示词\n\n{body}\n",
+                              encoding="utf-8")
     return out_path
 
 
@@ -980,17 +1039,17 @@ def drama_new(idea: str, episodes: int, model_key: str,
     title = _safe_name(_first_meaningful_line(setting) or idea)[:24] or "未命名短剧"
     outdir = _unique_dir(os.path.join(root, title))
     os.makedirs(outdir, exist_ok=True)
-    sp = os.path.join(outdir, "设定.md")
-    with open(sp, "w", encoding="utf-8") as f:
-        f.write(f"# {title} · 短剧设定\n\n灵感：{idea}\n\n{setting}\n")
+    sp = _book_file(outdir, "设定.md")
+    Path(sp).write_text(f"# {title} · 短剧设定\n\n灵感：{idea}\n\n{setting}\n",
+                        encoding="utf-8")
     on_event({"type": "drama_new_stage", "name": "setting"})
 
     eps = _ask(state, _SYS_PLANNER,
                f"短剧设定：\n{setting}\n\n请输出 {n} 集分集梗概，每集一行："
                "「第N集《标题》钩子：… 冲突：… 结尾卡点：…」。只输出清单。")
-    ep = os.path.join(outdir, "分集梗概.md")
-    with open(ep, "w", encoding="utf-8") as f:
-        f.write(f"# {title} · 分集梗概（{n} 集）\n\n{eps}\n")
+    ep = _book_file(outdir, "分集梗概.md")
+    Path(ep).write_text(f"# {title} · 分集梗概（{n} 集）\n\n{eps}\n",
+                        encoding="utf-8")
     on_event({"type": "drama_new_stage", "name": "episodes"})
 
     script = _ask(state, _SYS_DRAMA,
@@ -998,9 +1057,9 @@ def drama_new(idea: str, episodes: int, model_key: str,
                   "请写出第 1 集完整竖屏短剧剧本：分场、人物对白（角色名：台词）、"
                   "每场结尾「镜头：」行给出景别与时长；开场 30 秒内放钩子，"
                   "结尾留强卡点。")
-    scr = os.path.join(outdir, "第01集-剧本.md")
-    with open(scr, "w", encoding="utf-8") as f:
-        f.write(f"# {title} · 第 1 集剧本\n\n{script}\n")
+    scr = _book_file(outdir, "第01集-剧本.md")
+    Path(scr).write_text(f"# {title} · 第 1 集剧本\n\n{script}\n",
+                         encoding="utf-8")
     on_event({"type": "drama_new_stage", "name": "script"})
     return {"dir": outdir, "setting": sp, "episodes": ep, "script": scr,
             "title": title, "total": n}
@@ -1044,15 +1103,21 @@ def deconstruct(txt_path: str, model_key: str) -> str:
     report = _ask({"model_key": model_key}, _SYS_DECONSTRUCT,
                   f"待拆文本（可能截断）：\n{text}\n请按五个部分输出拆书报告。")
     base = os.path.splitext(os.path.basename(txt_path))[0]
-    out = os.path.join(os.path.dirname(txt_path) or ".", f"{base}-拆书.md")
-    with open(out, "w", encoding="utf-8") as f:
-        f.write(f"# 拆书报告：{base}\n\n{report}\n")
+    out = _book_file(os.path.dirname(txt_path) or ".", f"{base}-拆书.md")
+    Path(out).write_text(f"# 拆书报告：{base}\n\n{report}\n", encoding="utf-8")
     return out
 
 
-def _ask(state: dict, system: str, user: str) -> str:
-    """按 state["model_key"] 调一次流式；见 _ask_model。"""
-    return _ask_model(_resolve_model(state.get("model_key")), system, user)
+def _ask(state: dict, system: str, user: str, role: str = "default") -> str:
+    """按 state 模型优先级解析 → 流式调用；见 _ask_model。
+
+    优先级：state["novel_config"]["model_<role>"] > "model_default" >
+    state["model_key"]（兼容旧书）> None（走全局 default 兜底）。
+    """
+    key = resolve_model_for(state, role)
+    if not key:
+        key = state.get("model_key")
+    return _ask_model(_resolve_model(key), system, user)
 
 
 def _ask_model(model, system: str, user: str) -> str:
@@ -1111,7 +1176,27 @@ def _rag_index_chapter(state: dict, chap: dict):
 # ---------------- 内部工具 ----------------
 
 def _resolve_model(key: str):
-    return config.find_model(key) if key else None
+    """解析模型：state["model_key"] → 配置里找 → 找不到退到默认/第一个。
+
+    兜底的意义：早期流水线保存的 model_key 字段可能与当前 models.json 不匹配
+    （provider_id/model_id 格式变更、模型下架等），此时直接 None 会让 _ask_model
+    抛 'NoneType has no model_id'。先打日志再退到默认模型是安全的退化路径。
+    """
+    if key:
+        m = config.find_model(key)
+        if m is not None:
+            return m
+        try:
+            errlog.log("novel._resolve_model: model_key 未匹配, 退到默认",
+                       {"state.model_key": key})
+        except Exception:                # noqa: BLE001  errlog 缺失不影响主流程
+            pass
+    models, default_key = config.load_models()
+    if default_key:
+        m = config.find_model(default_key)
+        if m is not None:
+            return m
+    return models[0] if models else None
 
 
 def _style_block(state: dict) -> str:
@@ -1278,18 +1363,50 @@ def _fallback_title(state: dict) -> str:
 
 
 def _book_dir(state: dict) -> str:
-    """本书目录。旧布局（单 md 或无 dir 字段）自动升级为目录布局。"""
+    """本书目录。旧布局（单 md 或无 dir 字段）自动升级为目录布局。
+
+    root 来源校验：解析出的目录必须落在书稿根（_novels_root）内——检查点
+    JSON 可被篡改/写坏，root 若指向书稿目录之外（系统目录等），后续全部
+    写入都会跟着越界。不合法时按 pid 在书稿根内重建（自愈）。
+    """
     d = state.get("dir")
+    if d:
+        root_r = os.path.realpath(_novels_root())
+        d_r = os.path.realpath(d)
+        if d_r == root_r or d_r.startswith(root_r + os.sep):
+            return d
+        state["dir"] = ""                     # 越界目录：丢弃，走下方重建
+    # 兼容旧检查点：state 里只有 file（<ws>/novels/<pid>.md）→ 推出目录
+    old = state.get("file") or ""
+    base = os.path.splitext(old)[0] if old else ""
+    d = ""
+    if base and os.path.basename(base).startswith("novel-"):
+        d = _inside_dir(_novels_root(), base)
     if not d:
-        # 兼容旧检查点：state 里只有 file（<ws>/novels/<pid>.md）→ 推出目录
-        old = state.get("file") or ""
-        base = os.path.splitext(old)[0] if old else ""
-        if base and os.path.basename(base).startswith("novel-"):
-            d = base
-        else:
-            d = os.path.join(_novels_root(), state.get("pid") or "untitled")
-        state["dir"] = d
+        d = os.path.join(_novels_root(), state.get("pid") or "untitled")
+    state["dir"] = d
     return d
+
+
+def _inside_dir(root: str, path: str) -> str:
+    """路径守卫：规范化 path，显式拒绝 `..` 成分，并校验落在 root 内。
+
+    书名/章节名/标题等路径成分来自模型输出或用户输入，不能当可信字符串——
+    含 `..` 或盘符即可逃出书稿目录。写入书稿目录的文件路径一律过这里。
+    """
+    root_r = os.path.realpath(root)
+    norm = os.path.normpath(path)
+    if ".." in norm.split(os.sep):
+        raise StageStopError(f"路径含非法成分，已拒绝写入：{path}")
+    full_r = os.path.realpath(norm)
+    if full_r != root_r and not full_r.startswith(root_r + os.sep):
+        raise StageStopError(f"路径越出目录，已拒绝写入：{path}")
+    return norm
+
+
+def _book_file(root: str, *parts: str) -> str:
+    """root 内安全拼路径：规范化 + 拒绝 `..` + 包含性校验，三重防护。"""
+    return _inside_dir(root, os.path.join(root, *parts))
 
 
 def _rename_book_dir(state: dict, title: str) -> str:
@@ -1355,8 +1472,8 @@ def _write_readme(state: dict):
               "- 加写章节：`/novel extend N`",
               "- 重写某章：`/novel rewrite <章号> [反馈]`",
               "- 导出：`/novel publish txt|md|html|epub`", ""]
-    with open(os.path.join(d, _README_FILE), "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+    Path(_book_file(d, _README_FILE)).write_text("\n".join(lines),
+                                                 encoding="utf-8")
 
 
 def _write_review_report(state: dict, chap: dict):
@@ -1369,7 +1486,7 @@ def _write_review_report(state: dict, chap: dict):
     name = re.sub(r"^第[0-9一二三四五六七八九十百千]+章[·\-\s]*", "",
                   chap["title"] or "")
     name = _safe_name(name) or "未命名"
-    path = os.path.join(d, f"第{chap['idx']:04d}章-{name}.md")
+    path = _book_file(d, f"第{chap['idx']:04d}章-{name}.md")
     lines = [f"# 第 {chap['idx']} 章《{chap['title']}》审校报告", "",
              f"> 章节文件：`{_DIR_TEXT}/{os.path.basename(chap.get('path') or '')}`", "",
              "## 问题清单", ""]
@@ -1378,8 +1495,7 @@ def _write_review_report(state: dict, chap: dict):
               "已按提示词自动修复一次；以上为修复后仍存在的问题（质量债）。",
               "可用 `/novel rewrite "
               f"{chap['idx']} <修改意见>` 定向重写。", ""]
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+    Path(path).write_text("\n".join(lines), encoding="utf-8")
 
 
 def _sync_review_reports(state: dict):
@@ -1411,7 +1527,7 @@ def _sync_review_reports(state: dict):
 
 def _plan_path(state: dict) -> str:
     """全书规划文档：大纲/总纲.md。"""
-    return os.path.join(_book_dir(state), _DIR_OUTLINE, _OUTLINE_FILE)
+    return _book_file(_book_dir(state), _DIR_OUTLINE, _OUTLINE_FILE)
 
 
 def _book_path(state: dict) -> str:
@@ -1423,7 +1539,7 @@ def _chapter_path(state: dict, idx: int, title: str) -> str:
     """章节文件路径：正文/第0001章-标题.md（章号补零，便于排序与批量导入）。"""
     name = re.sub(r"^第[0-9一二三四五六七八九十百千]+章[·\-\s]*", "", title or "")
     name = _safe_name(name) or "未命名"
-    return os.path.join(_book_dir(state), _DIR_TEXT, f"第{idx:04d}章-{name}.md")
+    return _book_file(_book_dir(state), _DIR_TEXT, f"第{idx:04d}章-{name}.md")
 
 
 def _safe_name(name: str) -> str:
@@ -1439,8 +1555,8 @@ def _ensure_book(state: dict, title: str):
         os.makedirs(os.path.join(_book_dir(state), sub), exist_ok=True)
     path = _plan_path(state)
     if not os.path.exists(path):
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(f"# {title}\n\n> 灵感：{state['idea']}\n")
+        Path(path).write_text(f"# {title}\n\n> 灵感：{state['idea']}\n",
+                              encoding="utf-8")
     state["file"] = path
     state.setdefault("created", time.strftime("%Y-%m-%d %H:%M:%S"))
 
@@ -1475,8 +1591,7 @@ def _rebuild_plan(state: dict):
     for key, title in _PLAN_SECTIONS:
         if state.get(key):
             parts.append(f"\n\n## {title}\n\n{state[key]}")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("".join(parts) + "\n")
+    Path(path).write_text("".join(parts) + "\n", encoding="utf-8")
     state["file"] = path
 
 
@@ -1508,12 +1623,26 @@ def _sync_book_dir(state: dict):
 
 
 def _append_chapter(state: dict, chap: dict):
-    """每章写成独立 md（正文/第NNNN章-标题.md）。"""
-    path = _chapter_path(state, chap["idx"], chap["title"])
+    """每章写成独立 md（正文/第NNNN章-标题.md）。
+
+    重跑时（同一章号被 LLM 改了标题）先把该章号的所有旧文件清掉，避免
+    并存多份标题不同但章号相同的 md。
+    """
+    idx = chap['idx']
+    from pathlib import Path
+    text_dir = Path(_book_dir(state)) / _DIR_TEXT
+    if text_dir.is_dir():
+        prefix = "第" + format(idx, "04d") + "章-"
+        for old in list(text_dir.glob(prefix + "*.md")):
+            try:
+                if str(old.resolve()).startswith(str(text_dir.resolve())):
+                    old.unlink()
+            except OSError:
+                pass
+    path = _chapter_path(state, idx, chap['title'])
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(f"# {chap['title']}\n\n{_strip_title(chap['text'], chap['title'])}\n")
-    chap["path"] = path
+    Path(path).write_text("# " + chap["title"] + chr(10) + chr(10) + _strip_title(chap["text"], chap["title"]) + chr(10), encoding="utf-8")
+    chap['path'] = path
 
 
 def _strip_title(text: str, title: str) -> str:
@@ -1538,10 +1667,9 @@ def _strip_title(text: str, title: str) -> str:
 
 def _append_setting(state: dict, name: str, text: str):
     """设定类产出单独成文（设定集/xxx.md）。"""
-    path = os.path.join(_book_dir(state), _DIR_SETTING, _safe_name(name) + ".md")
+    path = _book_file(_book_dir(state), _DIR_SETTING, _safe_name(name) + ".md")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(text + "\n")
+    Path(path).write_text(text + "\n", encoding="utf-8")
     return path
 
 
@@ -1599,3 +1727,47 @@ def book_review_full(state: dict) -> str:
                 f"【伏笔】\n{fsh}\n\n"
                 f"【章节正文（节选前1200字/章）】\n" + "\n\n".join(body))
     return text.strip()
+
+
+# ---------------- Agent 注册（借鉴 huobao 4 具名 agent） ----------------
+# 4 个具名 agent 中，script_rewriter 住在这里；后 3 个在 dramavideo.AGENT_REGISTRY。
+# 注册表只存元数据——运行时通过 get_agent() 解析 function / system_prompt 等
+# 字段，避免模块加载时定义顺序耦合（chapter templates 与 stages 在文件上方定义）。
+
+AGENT_REGISTRY = {
+    "script_rewriter": {
+        "display_name": "Script Rewriter（章节剧本改写）",
+        "description": "逐章改写：草稿 → 分维度审校 → 自动修复一次 → "
+                        "事实账本 / 伏笔回灌 → RAG 索引；chain 总入口 st_chapters()",
+        "function_name": "st_chapters",
+        "system_prompt_writer": "_SYS_WRITER",
+        "stages": ("setup", "outline", "world", "contract", "characters",
+                   "volume", "chapter_plan", "chapters"),
+        "stage_titles": {"setup": "项目设定", "outline": "宏观规划",
+                         "world": "世界设定", "contract": "故事合约",
+                         "characters": "角色生成", "volume": "卷战略",
+                         "chapter_plan": "节奏拆章", "chapters": "章节执行"},
+    },
+}
+
+
+def list_agents() -> list:
+    """列出 novel_chain 注册的 agent（[{name, display_name, description}]）。"""
+    return [{"name": k, "display_name": v.get("display_name", k),
+             "description": v.get("description", "")}
+            for k, v in AGENT_REGISTRY.items()]
+
+
+def get_agent(name: str) -> dict | None:
+    """按名取 agent 注册项（function 等字段懒解析）。未注册返回 None。"""
+    entry = AGENT_REGISTRY.get(name)
+    if not entry:
+        return None
+    out = {"name": name, **{k: v for k, v in entry.items()
+                            if not k.endswith("_name")}}
+    for src_key, dst_key in (("function_name", "function"),
+                              ("system_prompt_writer", "system_prompt")):
+        n = entry.get(src_key)
+        if n and dst_key not in out:
+            out[dst_key] = globals().get(n)
+    return out

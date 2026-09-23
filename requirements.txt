@@ -7,3 +7,6 @@ faster-whisper
 psutil
 # 聊天区拖放文件/图片（spec 打包需要其 tkdnd 数据文件）
 tkinterdnd2
+# 短剧整集合成：imageio-ffmpeg 捆绑 ffmpeg 二进制，免系统装 ffmpeg
+# （dramavideo._ffmpeg_exe() 优先 PATH，回退到这里；缺失时提示去装）
+imageio-ffmpeg
