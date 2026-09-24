@@ -275,7 +275,7 @@ def show(app, ch: int = 0):
     ui._flat_button(btns, _t("vb.regenerate"),
                     lambda: do_frame(True)).pack(side="left", padx=(8, 0))
     ui._flat_button(btns, _t("vb.upload"),
-                    lambda: _upload_asset(win)).pack(side="left", padx=(8, 0))
+                    lambda: _upload_asset()).pack(side="left", padx=(8, 0))
     ui._flat_button(btns, _t("vb.refresh"),
                     lambda: (_reload_rows(), _reload_assets())).pack(
         side="left", padx=(8, 0))

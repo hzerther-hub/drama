@@ -55,7 +55,7 @@ def test_build_cast_three_sections_and_caches(book, monkeypatch):
     assert cast["水桶"]["type"] == "道具"
     assert len(gens) == 3                        # 三类各出一张基础图
     ratios = {r for _, r in gens}
-    assert ratios == {"16:9", "1:1"}             # 角色/场景同 16:9，道具 1:1
+    assert ratios == {"16:9", "1:1", "3:4"}      # 角色 3:4 竖版立绘，场景 16:9，道具 1:1
     # 再次构建：全部命中缓存，不再调 LLM / 出图
     dramavideo.build_cast(state)
     assert len(asks) == 3 and len(gens) == 3
@@ -120,7 +120,7 @@ def test_build_shots_clamps_duration_and_caches(book, monkeypatch):
     assert shots[1]["duration"] == dramavideo._MIN_SEC   # 0.5 → 4
     assert shots[0]["narration"] == "谁也没想到，柔弱舍友藏着心机。"
     assert shots[0]["camera"] == "缓慢推近"
-    assert shots[0]["mood"] == "暮色压境，" * 12       # 氛围 clamp 12→60 字
+    assert shots[0]["mood"] == "暮色压境，" * 2 + "暮色"   # 氛围 clamp 12 字标签化
     # 旧格式（无 camera/mood）不炸：字段为空串
     assert shots[1]["camera"] == "" and shots[1]["mood"] == ""
     # 缓存命中：再跑不再调 LLM
@@ -503,7 +503,7 @@ def test_gen_asset_t2i_and_i2i(book, monkeypatch):
     monkeypatch.setattr(dramavideo.imggen, "generate_ex", fake_gen)
     dramavideo.gen_asset(state, "林夏", dict(info))
     assert not captured["refs"] and "微调" not in captured["prompt"]
-    assert captured["ratio"] == "16:9"                    # 角色设定稿画幅
+    assert captured["ratio"] == "3:4"                     # 角色设定稿竖版立绘画幅
     out_info = dramavideo.gen_asset(state, "林夏", dict(info), image_ref=True)
     assert captured["refs"] == [str(cur)]                 # 参考图=当前形象
     assert "脸型五官" in captured["prompt"]               # 角色 i2i=锁脸重排

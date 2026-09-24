@@ -5169,6 +5169,7 @@ class App:
         ("/novel drama new", "cmd.novel_drama_new", "novel"),
         ("/novel comic", "cmd.novel_comic", "novel"),
         ("/novel comic cast", "cmd.novel_comic_cast", "novel"),
+        ("/novel drama comicboard", "cmd.novel_drama_comicboard", "novel"),
         ("/novel publish", "cmd.novel_publish", "novel"),
         ("/brainstorm", "cmd.brainstorm", "brainstorm"),
         ("/plan", "cmd.plan", "plan"),
@@ -5842,6 +5843,14 @@ class App:
                     self._novel_pipe = p
                 import ui_panel_video
                 ui_panel_video.show(self, int(m.group(1) or 0))
+                return
+            if rest.strip().startswith("comicboard"):
+                m = re.match(r"^comicboard\s*(\d*)", rest.strip())
+                p, n = self._pick_book_with_chapters()
+                if p is not None:
+                    self._novel_pipe = p
+                import ui_panel_comic
+                ui_panel_comic.show(self, int(m.group(1) or 0))
                 return
             stage_map = {"shots": "shots", "frames": "keyframes",
                          "clips": "clips", "compose": "compose"}

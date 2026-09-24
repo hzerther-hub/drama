@@ -405,6 +405,7 @@ _SHOT_DIR = "短剧分镜"
 _SCRIPT_DIR = "短剧剧本"
 _FRAME_DIR = "短剧关键帧"
 _CLIP_DIR = "短剧片段"
+_COMIC_DIR = "漫画分格"               # 漫画支线：第N章.json + N-XX.png
 _OUT_DIR = "短剧成片"
 _MIN_SEC, _MAX_SEC = 4, 15          # Agnes 上限 441 帧@24fps≈18s，留余量
 
@@ -826,8 +827,8 @@ def gen_asset(state: dict, name: str, info: dict, on_event=None,
     refs = []
     if image_ref and os.path.exists(out):
         refs.append(out)
-        prompt += ("。以参考图为基础仅按提示微调：保持人物身份/场景布局/"
-                   "道具形态等主体特征一致，不要重画。")
+        prompt += ("。以参考图为基础仅按提示微调：保持人物的脸型五官、"
+                   "场景布局、道具形态等主体特征一致，不要重画。")
     if prompt_extra:
         prompt += f"。{prompt_extra.strip('。 ')}"
     on_event({"type": "drama_media", "kind": "cast",
@@ -1128,7 +1129,7 @@ def build_shots(state: dict, chapter: dict, on_event=None,
         "scene/characters/props 用简短通用名"
         "（同物同名，别一章里出现「手机」「电话」两种叫法）。",
         f"小说正文（第 {chapter['idx']} 章《{chapter['title']}》）：\n"
-        f"{chapter['text']}")
+        f"{_chapter_source_text(state, chapter)}")
     shots = _extract_json(text)
     if not isinstance(shots, list) or not shots:
         raise _stop(f"第 {chapter['idx']} 章分镜生成失败（LLM 未返回 JSON）")
@@ -1243,6 +1244,45 @@ def regen_video_prompt(state: dict, chapter_idx: int, shot_idx: int) -> str:
     return ""
 
 
+def _normalize_refs(refs: list, limit: int = 6, max_px: int = 768) -> list:
+    """参考图归一化（参考 huobao 管线）：去重保序、限量、按需压缩。
+
+    多图合成把参考图转 base64 内联，几张几 MB 的原图会把请求体撑到几十
+    MB；有 PIL 时统一缩到 max_px 内转 JPEG（质量 68），体量降一个数量级
+    且作一致性参考足够。PIL 缺失或单图处理失败时原样传递（静默降级）。
+    """
+    uniq, seen = [], set()
+    for r in refs or []:
+        r = str(r or "")
+        if r and r not in seen:
+            seen.add(r)
+            uniq.append(r)
+    uniq = uniq[:limit]
+    try:
+        from PIL import Image              # noqa: PLC0415  可选依赖
+        import base64 as _b64
+        import io as _io
+    except ImportError:
+        return uniq
+    norm = []
+    for r in uniq:
+        if r.startswith(("data:", "http://", "https://")) \
+                or not os.path.exists(r):
+            norm.append(r)
+            continue
+        try:
+            with Image.open(r) as im:
+                im = im.convert("RGB")
+                im.thumbnail((max_px, max_px))
+                buf = _io.BytesIO()
+                im.save(buf, "JPEG", quality=68)
+            norm.append("data:image/jpeg;base64,"
+                        + _b64.b64encode(buf.getvalue()).decode())
+        except Exception:                  # noqa: BLE001  坏图退回原路径
+            norm.append(r)
+    return norm
+
+
 # ---------------- 3. 关键帧 + 镜头视频 ----------------
 
 def _urls_path(state: dict) -> str:
@@ -1278,6 +1318,7 @@ def keyframe(state: dict, cast: dict, shot: dict, ch: int, i: int,
 
         精确未命中再做包含式模糊匹配（分镜写「科技修仙期」也能
         命中资产阶段「修仙」），避免措辞偏差静默退回默认装。
+        default_look 指定默认套：era 完全未命中时用指定套而非主图。
         """
         looks = (info or {}).get("looks") or {}
         if not isinstance(looks, dict) or not looks:
@@ -1288,6 +1329,9 @@ def keyframe(state: dict, cast: dict, shot: dict, ch: int, i: int,
             for k, v in looks.items():
                 if k and (k in era or era in k):
                     return v
+        d = (info or {}).get("default_look")
+        if d and isinstance(looks.get(d), dict):
+            return looks[d]
         return info or {}
 
     for name, info in cast.items():
@@ -1315,6 +1359,7 @@ def keyframe(state: dict, cast: dict, shot: dict, ch: int, i: int,
     if scene_ref:
         refs.insert(0, scene_ref)
     refs.extend(props)
+    refs = _normalize_refs(refs)           # 去重限量+压缩，防请求体过大
     prompt = (inject_style(state, f"{shot['description']}。") +
               f"场景：{scene_name}。出场角色：{'、'.join(who) or '（无）'}。"
               "参考图依次为场景空镜、角色形象、道具，"
@@ -1345,9 +1390,19 @@ def _ffmpeg_exe() -> str:
         return p
     try:
         import imageio_ffmpeg              # noqa: PLC0415  懒导入
-        return imageio_ffmpeg.get_ffmpeg_exe() or ""
+        exe = imageio_ffmpeg.get_ffmpeg_exe() or ""
     except Exception:                  # noqa: BLE001
         return ""
+    if not exe:
+        return ""
+    try:
+        # 捆绑二进制可能损坏（Windows 上损坏文件会让 ffmpeg 同步崩进程），
+        # 先 -version 验真，坏二进制按「未安装」处理走统一报错
+        subprocess.run([exe, "-version"], capture_output=True,
+                       timeout=15, check=True)
+    except Exception:                  # noqa: BLE001
+        return ""
+    return exe
 
 
 def dub(video_path: str, audio_path: str, out_path: str) -> str:
@@ -1401,6 +1456,8 @@ def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
     dialogue = (shot.get("dialogue") or "").strip()
     camera = (shot.get("camera") or "").strip()
     mood = (shot.get("mood") or "").strip()
+    # 本镜出场角色名列表：body_guard 按角色加手/脚解剖守门
+    who = [_clean_text(c) for c in (shot.get("characters") or [])][:4]
     # 画面指令与配音指令分离：模型同步语音只许念「旁白/台词」，
     # 风格与分镜术语（机位/焦段/运镜）绝不能被读出来，且锁死中文普通话。
     # 屏显文字一律禁止：模型烧录的字幕中英夹杂、汉字常渲染成乱码，
@@ -1570,6 +1627,249 @@ def take_thumb(video_path: str, out_png: str) -> str:
 
 # ---------------- 4. ffmpeg 合成 ----------------
 
+# ---------------- 3.7 漫画支线（huobao comic_board 口径） ----------------
+
+def gen_asset_comic(state: dict, name: str, info: dict, era: str = "",
+                    on_event=None):
+    """资产的漫画形象镜像（huobao comic_asset 口径）：只写 comic_path，
+    剧模式主图不动。era 非空时生成该阶段的漫画套并返回 look 字典
+    （调用方负责写回 info["looks"][era]）；否则写主条目并返回 info。
+
+    识别特征一致性：以剧模式形象为参考图做图生图——身份由参考图锁定，
+    仅切换为当前风格的漫画化表现。
+    """
+    on_event = on_event or (lambda e: None)
+    sec = info.get("type") or "角色"
+    tpl, ratio = _ASSET_TPL.get(sec, _ASSET_TPL["角色"])
+    style = resolve_style(state)
+    lk = (info.get("looks") or {}).get(era) if era else None
+    src = (lk or {}).get("path") if era else info.get("path")
+    if era:
+        out = ((lk or {}).get("comic_path") or
+               os.path.join(_global_base(state),
+                            f"{_safe_name(name)}-{_safe_name(era)}-comic.png"))
+    else:
+        out = info.get("comic_path") or os.path.join(
+            _global_base(state), f"{_safe_name(name)}-comic.png")
+    prompt = (f"{style}。{sec}基础形象·漫画版：" +
+              tpl.format(a=_anchored_appearance(
+                  (lk or {}).get("appearance") if era
+                  else info.get("appearance", ""))))
+    refs = []
+    if src and os.path.exists(src):
+        refs.append(src)
+        prompt += ("。参考图是同一人物/场景/道具：严格保持其识别特征不变，"
+                   "仅转换为当前风格的漫画化表现。")
+    on_event({"type": "drama_media", "kind": "comic_asset",
+              "label": f"{name}（{sec}{'·' + era if era else ''}·漫画）"})
+    path, url = imggen.generate_ex(prompt, out, size=_drama_sizes()[0],
+                                   ratio=ratio, image_refs=refs)
+    if era:
+        lk = dict(lk or {})
+        lk["comic_path"], lk["comic_url"] = path, url
+        return lk
+    info["comic_path"], info["comic_url"] = path, url
+    return info
+
+
+def _comic_visual(info: dict, era: str = "") -> dict:
+    """取漫画形象条目：era 漫画套 → 主条目漫画图 → era 剧装 → 主条目。"""
+    info = info or {}
+    looks = info.get("looks") or {}
+    if era and isinstance(looks.get(era), dict):
+        lk = looks[era]
+        if lk.get("comic_path"):
+            return lk
+    if info.get("comic_path"):
+        return info
+    if era and isinstance(looks.get(era), dict) and looks[era].get("path"):
+        return looks[era]
+    return info
+
+
+def build_comic_panels(state: dict, chapter: dict, cast: dict,
+                       on_event=None, redo: bool = False) -> list:
+    """剧本 → 漫画分格（huobao comic_board 口径）：8-16 格，一格=一幅静态画面。
+
+    缓存到 漫画分格/第N章.json（存在即缓存，redo=True 整集替换）。
+    每格只绑定资产清单内的名字（同物同名），era 与资产阶段词表对齐。
+    """
+    path = os.path.join(_book_dir(state), _COMIC_DIR,
+                        f"第{chapter['idx']}章.json")
+    cached = _json_load(path, None)
+    if isinstance(cached, list) and cached and not redo:
+        return cached
+    on_event = on_event or (lambda e: None)
+    on_event({"type": "drama_media", "kind": "comic",
+              "label": f"第{chapter['idx']}章 {chapter.get('title', '')}"})
+    style = resolve_style(state)
+    era_names = sorted({str(k) for info in (cast or {}).values()
+                        if isinstance(info, dict)
+                        for k in ((info.get("looks") or {}))})
+    assets = []
+    for name, info in (cast or {}).items():
+        if name.startswith("_") or not isinstance(info, dict):
+            continue
+        ap = _anchored_appearance(str(info.get("appearance", ""))[:60])
+        assets.append(f"{name}（{info.get('type') or '角色'}：{ap}）")
+    text = _ask(
+        state,
+        "你是漫画分格师（火宝 comic_board 规范）。把本章改编为 8-16 个漫画格，"
+        f"全书统一画风（image_prompt 必须体现其质感与线条词汇）：{style}。"
+        "一格=一幅静态画面（漫画不是视频：不写运镜、不写时长），优先挑冲突、"
+        "表情、反转等有画面的节拍，过场叙述一格带过；相邻格动作与状态承接。"
+        "每格字段：title 小标题（≤12字）；description 画面内容（谁在做什么、"
+        "情绪如何，40-90字）；image_prompt 出图提示词（在 description 基础上"
+        "补构图：景别/视角/人物位置/表情重点，50-120字，不写对白不写风格以外的"
+        "画风词）；dialogue 气泡文案（至多两句「角色名：台词」，可空，旁白用"
+        "「旁白：…」）；scene 场景名、characters 出场角色、props 道具——"
+        "只能用资产清单里的名字，同物同名；era 与该格时代一致"
+        + (f"，优先从这些已生成形象的阶段名里选：{'、'.join(era_names)}。"
+           if era_names else "。")
+        + '只输出 JSON 数组：[{"title": "…", "description": "…", '
+          '"image_prompt": "…", "dialogue": "…", "scene": "…", '
+          '"characters": ["…"], "props": ["…"], "era": "…"}]',
+        f"资产清单：\n{'；'.join(assets) or '（无）'}\n\n"
+        f"小说正文（第 {chapter['idx']} 章《{chapter.get('title', '')}》）：\n"
+        f"{_chapter_source_text(state, chapter)}")
+    panels = _extract_json(text)
+    if not isinstance(panels, list) or not panels:
+        raise _stop(f"第 {chapter['idx']} 章漫画分格生成失败（LLM 未返回 JSON）")
+    clean = []
+    for p in panels[:16]:
+        if not isinstance(p, dict) or not (p.get("description")
+                                           or p.get("image_prompt")):
+            continue
+        clean.append({
+            "title": _clean_text(p.get("title"), 12),
+            "description": _clean_text(p.get("description")),
+            "image_prompt": _clean_text(p.get("image_prompt"), 160),
+            "dialogue": _clean_text(p.get("dialogue"), 60),
+            "scene": _clean_text(p.get("scene")),
+            "characters": [_clean_text(c) for c in (p.get("characters") or [])][:4],
+            "props": [_clean_text(c) for c in (p.get("props") or [])][:3],
+            "era": _clean_text(p.get("era"), 12),
+        })
+    if not clean:
+        raise _stop(f"第 {chapter['idx']} 章漫画分格解析为空")
+    _json_dump(path, clean)
+    return clean
+
+
+def comic_panel_image(state: dict, cast: dict, panel: dict, ch: int, i: int,
+                      on_event=None, force: bool = False) -> str:
+    """单格漫画出图：漫画镜像形象作参考多图合成，用 /media 面板的漫画档位。
+
+    参考图装配与 keyframe 同序（场景→角色按 era 解析→道具），
+    文件存在即缓存；force=True 重生成。返回图片路径。
+    """
+    on_event = on_event or (lambda e: None)
+    out = os.path.join(_book_dir(state), _COMIC_DIR, f"{ch}-{i:02d}.png")
+    if os.path.exists(out) and not force:
+        return out
+    style = resolve_style(state)
+    _, _, _, csize, cratio = _drama_sizes()
+    era = (panel.get("era") or "").strip()
+    scene_name = (panel.get("scene") or "").strip()
+    body_text = panel.get("description", "") + " " + panel.get("dialogue", "")
+    shot_props = set(panel.get("props") or [])
+    refs, scene_ref, who, props = [], None, [], []
+
+    for name, info in cast.items():
+        if name.startswith("_") or not isinstance(info, dict):
+            continue
+        sec = info.get("type") or "角色"
+        vis = _comic_visual(info, era)
+        p = (vis.get("comic_path") or vis.get("path") or "")
+        p = p if p and os.path.exists(p) else None
+        if sec == "角色" and name in (panel.get("characters") or []):
+            if p:
+                refs.append(p)
+            ap = _anchored_appearance(vis.get("appearance")
+                                      or info.get("appearance", ""))
+            if ap:
+                who.append(f"{name}（{ap}）")
+        elif sec == "场景" and scene_name and not scene_ref:
+            if p and (name in scene_name or scene_name in name):
+                scene_ref = p
+        elif sec == "道具" and (name in shot_props or name in body_text):
+            if p:
+                props.append(p)
+    if scene_ref:
+        refs.insert(0, scene_ref)
+    refs.extend(props)
+    refs = _normalize_refs(refs)
+    prompt = (f"{style}。{panel.get('image_prompt') or panel.get('description', '')}。"
+              f"场景：{scene_name}。出场角色：{'、'.join(who) or '（无）'}。"
+              "参考图依次为场景、角色形象、道具，严格保持参考图中场景布置、"
+              "角色长相与道具外观一致。单幅漫画格构图，画面层次清晰。"
+              "画面中不要出现任何字幕、文字、对话框、标题、水印或字母字符。")
+    on_event({"type": "drama_media", "kind": "comic_panel",
+              "label": f"第{ch}章 格{i}"})
+    path, _ = imggen.generate_ex(prompt, out, size=csize, ratio=cratio,
+                                 image_refs=refs)
+    return path
+
+
+def run_comic(state: dict, ch_start: int = 0, ch_end: int = 0,
+              on_event=None, stop=None, redo: bool = False) -> list:
+    """漫画支线整章跑：涉及资产的漫画镜像 → 分格改编 → 逐格出图。
+
+    文件存在即缓存（镜像形象看 comic_path，格图看 png）；stop 置位时
+    抛 StageStop 风格错误，已完成产物保留。返回全书 cast。
+    """
+    on_event = on_event or (lambda e: None)
+    chapters = [c for c in (state.get("chapters") or []) if c.get("text")]
+    if ch_start:
+        chapters = [c for c in chapters
+                    if ch_start <= c["idx"] <= (ch_end or ch_start)]
+    if not chapters:
+        raise _stop("没有可处理的章节正文")
+    cast_path = _global_cast_path(state)
+    cast = _migrate_flat_cast(_json_load(cast_path, {}))
+    if not any(not str(k).startswith("_") and isinstance(v, dict)
+               for k, v in cast.items()):
+        raise _stop("资产库为空（先跑 /novel drama assets 提取三类资产）")
+    for chp in chapters:
+        ch = chp["idx"]
+        panels = build_comic_panels(state, chp, cast,
+                                    on_event=on_event, redo=redo)
+        need = {}
+        for p in panels:
+            names = list(p.get("characters") or []) + list(p.get("props") or [])
+            if p.get("scene"):
+                names.append(p["scene"])
+            for n in names:
+                need.setdefault(n, p.get("era") or "")
+        # —— 补齐本章涉及的漫画镜像（含 era 套）；已生成即跳过
+        for name, info in list(cast.items()):
+            if (str(name).startswith("_") or not isinstance(info, dict)
+                    or name not in need):
+                continue
+            if stop is not None and stop.is_set():
+                raise _stop("已手动停止：已生成的漫画形象保留")
+            era = need.get(name) or ""
+            if era and (info.get("looks") or {}).get(era):
+                if not (info["looks"][era] or {}).get("comic_path"):
+                    info["looks"][era] = gen_asset_comic(
+                        state, name, info, era=era, on_event=on_event)
+                    _json_dump(cast_path, cast)
+            elif not info.get("comic_path"):
+                gen_asset_comic(state, name, info, on_event=on_event)
+                _json_dump(cast_path, cast)
+        # —— 逐格出图（单格失败记债不阻断）
+        for i, panel in enumerate(panels, 1):
+            if stop is not None and stop.is_set():
+                raise _stop("已手动停止：已生成的漫画格保留")
+            try:
+                comic_panel_image(state, cast, panel, ch, i,
+                                  on_event=on_event, force=redo)
+            except Exception as e:         # noqa: BLE001
+                on_event({"type": "drama_media", "kind": "debt",
+                          "label": f"第{ch}章 格{i} 跳过：{e}"})
+    return cast
+
+
 def concat(clips: list, out_path: str, on_event=None) -> str:
     """ffmpeg concat 拼接整集；先无损 copy，失败回退重编码。
 
@@ -1605,7 +1905,8 @@ def concat(clips: list, out_path: str, on_event=None) -> str:
     except subprocess.CalledProcessError:
         subprocess.run([ffmpeg, "-y", "-f", "concat", "-safe", "0",
                         "-i", lst, "-c:v", "libx264", "-crf", "23",
-                        "-c:a", "aac", out_path],
+                        "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+                        "-movflags", "+faststart", out_path],
                        capture_output=True, timeout=1200, check=True)
     finally:
         try:

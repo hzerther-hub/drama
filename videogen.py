@@ -163,19 +163,31 @@ _RETRY_TIMES = 4                     # 含 429 限流：长退避
 
 
 def _retry(fetch):
-    """瞬时错误退避重试：429 限流等 20/40/60s；502/503/504 与连接错误等 4/8s。"""
+    """瞬时错误退避重试：优先按服务端 Retry-After 头等待（钳 0-120s），
+    无头时 429 限流等 20/40/60s；502/503/504 与连接错误等 4/8s。"""
     import urllib.error
     last = None
+    retry_after = 0.0
     for attempt in range(_RETRY_TIMES):
         if attempt:
             is_429 = (isinstance(last, urllib.error.HTTPError)
                       and last.code == 429)
-            time.sleep(20 * attempt if is_429 else 4 * attempt)
+            time.sleep(retry_after or (20 * attempt if is_429
+                                       else 4 * attempt))
+        retry_after = 0.0
         try:
             return fetch()
         except urllib.error.HTTPError as e:
             if e.code in _RETRY_HTTP or e.code == 429:
                 last = e
+                # 服务端明确给出等待秒数时照办（如 Seedance 队列满），
+                # 比固定梯子对双方都省；非数字/HTTP 日期格式按无头处理
+                hdrs = getattr(e, "headers", None)
+                try:
+                    retry_after = float((hdrs or {}).get("Retry-After") or 0)
+                except (TypeError, ValueError):
+                    retry_after = 0.0
+                retry_after = min(max(retry_after, 0.0), 120.0)
                 continue
             raise
         except (urllib.error.URLError, OSError) as e:
