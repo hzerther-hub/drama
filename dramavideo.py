@@ -232,6 +232,96 @@ STYLE_LIB = (
         "design across shots, avoid painterly soft blending, avoid watercolor washes, "
         "avoid photorealistic rendering, avoid 3D CGI look, avoid anime cel shading"},
 
+    # ---- 原始风格（v2.x 补：从老 STYKE_LIB / README / AGENTS 推断，name 统一 2-3 字）----
+    # text 风格：与新预设同构——一段英文质感描述 + "consistent character design
+    # across shots" 锚点 + "avoid ..." 反例列表。inject_style 单点注入。
+
+    {"name": "国漫", "category": "2D", "text":
+        "modern Chinese donghua 2D animation style, clean confident line work with "
+        "elegant flowing curves, vivid saturated color palette, tall stylized "
+        "character proportions, dynamic dramatic key poses, layered ink-wash inspired "
+        "atmospheric backgrounds, commercial donghua series poster quality, "
+        "consistent character design across shots, avoid 3D CGI look, avoid "
+        "watercolor soft blending, avoid western comic thick outlines, avoid "
+        "photorealism, avoid monochrome flat shading"},
+
+
+
+    {"name": "水墨", "category": "2D", "text":
+        "Chinese ink-wash animation style, soft brushy textures with mineral pigment "
+        "bleeds on rice-paper texture, monochrome indigo-and-ochre palette with sparing "
+        "warm accent, asymmetric compositional balance with white-space breathing "
+        "room, subtle paper-grain softness, traditional donghua wuxia mood quality, "
+        "consistent character design across shots, avoid flat cel shading, avoid "
+        "3D CGI render, avoid digital airbrush look, avoid neon over-saturated colors, "
+        "avoid photorealism, avoid western comic thick outlines"},
+
+    {"name": "剪纸", "category": "2D", "text":
+        "Chinese paper-cutting folk-art style, red symmetrical silhouettes with "
+        "intricate saw-tooth paper-cut edge patterns, layered lattice negative-space "
+        "carvings, decorative folk-new-year flat-color palette, theatrical planar "
+        "composition, folk-cultural poster quality, consistent character design "
+        "across shots, avoid gradient shading, avoid 3D CGI render, avoid photorealism, "
+        "avoid watercolor texture, avoid thin delicate line work, avoid muted modern "
+        "color palette"},
+
+    {"name": "皮影", "category": "2D", "text":
+        "Chinese shadow-puppet piying theater style, semi-translucent donkey-skin "
+        "texture with jointed articulated character silhouettes, warm amber "
+        "backlight transmission glow, intricate carved openwork filigree patterns, "
+        "flat theatrical stage composition with screen-projection look, dramatic "
+        "puppet-poster quality, consistent character design across shots, avoid "
+        "photorealism, avoid 3D CGI render, avoid anime line art, avoid watercolor "
+        "texture, avoid photorealistic human skin rendering"},
+
+
+
+    {"name": "像素", "category": "2D", "text":
+        "16-bit retro pixel art style, crisp chunky pixel grids with hard limited "
+        "palette, sharp aliased edges, low-resolution sprite aesthetic, nostalgic "
+        "game-console key art quality, clean readable pixel silhouettes, consistent "
+        "character design across shots, avoid smooth gradient shading, avoid 3D CGI "
+        "render, avoid photorealism, avoid watercolor soft blending, avoid "
+        "high-resolution vector clean shapes, avoid anime line art"},
+
+    {"name": "粘土", "category": "3D", "text":
+        "stop-motion claymation style, fingerprint-imprinted matte clay surface with "
+        "visible hand-crafted texture, soft diffused practical lighting, "
+        "miniature-diorama staging with subtle DOF, Aardman whimsical feel, "
+        "exaggerated character proportions, consistent character design across shots, "
+        "avoid photorealism, avoid anime line art, avoid watercolor blending, avoid "
+        "smooth plastic 3D render, avoid sharp digital edges, avoid high-key "
+        "commercial lighting"},
+
+
+
+    {"name": "皮克斯", "category": "3D", "text":
+        "Pixar feature animation 3D style, refined subsurface-scattering skin with "
+        "soft cinematic global illumination, polished color script with warm amber "
+        "key and cool blue fill, emotionally-driven character performance, "
+        "physically-based materials with photoreal tactile texture, consistent "
+        "character design across shots, avoid flat cel shading, avoid anime line "
+        "art, avoid watercolor texture, avoid dark moody palette, avoid stylized "
+        "chibi proportions, avoid hyperrealistic VFX look"},
+
+    {"name": "港片", "category": "真人", "text":
+        "Hong Kong retro cinema noir aesthetic, neon-lit rainy nighttime streets with "
+        "amber-and-teal split color grading, handheld breathing camera work, "
+        "warm tungsten street lamps and wet reflections, classic golden-era HK "
+        "cinema mood, consistent character design across shots, avoid 3D CGI look, "
+        "avoid anime cel shading, avoid bright daylight palette, avoid pastel "
+        "soft tones, avoid digital clean sharp edges, avoid photorealistic VFX "
+        "bombast"},
+
+    {"name": "是枝", "category": "真人", "text":
+        "Japanese Koreeda-style naturalistic realism, soft window-lit family "
+        "interiors, restrained low-saturation muted earthy palette, fixed-camera "
+        "observational framing, subtle contemplative emotional understatement, "
+        "gentle domestic everyday-life texture, consistent character design "
+        "across shots, avoid 3D CGI look, avoid anime cel shading, avoid neon "
+        "high-saturation colors, avoid dramatic chiaroscuro, avoid Hollywood VFX "
+        "bombast, avoid fantasy costume drama"},
+
     {"name": "国风 2.5D", "category": "3D", "text":
         "Chinese guofeng 2.5D illustration style, semi-realistic donghua-quality "
         "character art, elegant flowing line work, rich traditional Chinese aesthetic "
