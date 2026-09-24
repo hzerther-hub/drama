@@ -541,6 +541,85 @@ def parse_start_args(rest: str) -> dict:
             "auto": auto}
 
 
+def _pipelines_dir() -> str:
+    """pipeline state JSON 落盘目录：与 models.json 同级。
+
+    跟着 config._CONFIG_DIR 走，_MODELS_FILE / _PIPELINES_DIR 同根，
+    不读 env / 业务字段（这是落盘地址而非配置）。
+    """
+    import config
+    return os.path.join(config._CONFIG_DIR, "pipelines")
+
+
+def _orphan_book_dir(state: dict, root: str) -> str | None:
+    """根据 state 推断本书本应该所在的磁盘目录。返回 None 表示无法判断。"""
+    if not state:
+        return None
+    f = (state.get("file") or "").strip()
+    if f:
+        try:
+            rel = os.path.relpath(f, root)
+        except Exception:                # noqa: BLE001
+            return None
+        if rel.startswith(".."):
+            return None
+        parts = rel.split(os.sep)
+        if parts and parts[0] != "..":
+            return os.path.join(root, parts[0])
+    t = (state.get("title") or "").strip()
+    if t:
+        return os.path.join(root, _safe_name(t)[:30])
+    pid = (state.get("pid") or "").strip()
+    if pid:
+        return os.path.join(root, pid)
+    return None
+
+
+def _cleanup_orphan_pipelines() -> int:
+    """每次开新书前自动清孤儿 state：磁盘上对应目录不存在的 pipeline 一律清掉。
+
+    孤儿产生：用户在 app 内置文件树面板里删了书的目录，但 pipelines/<pid>.json
+    + .events.jsonl 没清。重启后变成「pipeline 列表里一堆鬼」的鬼状态。
+    自动清掉是最干净的体验。
+
+    返回删的条数。
+    """
+    import json as _json
+    root = _novels_root()
+    pl_dir = _pipelines_dir()
+    if not os.path.isdir(pl_dir):
+        return 0
+    removed = 0
+    for fn in list(os.listdir(pl_dir)):
+        if not fn.endswith(".json") or fn.endswith(".events.jsonl"):
+            continue
+        path = os.path.join(pl_dir, fn)
+        try:
+            with open(path, encoding="utf-8") as f:
+                d = _json.load(f)
+        except Exception:                  # noqa: BLE001  损坏 JSON 跳过
+            continue
+        state = d.get("state") or {}
+        book_dir = _orphan_book_dir(state, root)
+        if book_dir is None:
+            continue                    # 推断不出来就保留
+        if os.path.isdir(book_dir):
+            continue                    # 磁盘上书还在 → 不是孤儿
+        # 孤儿：删 JSON + events.jsonl（如果存在）
+        try:
+            os.remove(path)
+        except OSError:
+            continue
+        ev = path[:-5] + ".events.jsonl"  # strip .json
+        if os.path.isfile(ev):
+            try:
+                os.remove(ev)
+            except OSError:
+                pass
+        removed += 1
+    return removed
+
+
 def new_pipeline(idea: str, total: int, model_key: str,
                  style: str = "") -> Pipeline:
     """开一条新书流水线；书稿落在 novels/<书名>/ 目录（每章一个 md）。
@@ -550,6 +629,13 @@ def new_pipeline(idea: str, total: int, model_key: str,
     由 _sync_book_dir 重命名；仍提取不到则用灵感首段兜底——目录名
     永远不会是「未命名」。
     """
+    # 自动清孤儿 state：每次开新书都扫 pipelines/，磁盘无对应目录的删掉。
+    n_orphan = _cleanup_orphan_pipelines()
+    if n_orphan:
+        try:
+            errlog.log("novel.start: 清孤儿 state", {"removed": n_orphan})
+        except Exception:              # noqa: BLE001  errlog 缺失不阻断
+            pass
     total = max(1, min(int(total or 3), _MAX_CHAPTERS))
     pid = "novel-" + time.strftime("%Y%m%d-%H%M%S")
     idea = (idea or "").strip()
