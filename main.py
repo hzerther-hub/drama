@@ -17,6 +17,17 @@ if sys.version_info < (3, 12):
         "系统 Python 过旧时可用 Miniconda 建 3.12 环境再建 venv（详见 README）。\n")
     sys.exit(1)
 
+# 防 stale bytecode 缓存：源码文件改动后，`__pycache__/*.pyc` 可能早于
+# 源文件被加载，导致 `module has no attribute <new function>` 类报错
+# （如 `/novel drama` 报 ensure_style_fields 不存在）。
+# 启动时清掉项目根的 __pycache__/ 目录是廉价且安全的——Python 重新编译。
+import os as _os, shutil as _shutil
+for _root, _dirs, _files in _os.walk("."):
+    if "__pycache__" in _dirs:
+        _dirs.remove("__pycache__")
+        _shutil.rmtree(_os.path.join(_root, "__pycache__"), ignore_errors=True)
+del _os, _shutil, _root, _dirs, _files
+
 import ui
 
 if __name__ == "__main__":
