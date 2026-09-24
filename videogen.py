@@ -141,8 +141,14 @@ def classify_error(err_str: str) -> dict:
     return {"category": "other", "hint": None}
 
 
-def available() -> bool:
-    svc = _service()
+def available(svc: dict | None = None) -> bool:
+    """视频服务是否可用（base_url + model 非空）。
+
+    svc 为 None 时读 module-level _service()；config._media_service 在 auto
+    探测模式下注入候选供应商的 dict 来逐个 ping。
+    """
+    if svc is None:
+        svc = _service()
     return bool(svc.get("base_url") and svc.get("model"))
 
 

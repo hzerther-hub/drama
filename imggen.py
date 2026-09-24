@@ -60,9 +60,14 @@ def default_size() -> str:
     return os.environ.get("LAS_IMAGE_SIZE", "1024x1024")
 
 
-def available() -> bool:
-    """图像服务是否可用。本地后端（ComfyUI / SD-WebUI）不需要 model 字段。"""
-    svc = _service()
+def available(svc: dict | None = None) -> bool:
+    """图像服务是否可用。本地后端（ComfyUI / SD-WebUI）不需要 model 字段。
+
+    svc 为 None 时读 module-level _service()；config._media_service 在 auto
+    探测模式下注入候选供应商的 dict 来逐个 ping。
+    """
+    if svc is None:
+        svc = _service()
     if not svc.get("base_url"):
         return False
     if kind_of(svc) in ("comfyui", "a1111"):

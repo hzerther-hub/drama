@@ -737,17 +737,58 @@ def _media_service(env_base: str, env_model: str, env_key: str,
             return {"base_url": sbase, "model": smdl,
                     "api_key": str(sec.get("api_key", "") or "").strip(),
                     "kind": skind, "provider_id": ""}
+    # 候选供应商：仅在「media 段未配 + 供应商列表里没真合适」时走到这里。
+    # 关键：kind == "" 即「auto」时，**真正用 imggen.available() / videogen.available()
+    # 探测每个候选**——避免「第一个有 image_model 字段但 key 是占位 cpk-...」的供应商被错选。
+    candidates = []
     for p in data.get("providers", []) or []:
         if not isinstance(p, dict):
             continue
         mdl = str(p.get(provider_field, "") or "").strip()
         key = str(p.get("api_key", "") or "").strip()
         base = str(p.get("base_url", "") or "").strip().rstrip("/")
-        if mdl and base and key and key != "local-noauth":
-            return {"base_url": base, "model": mdl, "api_key": key,
-                    "kind": str(p.get(kind_field, "") or "").strip(),
-                    "provider_id": str(p.get("id", ""))}
-    return {}
+        if not (mdl and base and key and key != "local-noauth"):
+            continue
+        candidates.append({
+            "base_url": base, "model": mdl, "api_key": key,
+            "kind": str(p.get(kind_field, "") or "").strip(),
+            "provider_id": str(p.get("id", "")),
+        })
+    if not candidates:
+        return {}
+    # auto 模式：探测每个候选；其它 kind：按 kind 过滤后取第一个匹配
+    want_kind = (kind or "").strip().lower()
+    if not want_kind:
+        # 调用对应后端的 available() 探测：能跑通就先它
+        try:
+            if section == "image":
+                import imggen
+                available_fn = imggen.available
+            elif section == "video":
+                import videogen
+                available_fn = videogen.available
+            else:
+                available_fn = None
+        except Exception:                 # noqa: BLE001
+            available_fn = None
+        for cand in candidates:
+            try:
+                # 临时把候选信息塞进 service dict 让 available() 能看
+                if available_fn is not None and available_fn(
+                        {"base_url": cand["base_url"],
+                         "model": cand["model"],
+                         "api_key": cand["api_key"],
+                         "kind": cand["kind"]}):
+                    return cand
+            except Exception:             # noqa: BLE001
+                continue
+        # 都没探测成功：退回到「列表第一个」（让用户至少能调到错误信息，不卡死）
+        return candidates[0]
+    # 非 auto：按 kind 严格匹配
+    for cand in candidates:
+        if cand["kind"].lower() == want_kind:
+            return cand
+    return candidates[0]  # kind 写了但没匹配：退回到第一个候选（会报 kind 错）
 
 
 def image_service() -> dict:
