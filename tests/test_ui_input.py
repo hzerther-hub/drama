@@ -39,3 +39,25 @@ def test_popup_char_rescan():
 def test_popup_other_keys_pass_through():
     assert ui_input.decide("at", "Home", "", False, False) is None
     assert ui_input.decide("cmd", "F5", "", False, False) is None
+
+
+def test_visible_commands_falls_back_without_app_method():
+    # 假 app 没有 command_candidates（旧 App / 测试替身）→ 退回全量 _COMMANDS
+    import types
+
+    full = [("/novel drama", "d", "novel"), ("/help", "h", "help")]
+    fake_self = types.SimpleNamespace(
+        app=types.SimpleNamespace(_COMMANDS=full))
+    assert ui_input.InputController._visible_commands(fake_self) == full
+
+
+def test_visible_commands_uses_candidates_when_present():
+    # 有 command_candidates → 弹窗/速查菜单只显示过滤后的命令（模式开关联动）
+    import types
+
+    full = [("/novel drama", "d", "novel"), ("/help", "h", "help")]
+    filtered = [full[1]]
+    fake_self = types.SimpleNamespace(
+        app=types.SimpleNamespace(
+            _COMMANDS=full, command_candidates=lambda: filtered))
+    assert ui_input.InputController._visible_commands(fake_self) == filtered

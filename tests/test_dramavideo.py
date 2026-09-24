@@ -55,7 +55,7 @@ def test_build_cast_three_sections_and_caches(book, monkeypatch):
     assert cast["水桶"]["type"] == "道具"
     assert len(gens) == 3                        # 三类各出一张基础图
     ratios = {r for _, r in gens}
-    assert ratios == {"3:4", "16:9", "1:1"}      # 各类画幅不同
+    assert ratios == {"16:9", "1:1"}             # 角色/场景同 16:9，道具 1:1
     # 再次构建：全部命中缓存，不再调 LLM / 出图
     dramavideo.build_cast(state)
     assert len(asks) == 3 and len(gens) == 3
@@ -106,7 +106,7 @@ def test_build_shots_clamps_duration_and_caches(book, monkeypatch):
         return json.dumps([
             {"title": "搬水", "scene": "宿舍", "characters": ["周妍", "林夏"],
              "description": "中景，平视。周妍费力搬水。",
-             "camera": "缓慢推近", "mood": "压抑",
+             "camera": "缓慢推近", "mood": "暮色压境，" * 14,
              "narration": "谁也没想到，柔弱舍友藏着心机。",
              "dialogue": "好重", "duration": 99},
             {"title": "相助", "scene": "宿舍", "characters": ["林夏"],
@@ -119,7 +119,8 @@ def test_build_shots_clamps_duration_and_caches(book, monkeypatch):
     assert shots[0]["duration"] == dramavideo._MAX_SEC   # 99 → 15
     assert shots[1]["duration"] == dramavideo._MIN_SEC   # 0.5 → 4
     assert shots[0]["narration"] == "谁也没想到，柔弱舍友藏着心机。"
-    assert shots[0]["camera"] == "缓慢推近" and shots[0]["mood"] == "压抑"
+    assert shots[0]["camera"] == "缓慢推近"
+    assert shots[0]["mood"] == "暮色压境，" * 12       # 氛围 clamp 12→60 字
     # 旧格式（无 camera/mood）不炸：字段为空串
     assert shots[1]["camera"] == "" and shots[1]["mood"] == ""
     # 缓存命中：再跑不再调 LLM
@@ -226,7 +227,7 @@ def test_build_shots_two_stage_video_prompt(book, monkeypatch):
     seen = {}
 
     def fake_gen(prompt, out, image=None, seconds=0, timeout=0,
-                resolution="", preferred_provider_id=""):
+                resolution="", preferred_provider_id="", ratio=""):
         seen["prompt"] = prompt
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "wb") as f:
@@ -259,7 +260,7 @@ def test_speech_seconds_and_clip_uses_it(book, monkeypatch):
     seen = {}
 
     def fake_gen(prompt, out, image=None, seconds=0, timeout=0,
-                resolution="", preferred_provider_id=""):
+                resolution="", preferred_provider_id="", ratio=""):
         seen["sec"] = seconds
         seen["prompt"] = prompt
         os.makedirs(os.path.dirname(out), exist_ok=True)
@@ -328,7 +329,7 @@ def test_clip_uses_frame_url(book, monkeypatch):
     captured = {}
 
     def fake_video(prompt, out, image="", size="", resolution="", seconds=0,
-                   timeout=0, preferred_provider_id=""):
+                   timeout=0, preferred_provider_id="", ratio=""):
         captured.update(prompt=prompt, image=image, seconds=seconds,
                         resolution=resolution,
                         preferred_provider_id=preferred_provider_id)
@@ -356,7 +357,7 @@ def test_clip_dubs_dialogue_with_ffmpeg(book, monkeypatch):
     events, dubs, speaks = [], [], []
 
     def fake_video(prompt, out, image="", seconds=0, timeout=0,
-                   resolution="", preferred_provider_id=""):
+                   resolution="", preferred_provider_id="", ratio=""):
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "wb") as f:
             f.write(b"RAW")
@@ -400,7 +401,7 @@ def test_clip_tts_failure_degrades_to_original(book, monkeypatch):
     events = []
 
     def fake_video(prompt, out, image="", seconds=0, timeout=0,
-                   resolution="", preferred_provider_id=""):
+                   resolution="", preferred_provider_id="", ratio=""):
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "wb") as f:
             f.write(b"RAW")
@@ -502,10 +503,10 @@ def test_gen_asset_t2i_and_i2i(book, monkeypatch):
     monkeypatch.setattr(dramavideo.imggen, "generate_ex", fake_gen)
     dramavideo.gen_asset(state, "林夏", dict(info))
     assert not captured["refs"] and "微调" not in captured["prompt"]
-    assert captured["ratio"] == "3:4"                     # 角色画幅
+    assert captured["ratio"] == "16:9"                    # 角色设定稿画幅
     out_info = dramavideo.gen_asset(state, "林夏", dict(info), image_ref=True)
     assert captured["refs"] == [str(cur)]                 # 参考图=当前形象
-    assert "主体特征" in captured["prompt"]
+    assert "脸型五官" in captured["prompt"]               # 角色 i2i=锁脸重排
     assert out_info["url"] == "http://u/x.png"
 
 
@@ -602,7 +603,7 @@ def test_clip_prompt_separates_visual_and_voice(book, monkeypatch):
     captured = {}
 
     def fake_video(prompt, out, image="", seconds=0, timeout=0,
-                   resolution="", preferred_provider_id=""):
+                   resolution="", preferred_provider_id="", ratio=""):
         captured["prompt"] = prompt
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "wb") as f:
@@ -662,10 +663,11 @@ def test_load_style_lib_seeds_presets(tmp_path, monkeypatch):
     styles, default, data, path = dramavideo.load_style_lib()
     assert len(styles) == len(dramavideo.STYLE_PRESETS)
     cats = {s["category"] for s in styles}
-    assert {"2D", "3D", "真人"} <= cats
+    # v2.x：8 个新预设覆盖 2D / 3D 两类，文字以英文提示词片段为主。
+    assert {"2D", "3D"} <= cats
     texts = [s["text"] for s in styles]
-    assert any("国漫" in t for t in texts)        # 用户点的国漫/剪纸在库
-    assert any("剪纸" in t for t in texts)
+    assert any("3D CG animation" in t for t in texts)  # 3D 漫剧 英文锚点
+    assert any("Ghibli" in t for t in texts)            # 吉卜力英文锚点
     assert default == dramavideo.DEFAULT_STYLE
     # 已写回磁盘：第二次读不重播种、数量一致
     import json as _j
@@ -844,6 +846,55 @@ def test_build_cast_multi_era_looks(book, monkeypatch):
     assert info["looks"]["仙侠"]["path"].endswith("王安平-仙侠.png")
 
 
+def test_build_cast_preserves_default_look(book, monkeypatch):
+    """重跑补齐资产：default_look（用户选的默认套）不被重建冲掉。"""
+    state, tmp = book
+    base = tmp / dramavideo._ASSET_DIR / dramavideo._ASSET_GLOBAL
+    base.mkdir(parents=True, exist_ok=True)
+    png = base / "王安平.png"; png.write_bytes(b"P")
+    xpng = base / "王安平-仙侠.png"; xpng.write_bytes(b"X")
+    (base / "cast.json").write_text(json.dumps(
+        {"王安平": {"type": "角色", "appearance": "现代装",
+                    "path": str(png), "default_look": "仙侠",
+                    "looks": {"现代": {"appearance": "现代装", "path": str(png)},
+                              "仙侠": {"appearance": "道袍", "path": str(xpng)}}},
+         "_done_角色": True, "_done_场景": True, "_done_道具": True},
+        ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(dramavideo, "_ask",
+                        lambda *a, **k: pytest.fail("全 done 不应问 LLM"))
+    monkeypatch.setattr(dramavideo.imggen, "generate_ex",
+                        lambda *a, **k: pytest.fail("图齐不应出图"))
+    cast = dramavideo.build_cast(state)
+    assert cast["王安平"]["default_look"] == "仙侠"
+
+
+def test_resolve_asset_image_backfills_path_from_url(book, monkeypatch):
+    """path 失效但记有 url → 下载回资产目录并回填；无 url 静默不动。"""
+    state, tmp = book
+    base = tmp / dramavideo._ASSET_DIR / dramavideo._ASSET_GLOBAL
+    calls = []
+
+    def fake_download(url, out):
+        calls.append((url, out))
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "wb") as f:
+            f.write(b"P")
+        return out
+
+    monkeypatch.setattr(dramavideo.videogen, "download", fake_download)
+    info = {"type": "角色", "path": "", "url": "http://cdn/x.png"}
+    dramavideo._resolve_asset_image(state, "王安平", info, base=str(base))
+    assert calls and info["path"] == str(base / "王安平.png")
+    assert os.path.exists(info["path"])
+    # path 已在 → 不重复下载
+    dramavideo._resolve_asset_image(state, "王安平", info, base=str(base))
+    assert len(calls) == 1
+    # path 与 url 都没有 → 原样不动，不抛错
+    info2 = {"path": "", "url": ""}
+    dramavideo._resolve_asset_image(state, "王安平", info2, base=str(base))
+    assert info2["path"] == "" and not calls[1:]
+
+
 def test_keyframe_picks_look_by_era(book, monkeypatch):
     """关键帧按镜头 era 选形象：仙侠镜用仙侠装参考图，无 era 用默认。"""
     state, tmp = book
@@ -884,6 +935,13 @@ def test_keyframe_picks_look_by_era(book, monkeypatch):
     (tmp / dramavideo._FRAME_DIR / "1-03.png").unlink(missing_ok=True)
     dramavideo.keyframe(state, cast, shot_f, 1, 3)
     assert str(xianxia) in captured["refs"]
+    # default_look 指定默认套：era 完全未命中 → 用指定套而非主图
+    (tmp / dramavideo._FRAME_DIR / "1-04.png").unlink(missing_ok=True)
+    cast["王安平"]["default_look"] = "仙侠"
+    shot_d = dict(shot_x, era="未来期")
+    dramavideo.keyframe(state, cast, shot_d, 1, 4)
+    assert str(xianxia) in captured["refs"]
+    assert str(modern) not in captured["refs"]
 
 
 def test_chapter_assets_reuse_across_chapters(book, monkeypatch):
@@ -958,7 +1016,7 @@ def test_clip_force_regenerates_existing(book, monkeypatch):
     calls = []
 
     def fake_video(prompt, out, image="", seconds=0, timeout=0,
-                   resolution="", preferred_provider_id=""):
+                   resolution="", preferred_provider_id="", ratio=""):
         calls.append(out)
         with open(out, "wb") as f:
             f.write(b"NEW")
@@ -1023,6 +1081,12 @@ def test_gen_look_locks_face_to_main_image(book, monkeypatch):
     assert "脸型五官" in captured["prompt"]            # 锁脸约束提示词
     assert lk["path"].endswith("林夏-古装.png") and os.path.exists(lk["path"])
     assert lk["url"] == "http://cdn/look.png"
+    # 手改提示词：取代外貌描述成为主体提示词（风格锚与锁脸约束保留）
+    dramavideo.gen_look(state, "林夏", info, "古装",
+                        custom_prompt="三视图设定稿，红色古装，白色背景")
+    p = captured["prompt"]
+    assert "红色古装" in p and "古装}" not in p
+    assert dramavideo.DEFAULT_STYLE[:4] in p and "脸型五官" in p
 
 
 def test_gen_clip_take_accumulates_and_select(book, monkeypatch):
@@ -1071,9 +1135,94 @@ def test_take_thumb_uses_ffmpeg(book, monkeypatch, tmp_path):
 
 
 def fake_video_bytes(prompt, out, image="", seconds=0, timeout=0,
-                       resolution="", preferred_provider_id=""):
+                       resolution="", preferred_provider_id="", ratio=""):
     """抽卡测试共用：写盘模拟视频产物，按 out 内容区分。"""
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "wb") as f:
         f.write(b"MP4:" + out.encode().split(b"\\")[-1])
     return out
+
+
+def test_regen_video_prompt_single_shot(book, monkeypatch):
+    """单镜 video_prompt 重生成：只改目标镜头、结果落盘、其他镜不受影响。"""
+    import json as _json
+
+    state, tmp = book
+    shots_dir = tmp / "短剧分镜"
+    shots_dir.mkdir()
+    (shots_dir / "第1章.json").write_text(_json.dumps([
+        {"title": "镜1", "description": "d1", "duration": 5},
+        {"title": "镜2", "description": "d2", "duration": 6},
+    ], ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(dramavideo, "_ask",
+                        lambda s, sys_, user: '{"1": "0-3秒：近景推近"}')
+    vp = dramavideo.regen_video_prompt(state, 1, 2)
+    assert vp == "0-3秒：近景推近"
+    data = _json.loads((shots_dir / "第1章.json").read_text(encoding="utf-8"))
+    assert data[1]["video_prompt"] == "0-3秒：近景推近"
+    assert "video_prompt" not in data[0]
+    # 越界镜头号：不炸、不写、返回空串
+    assert dramavideo.regen_video_prompt(state, 1, 9) == ""
+    assert _json.loads((shots_dir / "第1章.json").read_text(
+        encoding="utf-8"))[1]["video_prompt"] == "0-3秒：近景推近"
+
+
+def test_regen_video_prompt_failure_keeps_file(book, monkeypatch):
+    """LLM 失败（抛错/空 JSON）→ 原文件不动，返回空串。"""
+    import json as _json
+
+    state, tmp = book
+    shots_dir = tmp / "短剧分镜"
+    shots_dir.mkdir()
+    (shots_dir / "第1章.json").write_text(_json.dumps([
+        {"title": "镜1", "description": "d1"},
+    ], ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(dramavideo, "_ask",
+                        lambda s, sys_, user: "不是 JSON")
+    assert dramavideo.regen_video_prompt(state, 1, 1) == ""
+    data = _json.loads((shots_dir / "第1章.json").read_text(encoding="utf-8"))
+    assert "video_prompt" not in data[0]
+
+
+def test_screenplay_overrides_chapter_text(book):
+    """拍摄剧本优先源：短剧剧本/第N章-剧本.md 存在即覆盖原文，删除/空文件回退。"""
+    state, tmp = book
+    ch = {"idx": 1, "title": "测试章", "text": "小说原文"}
+    assert dramavideo._chapter_source_text(state, ch) == "小说原文"
+
+    sp = dramavideo._screenplay_path(state, 1)
+    os.makedirs(os.path.dirname(sp), exist_ok=True)
+    with open(sp, "w", encoding="utf-8") as f:
+        f.write("拍摄剧本内容")
+    assert dramavideo._chapter_source_text(state, ch) == "拍摄剧本内容"
+
+    os.remove(sp)
+    assert dramavideo._chapter_source_text(state, ch) == "小说原文"
+    # 空/空白剧本文件不算数 → 回退原文
+    with open(sp, "w", encoding="utf-8") as f:
+        f.write("   \n  ")
+    assert dramavideo._chapter_source_text(state, ch) == "小说原文"
+
+
+def test_build_shots_prefers_screenplay(book, monkeypatch):
+    """build_shots 的输入文本来自拍摄剧本（存在时）而非 chapter['text']。"""
+    import json as _json
+
+    state, tmp = book
+    seen = {}
+
+    def _fake_ask(s, sys_, user):
+        seen["user"] = user
+        return '[{"title": "t", "description": "d", "duration": 5}]'
+
+    monkeypatch.setattr(dramavideo, "_ask", _fake_ask)
+    sp = dramavideo._screenplay_path(state, 1)
+    os.makedirs(os.path.dirname(sp), exist_ok=True)
+    with open(sp, "w", encoding="utf-8") as f:
+        f.write("改写后的拍摄剧本")
+    monkeypatch.setattr(dramavideo, "_video_prompts", lambda *a, **k: None)
+    monkeypatch.setattr(dramavideo, "resolve_style", lambda s: "风格")
+    dramavideo.build_shots(state, {"idx": 1, "title": "t",
+                                   "text": "小说原文"})
+    assert "改写后的拍摄剧本" in seen["user"]
+    assert "小说原文" not in seen["user"]

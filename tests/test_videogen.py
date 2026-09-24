@@ -217,3 +217,33 @@ def test_download_replaces_target_atomically(monkeypatch, tmp_path):
     assert open(out, "rb").read() == b"MP4DATA"
     import os
     assert not os.path.exists(out + ".part")
+
+
+def test_ark_flags_ratio_parameterized():
+    """画幅参数化：ratio 空=竖屏 9:16（旧行为），可切 16:9/1:1 等，非法值回退。"""
+    f = videogen._ark_flags
+    assert "--ratio 9:16" in f(5)
+    assert "--ratio 16:9" in f(5, ratio="16:9")
+    assert "--ratio 1:1" in f(5, "480p", "1:1")
+    assert "--resolution 480p" in f(5, "480p")
+    # 非法比例 / 非法分辨率均回退默认
+    assert "--ratio 9:16" in f(5, ratio="21:99")
+    assert "--resolution 720p" in f(5, "9999p")
+
+
+def test_ark_create_passes_ratio_to_instruction_header(monkeypatch):
+    """create 链路：ratio 经 _ark_create 落进 Seedance 文本指令头。"""
+    captured = {}
+
+    def _fake_post(url, body, key):
+        captured.update(url=url, body=body)
+        return {"id": "task-1"}
+
+    monkeypatch.setattr(videogen, "_post", _fake_post)
+    svc = {"base_url": "https://ark.cn-beijing.volces.com/v1",
+           "model": "doubao-seedance-2-0", "api_key": "k"}
+    vid = videogen._ark_create("prompt", "", 5, svc, "480p", "16:9")
+    assert vid == "task-1"
+    text = captured["body"]["content"][0]["text"]
+    assert "--resolution 480p" in text
+    assert "--ratio 16:9" in text

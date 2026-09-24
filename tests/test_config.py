@@ -393,3 +393,23 @@ def test_load_models_dedupes_duplicate_keys(monkeypatch):
     keys = [m.key for m in models]
     assert keys.count("glm/glm-5.3") == 1
     assert models[0].display_name == "A"          # 保留首个
+
+
+def test_mode_flags_defaults_persist_and_unknown_key():
+    # 先归位到默认（整个会话共享临时 CONFIG_DIR，可能残留别的用例状态）
+    config.set_mode_flag("drama", True)
+    config.set_mode_flag("comic", False)
+    assert config.get_mode_flags() == {"drama": True, "comic": False}
+
+    config.set_mode_flag("comic", True)
+    assert config.get_mode_flags()["comic"] is True
+    # 写盘持久：不经缓存直接重读文件（模拟重启）
+    data = config._load_models_data()
+    assert data["modes"]["comic"] is True
+
+    # 未知 key 静默忽略；重复设为同值不报错
+    config.set_mode_flag("unknown", True)
+    assert "unknown" not in config.get_mode_flags()
+    config.set_mode_flag("comic", True)
+    config.set_mode_flag("comic", False)
+    assert config.get_mode_flags()["comic"] is False

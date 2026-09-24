@@ -86,12 +86,13 @@ main.py（Python 3.12 版本守卫，必须在 import ui 之前）
 
 novelwriter 的制片模块，UI 在 `ui_panel_drama.py`，引擎在 `dramavideo.py`。流水线是"大纲 → 资产 → 分镜视频"，所有产物落到 `novels/<书名>/`，**文件存在即缓存**（断点续传天然成立，重新进入工作台自动跳过已完成环节）。
 
-**四步流程**：
+**创作模式开关**（config.py `get_mode_flags()/set_mode_flag()`，models.json 顶层 `modes`；drama 默认开、comic 默认关）：⚙ 设置菜单底部两个 checkbutton（🎬 短剧 / 📖 漫画）。关闭时对应命令被双保险拦截——发送侧 `_novel_command` 的 drama/comic 分支入口弹 ⚠ 提示（`mode.gate_*` i18n key），显示侧 `App.command_candidates()` 把 `/novel drama*` / `/novel comic*` 从输入弹窗与 ➕ 速查菜单剔除（ui_input 经 `_visible_commands()` 读取，假 app 无该方法时退回全量 `_COMMANDS`）。
 
-1. **大纲改写** — 工作台粘贴原始文本 → 「AI 改写」按集拆分剧本、标注场景与角色；可换文本模型、调语气（全局风格存 `models.json::globals.default_drama_style`，默认 `dramavideo.DEFAULT_STYLE = "电影感写实风格，统一色调与打光，画面细腻，短剧质感"`）。满意后「保存并进入制作」落盘 `novels/<书名>/剧本.json`。
-2. **资产制作** — 对剧本「提取」得到 角色 / 场景 / 道具 清单（每条带 `name` + `appearance` + `type` + `path`）；逐个点「生成形象」产出一致性参考图（也可全选批量）。资产图存 `短剧资产/<名>.png` + `短剧资产/cast.json`（含 `_done_<类>` 完成标记），后续生视频时作为视觉参考注入。
-3. **分镜与视频** — 「视频制作」页先拆分分镜（AI 按节奏切分并生成提示词）；顶栏选视频模型（Seedance / Wan 3.0 / MiniMax…），分辨率与时长档位联动；右侧微调每个分镜的提示词（`@角色名` 自动从 `cast.json` 映射参考图）。点「批量生成视频」并发调用 `videogen.py`；关键帧由 `dramavideo` 多图合成生成，再作首帧走图生视频（`text_to_video` 降级）。失败任务可「重试失败」/「重新生成单个镜头」/`/novel drama video 1-3 redo`。
-4. **拼接导出** — 勾选镜头（悬停预览单镜视频），点「开始拼接」→ FFmpeg 合成到 `短剧成片/第N章-<标题>.mp4`，可下载 / 在 UI 播放。点「标记完成」点亮左侧进度栏；`剧集列表` 随时查看各集状态，点「进入制作」继续未完成的集。
+**三步流程**（工作台 `ui_panel_drama.py::show(app)`，章级切换 `ch_box`）：
+
+1. **剧本大纲** — 左侧文档导航（总纲/世界观/故事合约/角色/各章剧本，直接改 → 写回 state+md）；右侧 **AI 改写**（火宝剧本阶段）：粘贴/「载入本章正文」→ 选文本模型 + 调语气 → 「AI 改写」出拍摄剧本（`## S编号 | 内景/外景 · 地点 | 时间段` 场景头 + `角色名：（状态）台词`，不写镜头语言）→ 手改后「存为拍摄剧本」落盘 `短剧剧本/第N章-剧本.md`（同时清该章旧分镜缓存）。**拍摄剧本存在即优先**：`dramavideo._chapter_source_text()` 让分镜/资产链路以剧本为输入，「弃用剧本」删文件即回退小说原文。剧本**改编**也可走命令：`/novel drama N-M` → `novel_chain.drama_adapt`；原创 `/novel drama new <灵感> [集数]`。
+2. **资产库** — Canvas 卡片网格，通用库（全书 `cast.json`）+ 本章库（`第N章/assets.json`）按 角色/场景/道具 三组；每卡：外貌锚 Entry、自定义提示词 Entry、上传替换 / 描述生成(t2i) / 图生图(i2i) / 三视图 / 阶段图双击重生成。底部：补齐全书资产、提取本章资产、**＋新增资产**（名称+类型+外貌锚入通用库）、**批量角色/场景/道具**（逐个点亮缺 path 资产，单张失败不阻断）。
+3. **分集视频** — 左：分镜列表（○/◈/▶ 进度标记）+ **☑ 选择模式**（切 `selectmode="multiple"` 勾选镜头）+ **合成选中**（部分拼接，产物 `第N章-<标题>-选段.mp4`）；中：分镜编辑器（标题/场景/角色/道具/时长/era/运镜/情绪/画面描述[@自动补全]/旁白/台词/**视频提示词**——video_prompt 可查看手改、「重新生成提示词」单镜重跑火宝 3 秒分段）；右：预览 + 生成关键帧/镜头视频/抽卡(take 下拉+首帧预览+采用)/合成整集/批量生成本章（确认框：待生成数/总时长/模型/分辨率）/重试失败/**成片列表+播放**/「✔ 标记本章完成」（存 `state["drama_done_chapters"]`）/TTS 开关。顶栏：「剧集」按钮（**剧集列表**总览窗：每集 剧本来源/分镜数/视频进度/成片/完成态，全从磁盘产物派生，双击跳集）+ 章下拉 + 视频 provider 下拉 + 分辨率档位（随 provider 联动，存 `state["drama_video_provider"/"drama_video_resolution"]`，画幅 `drama_video_ratio` 仅 Ark 消费）。
 
 **一致性三段传播**（`dramavideo.py:5-7`）：
 
@@ -103,11 +104,12 @@ novelwriter 的制片模块，UI 在 `ui_panel_drama.py`，引擎在 `dramavideo
 
 | 目录 | 内容 |
 |---|---|
-| `短剧资产/` | `<角色>.png` + `cast.json` + 各章 `assets.json` |
+| `短剧资产/` | `全书/cast.json` + `第N章/assets.json` + 各资产 png |
 | `短剧分镜/` | `第N章.json`（分镜表）+ `urls.json` |
 | `短剧关键帧/` | `N-01.png` …（多图合成产物） |
 | `短剧片段/` | `N-01.mp4` …（单镜视频） |
 | `短剧成片/` | `第N章-<标题>.mp4`（FFmpeg 拼接终产物） |
+| `短剧剧本/` | `第N章-剧本.md`（AI 改写拍摄剧本，存在即优先于原文） |
 
 **关键模块**：
 
@@ -115,7 +117,7 @@ novelwriter 的制片模块，UI 在 `ui_panel_drama.py`，引擎在 `dramavideo
 |---|---|
 | `ui_panel_drama.py` (≈45KB) | 剧集工作台 UI：`show(app)` 入口；三页（大纲 / 资产 / 分镜视频）由 `state` + `dramavideo` 状态驱动；后台线程跑生成，`win.after` 回主线程刷新 |
 | `dramavideo.py` (≈70KB) | 三段流水线 + ffmpeg 拼接；`DEFAULT_STYLE`、`cast.json` I/O、`_done_<类>` 标记、关键帧多图合成、`redo=True` 重做关键帧/片段（角色形象/分镜表保留） |
-| `videogen.py` (≈12KB) | 多 provider 视频生成（Seedance / Wan / MiniMax…）；分辨率×时长档位映射；并发任务管理；`text_to_video` / `image_to_video` 两路 |
+| `videogen.py` (≈12KB) | 多 provider 视频生成（Seedance / Wan / MiniMax…）；分辨率×画幅（Ark `ratio` 参数，空=9:16）×时长档位；`text_to_video` / `image_to_video` 两路 |
 | `imggen.py` (≈18KB) | 图像生成后端（角色参考图、关键帧多图合成）；PIL 可选（缺则降级为文本） |
 | `tests/test_dramavideo.py` | pytest 覆盖；monkeypatch `llm._post_stream` 风格的 mock 流 |
 | `i18n.py` (≈100KB) | 包含 `ds.shots`、`novel drama video` 等工作台文案；UI 字符串全走 `i18n.t` |

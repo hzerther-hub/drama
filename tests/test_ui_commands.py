@@ -33,3 +33,29 @@ def test_command_regex_matches_after_cleanup():
     m = re.match(r"^(/\S+)\s*(.*)$", clean, re.DOTALL)
     assert m and m.group(1).lower() == "/novel"
     assert m.group(2).startswith("start 一、核心设定")
+
+
+def test_command_candidates_respect_mode_flags(monkeypatch):
+    # 模式开关关闭 → 对应 /novel 子命令从弹窗/速查菜单消失；开启 → 保留。
+    # 直接以假 self 调方法（只触 self._COMMANDS），不实例化 App（无 Tk）。
+    import types
+
+    import config
+
+    fake = types.SimpleNamespace(_COMMANDS=ui.App._COMMANDS)
+
+    monkeypatch.setattr(config, "get_mode_flags",
+                        lambda: {"drama": False, "comic": True})
+    cmds = [c for c, _d, _k in ui.App.command_candidates(fake)]
+    assert "/novel drama" not in cmds
+    assert "/novel drama new" not in cmds
+    assert "/novel comic" in cmds
+    assert "/novel comic cast" in cmds
+    assert "/help" in cmds                       # 非模式命令不受影响
+
+    monkeypatch.setattr(config, "get_mode_flags",
+                        lambda: {"drama": True, "comic": False})
+    cmds = [c for c, _d, _k in ui.App.command_candidates(fake)]
+    assert "/novel drama" in cmds
+    assert "/novel comic" not in cmds
+    assert "/novel comic cast" not in cmds

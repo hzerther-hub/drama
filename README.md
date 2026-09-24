@@ -120,32 +120,215 @@ The repo root is the shared kernel; `products/<name>/profile.json` defines a pro
 
 Sibling profiles (`devtool`, `devtool_local`, `quant`, `devrag`) are still runnable for kernel development: `LOCAL_AI_PRODUCT=devtool python3 main.py`, or `python3 products/<name>/run.py`.
 
-## Getting started
+## Getting started: zero to first launch in 7 steps
 
-**Python 3.12+ required; 3.14+ recommended.** Python 3.14 bundles Tcl/Tk 9.0, whose color-emoji engine draws the toolbar icons in color — on 3.12/3.13 (Tk 8.6) they render as monochrome glyphs on Windows.
+Same walkthrough on Windows / macOS / Linux. Total time on a clean box: 5–15 minutes depending on pip cache.
+
+### Step 1 — Install Python 3.12 or newer
+
+Pick one:
+
+- **Windows / macOS** — get the latest 3.14.x from [python.org/downloads](https://www.python.org/downloads/). **Make sure "Add Python to PATH" is checked** in the installer.
+- **Cross-platform / sandboxed** — Miniconda:
+
+  ```bat
+  :: Windows
+  D:\miniconda3\Scripts\conda.exe create -n py314 python=3.14 -y
+  %USERPROFILE%\.conda\envs\py314\python.exe -m venv .venv
+  .venv\Scripts\python -m pip install --upgrade pip
+  ```
+
+  ```bash
+  # macOS / Linux
+  curl -L -o miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+  bash miniconda.sh -b -p "$HOME/miniconda3" && eval "$("$HOME/miniconda3/bin/conda" shell.bash hook)"
+  conda create -n py314 python=3.14 -y && conda activate py314
+  python -m pip install --upgrade pip
+  ```
+
+> **Why 3.14?** It bundles Tcl/Tk 9.0, whose color-emoji engine draws the toolbar emojis in color. On 3.12/3.13 (Tk 8.6) those inline emoji glyphs render as monochrome on Windows. **The newly added PNG icons are unaffected** — they are raster images, not font glyphs.
+
+### Step 2 — Clone and install dependencies
 
 ```bash
-pip install -r requirements.txt   # numpy/sounddevice/faster-whisper (voice), psutil, tkinterdnd2
-python3 main.py                   # Windows: python main.py
+git clone https://github.com/hzerther-hub/drama.git
+cd drama
+pip install -r requirements.txt          # core: numpy, sounddevice, faster-whisper, psutil, tkinterdnd2, imageio-ffmpeg
+pip install -r requirements-dev.txt      # optional: pytest (only needed for `tests/`)
 ```
 
-Voice deps are optional — skip them (and the voice button degrades) if you don't dictate. On Windows, install Python 3.14+ from [python.org](https://www.python.org/downloads/), or bootstrap 3.12 via Miniconda:
+If `pip install sounddevice` fails on Windows (PortAudio missing), retry after grabbing the C++ build tools:
 
 ```bat
-D:\miniconda3\Scripts\conda.exe create -n py312 python=3.12 -y
-%USERPROFILE%\.conda\envs\py312\python.exe -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
-.venv\Scripts\python main.py
+:: easiest path — uninstall and reinstall usually picks up the prebuilt wheel:
+pip uninstall sounddevice
+pip install sounddevice
+:: if it still complains, install Microsoft Visual C++ Build Tools
+:: (https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+:: and tick "Desktop development with C++"
 ```
 
-> Windows missing PortAudio? `pip uninstall sounddevice && pip install sounddevice`.
-> macOS mic permission: System Settings → Privacy & Security → Microphone → allow Python/Terminal.
+macOS:
 
-**Models** — first run seeds `models.json` with a local Qwen endpoint as default plus a DeepSeek placeholder. If you don't run a local backend, open model management (模型 menu → add provider) and enter any OpenAI-compatible endpoint with your own key: DeepSeek, Kimi, GLM, OpenAI, or a local llama.cpp/vLLM server. Mark vision models with `"vision": true` to use image attachments.
+```bash
+xcode-select --install                  # Command Line Tools (gcc/clang) before pip
+```
 
-**Media generation services** — drama-video production and the `image_gen` / `video_gen` tools need external services: an OpenAI-compatible image API (`LAS_IMAGE_*` env or a provider with `image_model` filled in model management) and an Agnes-compatible video API (`LAS_VIDEO_BASE_URL` / `LAS_VIDEO_MODEL` / `LAS_VIDEO_API_KEY`, or a provider with `video_model`). [ffmpeg](https://www.gyan.dev/ffmpeg/builds/) handles dubbing mux and episode concat — install notes in [docs/novel-setup.md](docs/novel-setup.md); optional `pip install edge-tts` upgrades dubbing quality. Without these, the writing chain is unaffected — drama-video generation reports exactly what's missing.
+Linux Debian/Ubuntu:
 
-**Config & data directory** — Linux/macOS: `~/.config/local-ai-studio/`; Windows: `%APPDATA%\local-ai-studio\` (shared kernel name; legacy `wellfuture-coder` / `qwen-coder` dirs auto-migrate). Holds `models.json`, `cache.json`, `state.json`, `sessions/`, `index/`, `media/`, `extract/`.
+```bash
+sudo apt install python3-tk python3-venv libportaudio2 portaudio19-dev
+```
+
+### Step 3 — Install ffmpeg (drama production only)
+
+Drama-video chain needs ffmpeg for dubbing mux and episode concat. Three options:
+
+- **`imageio-ffmpeg`** (already in `requirements.txt`) — bundles a static ffmpeg binary under `imageio_ffmpeg/`; the app auto-detects it, no env setup required.
+- **PATH ffmpeg** — [gyan.dev/ffmpeg/builds](https://www.gyan.dev/ffmpeg/builds/) `release` zip; extract anywhere, add the `bin\` folder to PATH.
+- **macOS** — `brew install ffmpeg`.
+- **Linux** — `sudo apt install ffmpeg`.
+
+If you only intend to author without producing short-drama MP4s, skip this step — the app prints a clear "ffmpeg missing" warning but writing continues.
+
+### Step 4 — Launch
+
+```bash
+python main.py                                # default product: novelwriter
+LOCAL_AI_PRODUCT=devtool python main.py       # switch to coding kernel
+LOCAL_AI_PRODUCT=quant python main.py         # switch to quant-translation kernel
+```
+
+First launch does three things within seconds:
+
+1. Copies the repo's `models.json` into `CONFIG_DIR/models.json` (`%APPDATA%\local-ai-studio\` on Windows).
+2. Opens the main window; the model dropdown shows only the `deepseek/deepseek-chat` placeholder (no key yet).
+3. The status bar at the bottom starts counting tokens — agent loop is live.
+
+### Step 5 — Configure a model, send your first message
+
+Click top-bar `⚙ Settings → Models`. You'll see three providers seeded:
+
+- **deepseek** (default) — empty `api_key`. Paste your `sk-...` from [Step 5b below](#step-5b--deepseek-api-key) and Save.
+- **agnes** — empty `api_key`. Paste your `sk-...` from [Step 5c below](#step-5c--agnes-api-key) and Save.
+- **sensetime** (optional) — SenseNova; useful as a vision fallback.
+
+After saving, the top-bar model dropdown lists `deepseek-chat`, `agnes-2.5-flash`, `agnes-3.0-flash`, etc. Pick one, type "hi" in the input box, hit Enter. A first reply means the chain works end-to-end. If you get `_post_stream` errors, the model id is wrong — re-select from the dropdown's suggestions.
+
+### Step 6 — (optional) Run the test suite
+
+```bash
+python -m pytest tests/ -q
+```
+
+Expect `471 passed, 1 skipped`. The single failure is `test_quant_qmt.py::test_probe_not_found`, a pre-existing issue in the upstream quant path; it does not block novel writing.
+
+### Step 7 — (optional) Build a single-file binary
+
+```bash
+pip install pyinstaller
+python packaging/build.py novelwriter          # → dist/LocalAIWriter-<platform>/
+python packaging/build.py novelwriter --clean  # rebuild
+```
+
+The packager reads `products/novelwriter/profile.json` for the exe name and excludes the AI-heavy stack (torch / faster-whisper / onnx).
+
+### Common pitfalls
+
+| Symptom | Cause / fix |
+|---|---|
+| `ModuleNotFoundError: tkinterdnd2` on launch | `pip install tkinterdnd2` |
+| Toolbar emoji render in black | Tk 8.6 limitation. Switch to Python 3.14 (Tk 9.0), or ignore — **all colored icon PNGs are unaffected** |
+| macOS mic not capturing | System Settings → Privacy & Security → Microphone → allow Python / Terminal |
+| Model dropdown shows Agnes models but calls fail | `api_key` or `base_url` mismatch (international vs China station) |
+| Drama workbench: "ffmpeg not found" | Install ffmpeg to PATH, or confirm `imageio-ffmpeg` is installed |
+| Chinese gibberish in stdout (rare) | Set `PYTHONIOENCODING=utf-8` for the run |
+
+### Config & data directory
+
+`CONFIG_DIR` is the single runtime directory that survives restarts and auto-migrates from legacy names:
+
+- **Linux/macOS** — `~/.config/local-ai-studio/`
+- **Windows** — `%APPDATA%\local-ai-studio\`
+
+Contents: `models.json` (provider config), `cache.json` (LLM cache), `state.json` (UI state), `sessions/`, `index/`, `media/`, `extract/`.
+
+### Writing your first novel (quickstart)
+
+Pick `deepseek-flash` (1M context, supports vision) in the top-bar model dropdown. In the input box:
+
+```
+/novel start A female lead is reborn in an apocalyptic world and hunts her ex-fiancé who killed her family. 8
+```
+
+The pipeline starts at `setup` (high-concept), writes the file, and pauses for review. Each stage — `setup` → `world` → `contract` → `characters` → `outline` → `volume_plan` → `chapter_plan` → `chapters` — stops for your review. Type `/novel ok` to advance, `/novel adjust <feedback>` to revise the current stage, `/novel show N` to read chapter N, `/novel rewrite N <feedback>` to redo a chapter. When the manuscript is done, `/novel drama 1-8` adapts it to a shooting script and pushes the rest into the drama workbench for shot / keyframe / video generation.
+
+For the full command reference, type `/novel help` inside the app.
+
+## Dual-provider setup: Agnes + DeepSeek
+
+One project covers **code / web novel / short drama / comic** end-to-end. The minimum configuration that exercises every pipeline is **two providers**: **DeepSeek** for text reasoning and vision (the "brain"), and **Agnes** for image and video generation (the "camera"). Both are pay-as-you-go with free credits on signup, no enterprise gating.
+
+### Why these two
+
+- **DeepSeek** supplies the long-context reasoning the writing and coding kernels need (`agent.run()` has a 24-round tool-calling budget; novelwriter stages consume 30k–120k-token contexts). `deepseek-chat` is the default in `models.json`.
+- **Agnes** exposes the image and video endpoints the drama-video and comic chains call into (`imggen.py` → `image_model`, `videogen.py` → `video_model`). One provider, two distinct model IDs the app picks up automatically from each provider's `image_model` / `video_model` field.
+
+A single DeepSeek key with no Agnes configuration gives you a complete writing experience (大綱 / 世界观 / 合约 / 章节剧本 / 分镜表) but no rendered frames; adding Agnes unlocks 短剧 to MP4, 漫画 to image grid, and `image_gen` / `video_gen` tools.
+
+### Apply for DeepSeek API access
+
+1. **Open the platform** — visit <https://platform.deepseek.com/sign_in>. Registration is in **Simplified Chinese** with phone-number verification; non-CN numbers can use `password login` after a `+86` SMS code is delivered to a Chinese number, or sign in with a Google / GitHub OAuth provider if exposed in your locale.
+2. **Create the account** — enter a mobile number, request a verification code (SMS), accept the user agreement. New phones register automatically.
+3. **Top up** — go to <https://platform.deepseek.com/top_up>. DeepSeek charges per 1M tokens; the smallest top-up is roughly US\$5 and gives access to every model. Payment methods at signup time support Alipay and WeChat Pay for CN users; international cards are accepted via Stripe-backed options in the billing dashboard. There is no monthly subscription — you buy credits that don't expire.
+4. **Create a key** — <https://platform.deepseek.com/api_keys> → "Create new secret key". Copy the `sk-...` string immediately; DeepSeek shows it once. Drop it into the app's provider form as `api_key`, set `base_url` to `https://api.deepseek.com` (Anthropic-compatible calls go under `https://api.deepseek.com/anthropic`).
+
+**Current model lineup (verified on `api-docs.deepseek.com/quick_start/pricing`):**
+
+| Model id | Context | Max out | Reasoning | Vision | Notes |
+|---|---|---|---|---|---|
+| `deepseek-chat` | 64K | 8K | yes (toggleable) | no | default; cheap everyday text |
+| `deepseek-flash` (alias `deepseek-v4-flash`) | 1M | 384K | yes | **yes** | cheapest Vision-capable model |
+| `deepseek-v4-pro` (alias `deepseek-v4-pro`) | 1M | 384K | no | no | Pro-tier text (0813 release) |
+| `deepseek-reasoner` | 64K | 8K | yes (always) | no | pure chain-of-thought |
+
+`deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` are accepted legacy aliases; both are now served by `DeepSeek-V4.1-Flash`. Add new ids to `models.json` under the existing `deepseek` provider if you need a model not yet listed; the kernel re-reads the file at launch.
+
+### Apply for Agnes API access
+
+1. **Open the platform** — visit <https://platform.agnes-ai.com/login> (international) or <https://platform.agnes-ai.cn/login> (China mainland). Both expose the same form; the `.cn` site may be faster from inside China.
+2. **Create the account** — click "注册 / Sign up". The form takes **email + email verification code + password + password confirm**. There is no phone-only path; use an email you can receive a 6-digit code at. Google and GitHub SSO are exposed alongside the email form if you prefer OAuth.
+3. **Add credits** — Agnes advertises "免费畅享前沿模型" (free tier) on signup. The free quota covers a small number of image and short-clip generations to validate the pipeline. For sustained drama production, top up on the billing page (Alipay / WeChat Pay on `.cn`; cards on `.com`).
+4. **Create a key** — the API-keys page is reached from the left sidebar (often labelled "API Keys" or "令牌"). Generate a new key, copy it once, paste into the provider form. Set `base_url` to whichever platform your account lives on:
+   - `https://apihub.agnes-ai.com/v1` for international
+   - the equivalent `apihub.agnes-ai.cn/v1` for China-mainland accounts (check the dashboard; the model IDs are the same either way)
+
+**Current model lineup (verified on `platform.agnes-ai.com` home + AA benchmark page):**
+
+| Capability | Model id | Use in this app |
+|---|---|---|
+| Text reasoning | `agnes-3.0-flash` | agent loop, novelwriter chain, comic dialogue |
+| Text (lighter) | `agnes-2.5-flash` | cheap sub-agent for routine tool calls |
+| Image generation | `agnes-image-2.5-flash` (older: `agnes-image-2.0`) | character ref sheet, keyframe multi-image compose |
+| Video generation | `agnes-video-v2.0` (current: `agnes-video-2.5`) | per-shot clip generation |
+| Text-to-speech | not advertised on the home page | drama-comedia only — set `LAS_TTS_*` env or wire a TTS provider manually |
+
+**A note on versioning.** `models.json` in this repo currently carries `image_model: agnes-image-2.5-flash` and `video_model: agnes-video-v2.0`. The AA homepage in 2026 shows the latest branded names as `Agnes-Image-2.0` and `Agnes-Video-2.5`. Both old and new names are accepted by the Agnes gateway in practice; if your account returns "model not found" for the legacy id, switch to the new id in model management — the app reads `image_model` / `video_model` per call, so changing it does not require a restart.
+
+### What you can produce from one project
+
+Configure once, the same app instance flips between the four editorial genres via the top-level product dropdown or by editing `products/<name>/profile.json`. The kernel is shared; only the prompt presets and pipeline stages differ.
+
+| Product | What runs | Required providers |
+|---|---|---|
+| `devtool` / `devtool_local` | coding agent, file read/write, run shell, code-graph search, MCP tools, multi-round chat | one text model (DeepSeek or Agnes text) |
+| `novelwriter` | 大綱 / 世界观 / 故事合约 / 角色表 / 摄影剧本 / 分镜表 → MP4 chapters | text (DeepSeek) + image (Agnes) + video (Agnes) + ffmpeg locally |
+| `quant` | JoinQuant ↔ PTrade ↔ 掘金 ↔ QMT cross-platform translation via deterministic IR | one text model (only used as `ParseError` fallback) |
+| `devrag` | corporate multi-root knowledge base, hybrid TF-IDF + embedding | one text model + optional embedding endpoint (`LAS_EMBED_*`) |
+| `novelwriter` 短剧台 | drama workbench (`ui_panel_drama.py`): script → assets → storyboard → keyframes → clips → dubbed MP4 | text + image + video + TTS (optional) |
+| `novelwriter` 漫画 | per-panel image generation (script acts as panel caption) | text + image |
+
+The drama and comic paths are not separate products; they're modes inside `novelwriter` opened from the drama workbench and the comic panel that the writing kernel triggers. One project, one dependency set, four editorial surfaces.
 
 ## Packaging
 

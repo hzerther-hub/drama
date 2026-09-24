@@ -182,6 +182,15 @@ class InputController:
         self.at_hide()
         self.open_scan()
 
+    # ---------------- 斜杠命令候选（按创作模式开关过滤） ----------------
+
+    def _visible_commands(self):
+        """过滤后的命令表：App.command_candidates()（按短剧/漫画模式开关
+        隐藏对应命令）；假 app / 旧 App 没有该方法时退回全量 _COMMANDS。"""
+        fn = getattr(self.app, "command_candidates", None)
+        rows = fn() if callable(fn) else self.app._COMMANDS
+        return rows
+
     def open_scan(self):
         """检测光标前的 /命令 或 @文件 token，打开对应候选弹窗。"""
         idx = self.app.input.index("insert")
@@ -195,7 +204,7 @@ class InputController:
             self.at_hide()
             word = m_cmd.group(0)
             # 前缀匹配 + 容错（多打的字母不算错：/brainstorme 也能命中 /brainstorm）
-            cands = [c for c, _d, _key in self.app._COMMANDS
+            cands = [c for c, _d, _key in self._visible_commands()
                      if c.startswith(word) or word.startswith(c)]
             if not cands:
                 return
@@ -342,8 +351,8 @@ class InputController:
         """➕ 按钮：斜杠命令速查菜单（点选命令 → 插入输入框，可补参数后发送）。"""
         app = self.app
         rows = [(f"{c}   {t(d)}", self.emoji_icon("26a1"))
-                for c, d, _k in app._COMMANDS]
-        self._menu_cmds = [c for c, _d, _k in app._COMMANDS]
+                for c, d, _k in self._visible_commands()]
+        self._menu_cmds = [c for c, _d, _k in self._visible_commands()]
         try:
             pop, lb = self.show_token_popup(rows, self.on_command_menu_pick)
             self._menu_pop = pop

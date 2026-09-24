@@ -21,6 +21,7 @@ import tkinter as tk
 from tkinter import ttk
 
 import dramavideo
+import imggen
 import videogen
 from i18n import t as _t
 import theme
@@ -60,6 +61,69 @@ def _thumb(path, size):
         return None
 
 
+def _comic_panels(md_text: str, ch: int) -> list:
+    """从漫画分镜 md 抽取第 ch 章的出图提示词列表（纯函数，便于测试）。
+
+    定位 `## 第{ch}章` 标题到下一个 `## ` 之间，收集表格行（行首 `|`），
+    跳过表头/分隔行（分隔行含 ---，表头首格「格号」不是数字），每行取最后
+    一个非空单元格去 markdown 粗体后作为出图提示词；上限 24 格防失控。
+    """
+    parts = re.split(rf"(?m)^##\s*第{ch}章", md_text, maxsplit=1)
+    if len(parts) < 2:
+        return []
+    body = parts[1]
+    nxt = re.search(r"(?m)^##\s", body)
+    if nxt:
+        body = body[:nxt.start()]
+    panels = []
+    for line in body.splitlines():
+        s = line.strip()
+        if not s.startswith("|"):
+            continue
+        cells = [c.strip() for c in s.split("|") if c.strip()]
+        if not cells or not cells[0].isdigit():
+            continue                    # 表头行（首格是「格号」不是数字）
+        if any("---" in c for c in cells):
+            continue                    # 分隔行
+        prompt = cells[-1].replace("**", "").strip()
+        if prompt:
+            panels.append(prompt)
+        if len(panels) >= 24:
+            break
+    return panels
+
+
+def _stitch_comic(out_dir, ch, n):
+    """把 漫画/第{ch}-格01..n.png 竖向拼成 第{ch}-长图.png，返回路径。
+
+    等宽缩放到首格宽度再贴；PIL 是可选依赖（模块头 try-import，缺失时
+    Image 为 None），无 PIL 直接跳过拼接返回 ""，不影响已出的格图。
+    """
+    if Image is None:
+        return ""
+    imgs = []
+    for i in range(1, n + 1):
+        fp = os.path.join(out_dir, f"第{ch}-格{i:02d}.png")
+        if os.path.exists(fp):
+            imgs.append(Image.open(fp))
+    if not imgs:
+        return ""
+    w = imgs[0].width
+    scaled = []
+    for im in imgs:
+        if im.width != w:
+            im = im.resize((w, max(1, int(im.height * w / im.width))))
+        scaled.append(im.convert("RGB"))
+    canvas = Image.new("RGB", (w, sum(im.height for im in scaled)), "white")
+    y = 0
+    for im in scaled:
+        canvas.paste(im, (0, y))
+        y += im.height
+    out = os.path.join(out_dir, f"第{ch}-长图.png")
+    canvas.save(out)
+    return out
+
+
 def show(app):
     import ui
     FONT_UI, FONT_MONO = ui.FONT_UI, ui.FONT_MONO
@@ -71,6 +135,10 @@ def show(app):
         app._set_status(_t("novel.none"))
         return
     state = p.state
+    # v2.1：兜底补 drama_style / comic_style 字段，确保后续 inject_style 不空
+    import dramavideo
+    dramavideo.ensure_style_fields(state)
+    import config
     import novel_chain
     book = novel_chain._book_dir(state)
     chapters = [c for c in state.get("chapters", []) if c.get("text")]
@@ -150,6 +218,35 @@ def show(app):
         b.pack(side="left", padx=3)
         step_btns[n] = b
 
+    # ---- v2.5：工作流模式选择（drama / comic / both）----
+    # mode = "drama"  → 工作台隐藏漫画行，专注分集视频
+    # mode = "comic"  → 工作台只显示漫画行（其它 step 仍可访问，但意义不大）
+    # mode = "both"    → 现状（默认）
+    wf_mode_var = tk.StringVar(value=state.get("drama_workflow_mode") or "both")
+
+    def _save_mode():
+        state["drama_workflow_mode"] = wf_mode_var.get()
+        p.save()
+        _refresh_comic_visibility()
+    ui._flat_button(bar, text="⚙", width=2, font=(FONT_UI, 9),
+                    command=lambda: _cycle_mode()).pack(side="left", padx=(8, 0))
+
+    def _cycle_mode():
+        # drama → comic → both → drama（按最常用顺序循环）
+        order = ("drama", "comic", "both")
+        cur = wf_mode_var.get()
+        nxt = order[(order.index(cur) + 1) % 3] if cur in order else "both"
+        wf_mode_var.set(nxt)
+        _save_mode()
+
+    def _refresh_comic_visibility():
+        # comic 行：根据 wf_mode 决定 show/hide（mode != "drama" 才显示）
+        m = wf_mode_var.get()
+        if m == "drama":
+            comic_row.pack_forget()
+        else:
+            comic_row.pack(fill="x", padx=14, pady=(2, 0))
+
     ch_var = tk.StringVar()
     ch_box = ttk.Combobox(top, textvariable=ch_var, width=10, state="readonly",
                           font=(FONT_UI, 10),
@@ -157,6 +254,10 @@ def show(app):
     ch_box.current(0)
     ch_box.pack(side="right")
     ch_box.bind("<<ComboboxSelected>>", lambda e: _on_chapter())
+    ui._flat_button(top, text=_t("ds.ep_list_btn"), width=7,
+                    font=(FONT_UI, 9),
+                    command=lambda: _episode_overview()).pack(
+                        side="right", padx=(0, 6))
 
     # ---- 顶栏：视频模型 + 分辨率档位（provider 切换 → resolution 联动） ----
     video_providers = videogen.available_providers()
@@ -251,6 +352,164 @@ def show(app):
                     ).pack(side="left", padx=2)
     tk.Label(style_row, text=_t("ds.style_hint"), font=(FONT_UI, 8),
              bg=theme.BG, fg=theme.MUTED).pack(side="left", padx=8)
+
+    # ---- 每章字数目标：写进 state["ch_words"]，pipeline 生成正文时消费 ----
+    try:
+        _w0 = int(state.get("ch_words") or 3000)
+    except (TypeError, ValueError):    # noqa: BLE001 旧检查点脏值兜底
+        _w0 = 3000
+    words_var = tk.StringVar(value=str(_w0))
+
+    def _save_words():
+        # 字数是「目标」不做硬拦截：手输非法值夹回档位区间，保存绝不崩 UI
+        try:
+            n = max(500, min(20000, int(float(words_var.get()))))
+        except (TypeError, ValueError):
+            n = 3000
+            words_var.set(str(n))
+        state["ch_words"] = n
+        try:
+            p.save()
+        except Exception:              # noqa: BLE001
+            pass
+        status(_t("novel.set_words", n=n))
+
+    tk.Label(style_row, text=_t("ds.words_label"), font=(FONT_UI, 10),
+             bg=theme.BG, fg=theme.MUTED).pack(side="right", padx=(8, 0))
+    ttk.Spinbox(style_row, from_=500, to=20000, increment=100, width=7,
+                font=(FONT_UI, 10), textvariable=words_var
+                ).pack(side="right", padx=4)
+    # side="right" 先 pack 的靠最右：按钮 → 框 → 文字，视觉顺序「每章字数 [框] 保存」
+    ui._flat_button(style_row, text=_t("btn.save"), width=8,
+                    font=(FONT_UI, 9), command=_save_words).pack(side="right")
+
+    # ---- 漫画入口：生成本章分镜表 → 逐格出图 → 拼长图（进度复用底部状态栏） ----
+    comic_row = tk.Frame(win, bg=theme.BG)
+    comic_row.pack(fill="x", padx=14, pady=(2, 0))
+    comic_btns = []
+    # v2.5：跟 wf_mode 联动，初次进入时按 state 决定是否展示
+    _refresh_comic_visibility()
+
+    def _comic_btns_enabled(on):
+        for b in comic_btns:
+            try:
+                b.config(state="normal" if on else "disabled")
+            except tk.TclError:        # noqa: BLE001 窗口已关时静默
+                pass
+
+    def _gen_comic_board():
+        """当前章 → comic_adapt 生成 漫画分镜.md（LLM 调用必须放后台线程）。"""
+        if st["busy"]:
+            status(_t("ds.busy"), busy=True)
+            return
+        ch = st["ch"]
+
+        def work():
+            try:
+                novel_chain.comic_adapt(state, ch, ch)
+            except Exception as e:     # noqa: BLE001 StageStopError 等统一 ❌ 提示
+                win.after(0, lambda err=e: status(
+                    f"❌ {type(err).__name__}: {err}"))
+            else:
+                win.after(0, lambda: status(_t("ds.ready")))
+        status(_t("ds.generating", n=_t("ds.comic_board")), busy=True)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _comic_draw():
+        """分镜表逐格出图（后台线程），完成后 PIL 竖拼长图；停止在格间生效。"""
+        if st["busy"]:
+            status(_t("ds.busy"), busy=True)
+            return
+        if not imggen.available():     # 未配置图像后端：仅提示，不抛
+            status(_t("ds.comic_img_unavailable"))
+            return
+        ch = st["ch"]
+        md = os.path.join(book, "漫画分镜.md")
+        panels = []
+        if os.path.exists(md):
+            with open(md, encoding="utf-8") as f:
+                panels = _comic_panels(f.read(), ch)
+        if not panels:
+            status(_t("ds.comic_none"))
+            return
+        out_dir = os.path.join(book, "漫画")
+        os.makedirs(out_dir, exist_ok=True)
+        # 停止走与短剧共用的 app._drama_stop_event；没有就建一个，
+        # 开跑前先 clear，防上一次中止遗留的置位让本次一格不出就退
+        stop = getattr(app, "_drama_stop_event", None)
+        if stop is None:
+            stop = app._drama_stop_event = threading.Event()
+        stop.clear()
+        n = len(panels)
+
+        def work():
+            ok = fail = 0
+            for i, prompt in enumerate(panels, 1):
+                if stop.is_set():      # 「停止」只在格间生效，当前格跑完即收手
+                    break
+                try:
+                    imggen.generate_ex(
+                        prompt,
+                        os.path.join(out_dir, f"第{ch}-格{i:02d}.png"),
+                        size="1K", ratio="3:4")
+                    ok += 1
+                except Exception:      # noqa: BLE001 单格失败不阻断批次
+                    fail += 1
+                # 线程不碰控件：进度一律 win.after 回主线程刷
+                win.after(0, lambda i=i: status(
+                    _t("ds.comic_progress", i=i, n=n), busy=True))
+            # 拼长图也是纯 PIL 计算，留在线程里做，别卡主线程
+            stitched = ""
+            if not stop.is_set() and ok:
+                stitched = _stitch_comic(out_dir, ch, ok)
+
+            def done():
+                _comic_btns_enabled(True)
+                if stop.is_set() and ok + fail < n:
+                    status(("⏹ " + _t("ds.comic_done", n=ok)) if ok
+                           else _t("ds.ready"))
+                    return
+                if ok == 0:
+                    status(f"❌ {_t('ds.comic_img_unavailable')}")
+                    return
+                msg = "✅ " + _t("ds.comic_done", n=ok)
+                if fail:
+                    msg += f"（{fail} 失败）"
+                if stitched:
+                    msg += " · " + os.path.basename(stitched)
+                status(msg)
+            win.after(0, done)
+        status(_t("ds.generating", n=_t("ds.comic_draw")), busy=True)
+        _comic_btns_enabled(False)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _open_comic_dir():
+        d = os.path.join(book, "漫画")
+        os.makedirs(d, exist_ok=True)
+        try:
+            os.startfile(d)            # Windows
+        except AttributeError:         # noqa: BLE001 非 Windows 无 startfile
+            import subprocess
+            import sys
+            try:
+                subprocess.Popen(
+                    ["open" if sys.platform == "darwin" else "xdg-open", d])
+            except Exception as e:     # noqa: BLE001 打不开只提示不崩
+                status(f"❌ {type(e).__name__}: {e}")
+
+    b_board = ui._flat_button(comic_row, text="📖 " + _t("ds.comic_board"),
+                              width=16, font=(FONT_UI, 9),
+                              command=_gen_comic_board)
+    b_board.pack(side="left")
+    b_draw = ui._flat_button(comic_row, text="🖼 " + _t("ds.comic_draw"),
+                             width=12, font=(FONT_UI, 9),
+                             command=_comic_draw)
+    b_draw.pack(side="left", padx=6)
+    b_open = ui._flat_button(comic_row, text="📂 " + _t("ds.comic_open"),
+                             width=12, font=(FONT_UI, 9),
+                             command=_open_comic_dir)
+    b_open.pack(side="left")
+    comic_btns.extend((b_board, b_draw, b_open))
 
     stat_foot = tk.Frame(win, bg=theme.BG)
     stat_foot.pack(fill="x", padx=14)
@@ -354,6 +613,147 @@ def show(app):
     btn1 = ui._flat_button(mid1, text=_t("ds.save_doc"), width=12,
                            font=(FONT_UI, 10), command=lambda: _save_doc())
     btn1.pack(anchor="e", padx=8, pady=(0, 8))
+
+    # ---- AI 改写（火宝剧本阶段）：粘贴/载入原文 → 换模型、调语气 → 存为拍摄剧本。
+    # 拍摄剧本落盘 短剧剧本/第N章-剧本.md 后，分镜/资产链路自动以它为输入
+    # （dramavideo._chapter_source_text，文件存在即覆盖原文，删除即回退）。
+    right1 = tk.Frame(f1, bg=theme.PANEL, width=380,
+                      highlightthickness=1, highlightbackground=theme.BORDER)
+    right1.pack(side="left", fill="y", padx=(8, 0))
+    right1.pack_propagate(False)
+    tk.Label(right1, text=_t("ds.rewrite"), font=(FONT_UI, 11, "bold"),
+             bg=theme.PANEL, fg=theme.ACCENT).pack(anchor="w", padx=8,
+                                                   pady=(8, 2))
+    tk.Label(right1, text=_t("ds.rewrite_src"), font=(FONT_UI, 8),
+             bg=theme.PANEL, fg=theme.MUTED).pack(anchor="w", padx=8)
+    src1 = tk.Text(right1, height=6, font=(FONT_UI, 9), wrap="word",
+                   relief="flat", bg=theme.BG, fg=theme.TEXT, padx=6, pady=4)
+    src1.pack(fill="x", padx=8, pady=(0, 4))
+    hint1 = tk.Label(right1, text="", font=(FONT_UI, 8), bg=theme.PANEL)
+    hint1.pack(anchor="w", padx=8)
+
+    row1a = tk.Frame(right1, bg=theme.PANEL)
+    row1a.pack(fill="x", padx=8, pady=2)
+    ui._flat_button(row1a, text=_t("ds.rewrite_load"), width=12,
+                    font=(FONT_UI, 9),
+                    command=lambda: _load_chapter_src()).pack(side="left")
+    tk.Label(row1a, text=_t("ds.rewrite_tone"), font=(FONT_UI, 8),
+             bg=theme.PANEL, fg=theme.MUTED).pack(side="left", padx=(6, 0))
+    tone1_e = tk.Entry(row1a, width=16, font=(FONT_UI, 9), relief="flat",
+                       bg=theme.BG, fg=theme.TEXT)
+    tone1_e.pack(side="left", padx=4)
+    row1b = tk.Frame(right1, bg=theme.PANEL)
+    row1b.pack(fill="x", padx=8, pady=2)
+    tk.Label(row1b, text=_t("ds.rewrite_model"), font=(FONT_UI, 8),
+             bg=theme.PANEL, fg=theme.MUTED).pack(side="left")
+    _models = [m for m in (config.load_models()[0] or []) if m.key]
+    _model_labels = [f"{m.display_name}（{m.key}）" for m in _models]
+
+    def _model_by_label(lab):
+        for m in _models:
+            if f"{m.display_name}（{m.key}）" == lab:
+                return m
+        return None
+    _cur = config.find_model(state.get("model_key"))
+    model1_var = tk.StringVar(
+        value=(f"{_cur.display_name}（{_cur.key}）" if _cur else
+               (_model_labels[0] if _model_labels else "")))
+    model1_box = ttk.Combobox(row1b, textvariable=model1_var, width=26,
+                              state="readonly", font=(FONT_UI, 8),
+                              values=_model_labels)
+    model1_box.pack(side="left", padx=4)
+    ui._flat_button(row1b, text=_t("ds.rewrite_go"), width=12,
+                    font=(FONT_UI, 9),
+                    command=lambda: _do_rewrite()).pack(side="left", padx=4)
+    tk.Label(right1, text=_t("ds.rewrite_result"), font=(FONT_UI, 8),
+             bg=theme.PANEL, fg=theme.MUTED).pack(anchor="w", padx=8,
+                                                  pady=(4, 0))
+    res1 = tk.Text(right1, height=10, font=(FONT_UI, 9), wrap="word",
+                   relief="flat", bg="white", fg=theme.TEXT, padx=6, pady=4)
+    res1.pack(fill="both", expand=True, padx=8, pady=(0, 4))
+    row1c = tk.Frame(right1, bg=theme.PANEL)
+    row1c.pack(fill="x", padx=8, pady=(0, 8))
+    ui._flat_button(row1c, text=_t("ds.rewrite_save"), width=14,
+                    font=(FONT_UI, 9),
+                    command=lambda: _save_screenplay()).pack(side="left")
+    ui._flat_button(row1c, text=_t("ds.rewrite_drop"), width=14,
+                    font=(FONT_UI, 9),
+                    command=lambda: _drop_screenplay()).pack(side="left",
+                                                             padx=6)
+
+    def _src_hint():
+        using = os.path.exists(dramavideo._screenplay_path(state, st["ch"]))
+        hint1.config(text=_t("ds.src_screenplay" if using
+                             else "ds.src_novel"),
+                     fg=theme.SUCCESS if using else theme.MUTED)
+
+    def _load_chapter_src():
+        c = next(c for c in chapters if c["idx"] == st["ch"])
+        src1.delete("1.0", "end")
+        src1.insert("1.0", c.get("text") or "")
+        status(_t("ds.rewrite_load") + f" · 第{c['idx']}章")
+
+    def _do_rewrite():
+        if st["busy"]:
+            status(_t("ds.busy"), busy=True)
+            return
+        src = src1.get("1.0", "end-1c").strip()
+        if not src:
+            status(_t("ds.rewrite_need_src"))
+            return
+        tone = tone1_e.get().strip()
+        model = _model_by_label(model1_var.get()) or \
+            config.find_model(state.get("model_key"))
+        c = next(c for c in chapters if c["idx"] == st["ch"])
+        status(_t("ds.generating", n=_t("ds.rewrite")), busy=True)
+
+        def work():
+            sys_p = ("你是短剧剧本改写师。把原始内容改写成竖屏短剧拍摄剧本："
+                     "按场景拆分，每场标题「## S编号 | 内景/外景 · 地点 | "
+                     "时间段」（编号全章连续，时间段具体到清晨/正午/黄昏/"
+                     "深夜）；动作写自然段；台词格式「角色名：（状态/表情）"
+                     "台词」；不写镜头语言（景别/运镜留给分镜步）；每场 "
+                     "30-60 秒体量；只输出剧本本身。"
+                     + (f"\n语气要求：{tone}。" if tone else ""))
+            user_p = f"第 {c['idx']} 章《{c['title']}》原始内容：\n{src}"
+            try:
+                text = novel_chain._ask_model(model, sys_p, user_p)  # noqa: SLF001
+            except Exception as e:       # noqa: BLE001
+                win.after(0, lambda err=e: status(
+                    f"❌ {type(err).__name__}: {err}"))
+                return
+
+            def done():
+                res1.delete("1.0", "end")
+                res1.insert("1.0", text)
+                status(_t("ds.rewrite_done"))
+            win.after(0, done)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _save_screenplay():
+        text = res1.get("1.0", "end-1c").strip()
+        if not text:
+            status(_t("ds.rewrite_need_src"))
+            return
+        path = dramavideo._screenplay_path(state, st["ch"])
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        # 剧本换了 → 旧分镜/参考图是旧文本的产物，清缓存让下次批量按新剧本重拆
+        sf = _shots_file(st["ch"])
+        if os.path.exists(sf):
+            os.remove(sf)
+        _src_hint()
+        status(_t("ds.rewrite_save_done"))
+
+    def _drop_screenplay():
+        path = dramavideo._screenplay_path(state, st["ch"])
+        if os.path.exists(path):
+            os.remove(path)
+        _src_hint()
+        status(_t("ds.rewrite_drop_done"))
+
+    _src_hint()
 
     def _show_doc():
         i = nav1.curselection()
@@ -490,16 +890,53 @@ def show(app):
     def _build_cast_card(card, name, info, store_path):
         dramavideo._resolve_asset_image(
             state, name, info, base=os.path.dirname(store_path))
-        ph = _thumb(info.get("path") or "", (150, 200))
+        # 默认套（default_look，单击阶段图切换）：大图随默认套显示；
+        # 关键帧在镜头无 era / era 未命中时也优先用这套
+        dft = str(info.get("default_look") or "")
+        dpath = (((info.get("looks") or {}).get(dft) or {})
+                 .get("path") or "")
+        disp = dpath if dpath and os.path.exists(dpath) else (info.get("path") or "")
+        ph = _thumb(disp, (150, 200))
         if ph:
             lbl = tk.Label(card, image=ph, bg=theme.PANEL)
             lbl.pack(padx=8, pady=(8, 2))
             st["img_refs"].append(ph)
         tk.Label(card, text=f"{name}", font=(FONT_UI, 11, "bold"),
                  bg=theme.PANEL, fg=theme.TEXT).pack()
-        # 多阶段形象（现代/古装…）：小缩略图行，双击重生成该阶段（主图锁脸）
+        # 多阶段形象（现代/古装…）：小缩略图行，单击＝设为默认套（再点取消），
+        # 双击＝重生成该阶段（主图锁脸）。单击/双击用 240ms 延迟区分。
         looks = info.get("looks") or {}
         if len(looks) > 1:
+            cur_dft = dft
+            pend = {"aid": None}
+
+            def _set_default(era):
+                c = _load_json(store_path, {})
+                it = c.get(name)
+                if not isinstance(it, dict):
+                    return
+                if it.get("default_look") == era:
+                    it.pop("default_look", None)   # 再点当前默认＝取消
+                else:
+                    it["default_look"] = era
+                _dump_json(store_path, c)
+                _refresh_cast()
+
+            def _era_click(era):
+                def go():
+                    pend["aid"] = None
+                    _set_default(era)
+                pend["aid"] = win.after(240, go)
+
+            def _era_dbl(era):
+                if pend["aid"] is not None:
+                    try:
+                        win.after_cancel(pend["aid"])
+                    except tk.TclError:          # noqa: SIM105
+                        pass
+                    pend["aid"] = None
+                _regen_look(era)
+
             lrow = tk.Frame(card, bg=theme.PANEL)
             lrow.pack(pady=1)
             for era, lk in looks.items():
@@ -511,14 +948,19 @@ def show(app):
                 if img_lbl is not None:
                     img_lbl.pack()
                     st["img_refs"].append(lph)
-                era_lbl = tk.Label(cell, text=era, font=(FONT_UI, 8),
-                                   bg=theme.PANEL, fg=theme.MUTED)
+                is_dft = era == cur_dft
+                era_lbl = tk.Label(cell, text=era + (" ·默认" if is_dft else ""),
+                                   font=(FONT_UI, 8), bg=theme.PANEL,
+                                   fg=theme.ACCENT if is_dft else theme.MUTED)
                 era_lbl.pack()
                 for w in (cell, img_lbl, era_lbl):
                     if w is not None:
+                        w.bind("<Button-1>",
+                               lambda e, era=era: _era_click(era))
                         w.bind("<Double-Button-1>",
-                               lambda e, era=era: _regen_look(era))
-            tk.Label(lrow, text="双击阶段图＝重生成（主图锁脸）",
+                               lambda e, era=era: _era_dbl(era))
+            tk.Label(lrow, text="单击阶段图＝设为默认套（再点取消）；"
+                                "双击＝重生成（主图锁脸，提示词框可手改）",
                      font=(FONT_UI, 7), bg=theme.PANEL,
                      fg=theme.MUTED).pack()
         ent = tk.Entry(card, width=22, font=(FONT_UI, 9), relief="flat",
@@ -599,8 +1041,13 @@ def show(app):
             threading.Thread(target=work, daemon=True).start()
 
         def _regen_look(era):
-            """双击阶段缩略图：重生成该阶段形象（主图锁脸，只换服装发型）。"""
+            """双击阶段缩略图：重生成该阶段形象（主图锁脸，只换服装发型）。
+
+            提示词框非空时作为该阶段的主体提示词（取代外貌描述），
+            生成前手改构图/版式从这里进。
+            """
             _save_look_to_json(ent)             # 先存描述框改动
+            custom = pmt.get().strip()          # 与主图共用自定义提示词框
             if st["busy"]:
                 status(_t("ds.busy"), busy=True)
                 return
@@ -608,7 +1055,8 @@ def show(app):
 
             def work():
                 try:
-                    lk = dramavideo.gen_look(state, name, dict(item), era)
+                    lk = dramavideo.gen_look(state, name, dict(item), era,
+                                             custom_prompt=custom)
                 except Exception as e:           # noqa: BLE001
                     win.after(0, lambda err=e: status(f"❌ {type(err).__name__}: {err}"))
                 else:
@@ -708,6 +1156,104 @@ def show(app):
         width=16, font=(FONT_UI, 10),
         command=_extract_chapter_assets)
     ch_assets_btn.pack(side="left", padx=6)
+
+    def _add_asset():
+        """手动新增资产（入通用库）：名称 + 类型 + 外貌锚，出图走卡片按钮。"""
+        top = tk.Toplevel(win, bg=theme.PANEL)
+        top.title(_t("ds.add_asset_title"))
+        top.transient(win)
+        top.grab_set()
+        top.resizable(False, False)
+        frm = tk.Frame(top, bg=theme.PANEL, padx=14, pady=10)
+        frm.pack()
+        tk.Label(frm, text=_t("ds.add_name"), font=(FONT_UI, 10),
+                 bg=theme.PANEL, fg=theme.MUTED).grid(row=0, column=0, sticky="w")
+        name_e = tk.Entry(frm, width=24, font=(FONT_UI, 10), relief="flat",
+                          bg=theme.BG, fg=theme.TEXT)
+        name_e.grid(row=0, column=1, padx=6, pady=3)
+        tk.Label(frm, text=_t("ds.add_type"), font=(FONT_UI, 10),
+                 bg=theme.PANEL, fg=theme.MUTED).grid(row=1, column=0, sticky="w")
+        type_box = ttk.Combobox(frm, values=list(dramavideo._ASSET_SECTIONS),
+                                state="readonly", width=10,
+                                font=(FONT_UI, 10))
+        type_box.set(dramavideo._ASSET_SECTIONS[0])
+        type_box.grid(row=1, column=1, sticky="w", padx=6, pady=3)
+        tk.Label(frm, text=_t("ds.add_appearance"), font=(FONT_UI, 10),
+                 bg=theme.PANEL, fg=theme.MUTED).grid(row=2, column=0, sticky="w")
+        app_e = tk.Entry(frm, width=24, font=(FONT_UI, 10), relief="flat",
+                         bg=theme.BG, fg=theme.TEXT)
+        app_e.grid(row=2, column=1, padx=6, pady=3)
+
+        def _ok():
+            n = name_e.get().strip()
+            if not n:
+                status(_t("ds.add_need_name"))
+                return
+            c = _cast()
+            if n in c:
+                status(_t("ds.add_exists", n=n))
+                return
+            c[n] = {"type": type_box.get() or "角色",
+                    "appearance": app_e.get().strip()}
+            _dump_json(cast_path, c)
+            top.destroy()
+            _refresh_cast()
+            status(_t("ds.add_done", n=n))
+        ui._flat_button(frm, text=_t("ds.add_ok"), width=10, font=(FONT_UI, 10),
+                        command=_ok).grid(row=3, column=1, sticky="e",
+                                          pady=(8, 0))
+        name_e.focus_set()
+
+    def _batch_class(sec):
+        """按类批量出图：通用库 + 本章库中该类缺 path 的资产逐个点亮。"""
+        if st["busy"]:
+            status(_t("ds.busy"), busy=True)
+            return
+        stores = [cast_path, dramavideo._chapter_assets_path(state, st["ch"])]
+        todo = []
+        for sp in stores:
+            for n, info in _load_json(sp, {}).items():
+                if n.startswith("_") or not isinstance(info, dict):
+                    continue
+                if (info.get("type") or "角色") != sec:
+                    continue
+                if not (info.get("path") or ""):
+                    todo.append((sp, n, info))
+        if not todo:
+            status(_t("ds.batch_class_none", sec=sec))
+            return
+
+        def work():
+            ok = fail = 0
+            for sp, n, info in todo:
+                try:
+                    new_info = dramavideo.gen_asset(
+                        state, n, dict(info), fallback_dir=os.path.dirname(sp))
+                except Exception:        # noqa: BLE001 单张失败不阻断批次
+                    fail += 1
+                    continue
+                c = _load_json(sp, {})
+                it = c.get(n) or dict(info)
+                it["path"] = new_info.get("path")
+                it["url"] = new_info.get("url")
+                c[n] = it
+                _dump_json(sp, c)
+                ok += 1
+            win.after(0, lambda: (_refresh_cast(),
+                                  status(_t("ds.batch_class_done", sec=sec,
+                                            ok=ok, fail=fail))))
+        status(_t("ds.generating", n=_t("ds.batch_class", sec=sec)),
+               busy=True)
+        threading.Thread(target=work, daemon=True).start()
+
+    ui._flat_button(foot2, text=_t("ds.add_asset"), width=12,
+                    font=(FONT_UI, 10),
+                    command=_add_asset).pack(side="left", padx=(6, 2))
+    for _sec in dramavideo._ASSET_SECTIONS:
+        ui._flat_button(foot2, text=_t("ds.batch_class", sec=_sec), width=8,
+                        font=(FONT_UI, 9),
+                        command=lambda s=_sec: _batch_class(s)
+                        ).pack(side="left", padx=2)
     _refresh_cast()
 
     # ================ 步骤3：分集视频 ================
@@ -726,6 +1272,27 @@ def show(app):
                           selectforeground="#ffffff", exportselection=False)
     shots_lb.pack(fill="both", expand=True, padx=4, pady=(0, 6))
     shots_lb.bind("<<ListboxSelect>>", lambda e: _show_shot())
+    # ---- 勾选拼接（参考火宝「拼接导出」选择模式）：开多选 → 勾选镜头 → 合成选中 ----
+    pick_var = tk.BooleanVar(value=False)
+
+    def _toggle_pick():
+        on = not pick_var.get()
+        pick_var.set(on)
+        shots_lb.config(selectmode="multiple" if on else "browse")
+        pick_btn.config(fg=theme.ACCENT if on else theme.MUTED)
+        if not on:
+            # 退出选择模式：收敛回当前编辑镜头，避免多选残留干扰导航
+            shots_lb.selection_clear(0, "end")
+            shots_lb.selection_set(st["shot"])
+            shots_lb.see(st["shot"])
+        status(_t("ds.pick_on" if on else "ds.pick_off"))
+    pick_btn = ui._flat_button(left3, text=_t("ds.pick_mode"), width=16,
+                               font=(FONT_UI, 9), command=_toggle_pick)
+    pick_btn.pack(anchor="w", padx=8, pady=(0, 2))
+    ui._flat_button(left3, text=_t("ds.concat_sel"), width=16,
+                    font=(FONT_UI, 9),
+                    command=lambda: _gen("concat_sel")).pack(anchor="w",
+                                                             padx=8, pady=(0, 6))
 
     center3 = tk.Frame(f3, bg=theme.PANEL)
     center3.pack(side="left", fill="both", expand=True, padx=(0, 8))
@@ -764,20 +1331,29 @@ def show(app):
     cam_e = tk.Entry(row3c, width=12, font=(FONT_UI, 10), relief="flat",
                      bg=theme.BG, fg=theme.TEXT)
     cam_e.pack(side="left", padx=4)
-    tk.Label(row3c, text=_t("ds.mood"), font=(FONT_UI, 10),
-             bg=theme.PANEL, fg=theme.MUTED).pack(side="left", padx=(8, 0))
-    mood_e = tk.Entry(row3c, width=10, font=(FONT_UI, 10), relief="flat",
-                      bg=theme.BG, fg=theme.TEXT)
-    mood_e.pack(side="left", padx=4)
     # 语速估算提示：旁白+台词完读所需秒数——低于它人物会说到一半被切镜
     spk_lbl = tk.Label(row3c, text="", font=(FONT_UI, 9), bg=theme.PANEL,
                        fg=theme.ACCENT)
     spk_lbl.pack(side="left", padx=(8, 0))
+    row3d = tk.Frame(center3, bg=theme.PANEL)
+    row3d.pack(fill="x", padx=10, pady=2)
+    tk.Label(row3d, text=_t("ds.props"), font=(FONT_UI, 10),
+             bg=theme.PANEL, fg=theme.MUTED).pack(side="left")
+    props_e = tk.Entry(row3d, width=26, font=(FONT_UI, 10), relief="flat",
+                       bg=theme.BG, fg=theme.TEXT)
+    props_e.pack(side="left", padx=4)
     tk.Label(center3, text=_t("ds.desc"), font=(FONT_UI, 10),
              bg=theme.PANEL, fg=theme.MUTED).pack(anchor="w", padx=10)
     desc_t = tk.Text(center3, height=8, font=(FONT_UI, 10), wrap="word",
                      relief="flat", bg="white", fg=theme.TEXT, padx=8, pady=6)
     desc_t.pack(fill="both", expand=True, padx=10)
+    # 氛围：一句完整的环境+情绪描述（光线/色调/天气+基调），随镜头走
+    tk.Label(center3, text=_t("ds.mood"), font=(FONT_UI, 10),
+             bg=theme.PANEL, fg=theme.MUTED).pack(anchor="w", padx=10)
+    mood_t = tk.Text(center3, height=2, font=(FONT_UI, 10), wrap="word",
+                     relief="flat", bg=theme.ACCENT_FAINT, fg=theme.TEXT,
+                     padx=8, pady=4)
+    mood_t.pack(fill="x", padx=10, pady=(2, 4))
 
     # ---- @角色名 自动补全（描述编辑框输入 @ 弹候选菜单，选中插入 @name） ----
     _role_popup = {"top": None, "lb": None, "items": [],
@@ -937,6 +1513,18 @@ def show(app):
     dlge = tk.Entry(center3, font=(FONT_UI, 10), relief="flat",
                     bg=theme.BG, fg=theme.TEXT)
     dlge.pack(fill="x", padx=10, pady=(2, 6))
+    # ---- 视频提示词（火宝 3 秒分段）：查看 / 手改 / 单镜重新生成 ----
+    vp_row = tk.Frame(center3, bg=theme.PANEL)
+    vp_row.pack(fill="x", padx=10, pady=(0, 0))
+    tk.Label(vp_row, text=_t("ds.video_prompt"), font=(FONT_UI, 10),
+             bg=theme.PANEL, fg=theme.ACCENT).pack(side="left")
+    ui._flat_button(vp_row, text=_t("ds.regen_vp"), width=12,
+                    font=(FONT_UI, 9),
+                    command=lambda: _regen_vp()).pack(side="right")
+    vp_t = tk.Text(center3, height=4, font=(FONT_UI, 9), wrap="word",
+                   relief="flat", bg=theme.ACCENT_FAINT, fg=theme.TEXT,
+                   padx=8, pady=4)
+    vp_t.pack(fill="x", padx=10, pady=(2, 4))
     btn3 = tk.Frame(center3, bg=theme.PANEL)
     btn3.pack(fill="x", padx=10, pady=(0, 10))
     ui._flat_button(btn3, text=_t("ds.save_shot"), width=12, font=(FONT_UI, 10),
@@ -1081,6 +1669,56 @@ def show(app):
                    bg=theme.PANEL, fg=theme.MUTED,
                    activebackground=theme.PANEL).pack(anchor="w", padx=10)
 
+    # ---- 收尾（火宝「拼接导出」）：标记完成 + 成片列表/播放 ----
+    done_var = tk.BooleanVar(
+        value=st["ch"] in (state.get("drama_done_chapters") or []))
+
+    def _toggle_done():
+        lst = state.setdefault("drama_done_chapters", [])
+        if done_var.get() and st["ch"] not in lst:
+            lst.append(st["ch"])
+        elif not done_var.get() and st["ch"] in lst:
+            lst.remove(st["ch"])
+        try:
+            p.save()
+        except Exception:              # noqa: BLE001
+            pass
+        status(_t("ds.mark_done_on", n=st["ch"]) if done_var.get()
+               else _t("ds.mark_done_off", n=st["ch"]))
+
+    tk.Checkbutton(right3, text=_t("ds.mark_done"), variable=done_var,
+                   command=_toggle_done, font=(FONT_UI, 9),
+                   bg=theme.PANEL, fg=theme.MUTED,
+                   activebackground=theme.PANEL).pack(anchor="w", padx=10,
+                                                      pady=(6, 0))
+    merge_var = tk.StringVar()
+    merge_box = ttk.Combobox(right3, textvariable=merge_var, state="readonly",
+                             font=(FONT_UI, 9))
+    merge_box.pack(fill="x", padx=10, pady=(6, 0))
+
+    def _refresh_merges():
+        """成片列表：本章已合成的 mp4（整集 + 选段），拼完即刷新。"""
+        out_dir = os.path.join(book, dramavideo._OUT_DIR)
+        files = []
+        if os.path.isdir(out_dir):
+            files = sorted(
+                (f for f in os.listdir(out_dir)
+                 if f.startswith(f"第{st['ch']}章")
+                 and f.endswith(".mp4")), reverse=True)
+        merge_box["values"] = files
+        merge_var.set(files[0] if files else _t("ds.no_merges"))
+
+    def _play_merge():
+        f = merge_var.get()
+        if not f or f == _t("ds.no_merges"):
+            status(_t("ds.no_out"))
+            return
+        os.startfile(os.path.join(book, dramavideo._OUT_DIR, f))
+
+    ui._flat_button(right3, text=_t("ds.play_merge"), width=18,
+                    font=(FONT_UI, 10),
+                    command=lambda: _play_merge()).pack(pady=3)
+
     # ---- 抽卡动作：列表 / 预览 / 采用（widget 在上方已建） ----
     def _canonical_clip():
         return os.path.join(book, dramavideo._CLIP_DIR,
@@ -1182,6 +1820,7 @@ def show(app):
             shots_lb.selection_set(min(sel, shots_lb.size() - 1))
             shots_lb.see(min(sel, shots_lb.size() - 1))
         _show_shot()
+        _refresh_merges()
 
     def _show_shot():
         sel = shots_lb.curselection()
@@ -1193,7 +1832,8 @@ def show(app):
         scene_e.delete(0, "end"); scene_e.insert(0, s.get("scene", ""))
         era_e.delete(0, "end"); era_e.insert(0, s.get("era", ""))
         cam_e.delete(0, "end"); cam_e.insert(0, s.get("camera", ""))
-        mood_e.delete(0, "end"); mood_e.insert(0, s.get("mood", ""))
+        mood_t.delete("1.0", "end")
+        mood_t.insert("1.0", s.get("mood", ""))
         need = dramavideo._speech_seconds(s)
         dur = int(float(s.get("duration") or 0))
         lack = dur < need
@@ -1201,10 +1841,13 @@ def show(app):
                        fg=theme.DANGER if lack else theme.ACCENT)
         chars_e.delete(0, "end")
         chars_e.insert(0, "、".join(s.get("characters", [])))
+        props_e.delete(0, "end")
+        props_e.insert(0, "、".join(s.get("props", [])))
         sec_sp.set(int(s.get("duration", 5)))
         desc_t.delete("1.0", "end"); desc_t.insert("1.0", s.get("description", ""))
         narr_e.delete(0, "end"); narr_e.insert(0, s.get("narration", ""))
         dlge.delete(0, "end"); dlge.insert(0, s.get("dialogue", ""))
+        vp_t.delete("1.0", "end"); vp_t.insert("1.0", s.get("video_prompt", ""))
         st["take_sel"] = ""                # 换镜头：take 选择复位
         _refresh_takes()
 
@@ -1217,8 +1860,9 @@ def show(app):
         s["scene"] = scene_e.get().strip()[:30]
         s["era"] = era_e.get().strip()[:12]
         s["camera"] = cam_e.get().strip()[:20]
-        s["mood"] = mood_e.get().strip()[:12]
+        s["mood"] = mood_t.get("1.0", "end-1c").strip()[:60]
         s["characters"] = [c.strip() for c in chars_e.get().split("、") if c.strip()][:4]
+        s["props"] = [c.strip() for c in props_e.get().split("、") if c.strip()][:3]
         try:
             s["duration"] = max(4, min(15, int(float(sec_sp.get()))))
         except (TypeError, ValueError):
@@ -1226,9 +1870,31 @@ def show(app):
         s["description"] = desc_t.get("1.0", "end-1c").strip()
         s["narration"] = narr_e.get().strip()[:80]
         s["dialogue"] = dlge.get().strip()
+        s["video_prompt"] = vp_t.get("1.0", "end-1c").strip()
         _dump_json(_shots_file(st["ch"]), data)
         _refresh_shots(st["shot"])
         status(_t("ds.saved", n=s["title"] or f"镜头{st['shot']+1}"))
+
+    def _regen_vp():
+        """单镜重新生成 video_prompt（火宝 3 秒分段规范），结果落盘并回填文本框。"""
+        if st["busy"]:
+            status(_t("ds.busy"), busy=True)
+            return
+        _save_shot()                       # 表单改动先落盘，重生成基于最新分镜
+        status(_t("ds.generating", n=_t("ds.regen_vp")), busy=True)
+
+        def work():
+            vp = dramavideo.regen_video_prompt(state, st["ch"], st["shot"] + 1)
+
+            def done():
+                if vp:
+                    vp_t.delete("1.0", "end")
+                    vp_t.insert("1.0", vp)
+                    status(_t("ds.regen_vp_done", n=st["shot"] + 1))
+                else:
+                    status(_t("ds.regen_vp_fail"))
+            win.after(0, done)
+        threading.Thread(target=work, daemon=True).start()
 
     def _drop_media():
         i = st["shot"] + 1
@@ -1248,6 +1914,59 @@ def show(app):
             if ch_assets_btn.winfo_exists():
                 ch_assets_btn.config(text=_t("ds.ch_assets_btn", n=st["ch"]))
             _refresh_cast()
+            _src_hint()
+            done_var.set(st["ch"] in (state.get("drama_done_chapters") or []))
+
+    def _episode_overview():
+        """剧集列表：每集制作状态总览（全部从磁盘产物派生），双击进入该集。"""
+        top = tk.Toplevel(win, bg=theme.PANEL)
+        top.title(_t("ds.ep_list", t=state.get("title", "")))
+        top.transient(win)
+        lb = tk.Listbox(top, width=72, height=20, font=(FONT_MONO, 10),
+                        bg=theme.PANEL, fg=theme.TEXT, relief="flat",
+                        highlightthickness=1,
+                        highlightbackground=theme.BORDER,
+                        selectbackground=theme.ACCENT,
+                        selectforeground="#ffffff")
+        lb.pack(fill="both", expand=True, padx=10, pady=(10, 4))
+        tk.Label(top, text=_t("ds.ep_jump"), font=(FONT_UI, 8),
+                 bg=theme.PANEL, fg=theme.MUTED).pack(pady=(0, 8))
+        out_dir = os.path.join(book, dramavideo._OUT_DIR)
+        for c in chapters:
+            ch = c["idx"]
+            using_sp = os.path.exists(dramavideo._screenplay_path(state, ch))
+            shots = _load_json(os.path.join(book, dramavideo._SHOT_DIR,
+                                            f"第{ch}章.json"), [])
+            n = len(shots)
+            vids = sum(
+                1 for i in range(1, n + 1)
+                if os.path.exists(os.path.join(book, dramavideo._CLIP_DIR,
+                                               f"{ch}-{i:02d}.mp4")))
+            merged = os.path.isdir(out_dir) and any(
+                f.startswith(f"第{ch}章") and f.endswith(".mp4")
+                for f in os.listdir(out_dir))
+            done = ch in (state.get("drama_done_chapters") or [])
+            lb.insert("end", _t(
+                "ds.ep_row",
+                n=ch, t=str(c.get("title", ""))[:12],
+                src=_t("ds.ep_src_screenplay" if using_sp
+                       else "ds.ep_src_novel"),
+                s=n, v=vids,
+                out=_t("ds.ep_out_yes" if merged else "ds.ep_out_no"),
+                done=_t("ds.ep_done" if done else "ds.ep_pending")))
+
+        def _jump(_e=None):
+            sel = lb.curselection()
+            if not sel:
+                return
+            ch = chapters[sel[0]]["idx"]
+            top.destroy()
+            for i, c in enumerate(chapters):
+                if c["idx"] == ch:
+                    ch_box.current(i)
+                    break
+            _on_chapter()
+        lb.bind("<Double-Button-1>", _jump)
 
     _GEN_KIND = {"frame": "关键帧", "clip": "镜头视频", "dub": "配音",
                  "cast": "形象", "shots": "分镜",
@@ -1315,7 +2034,7 @@ def show(app):
             m = re.search(r"take(\d+)\.mp4$", tpath.replace("\\", "/"))
             st["_last_take_n"] = m.group(1) if m else ""
             win.after(0, lambda tp=tpath: _refresh_takes(tp))
-        else:
+        elif kind == "concat":
             n = len(_shots())
             clips = []
             for k in range(1, n + 1):
@@ -1329,6 +2048,29 @@ def show(app):
                                f"第{ch}章-{dramavideo._safe_name(c['title'])}.mp4")
             dramavideo.concat(clips, out)
             win.after(0, lambda: os.startfile(out))
+        else:
+            # concat_sel：只拼勾选镜头，缺失跳过（部分拼接，huobao 语义）
+            idxs = st.get("_pick_sel") or []
+            if not idxs:
+                raise RuntimeError(_t("ds.no_pick"))
+            clips, missing = [], []
+            for k in idxs:
+                _, cp = _shot_paths(ch, k + 1)
+                if os.path.exists(cp):
+                    clips.append(cp)
+                else:
+                    missing.append(k + 1)
+            if not clips:
+                raise RuntimeError(_t("ds.no_clips"))
+            c = next(c for c in chapters if c["idx"] == ch)
+            out = os.path.join(
+                book, dramavideo._OUT_DIR,
+                f"第{ch}章-{dramavideo._safe_name(c['title'])}-选段.mp4")
+            dramavideo.concat(clips, out)
+            win.after(0, lambda: (os.startfile(out),
+                                  status(_t("ds.concat_sel_done",
+                                            n=len(clips),
+                                            skip=len(missing)))))
 
     def _gen(kind):
         if st["busy"]:
@@ -1337,8 +2079,12 @@ def show(app):
         if kind in ("frame", "clip", "take"):
             # 表单编辑先落盘：改完直接点生成即生效，不必先点「保存分镜」
             _save_shot()
+        if kind == "concat_sel":
+            # 勾选态只能在主线程读（worker 不碰 widget），先快照进 st
+            st["_pick_sel"] = sorted(int(x) for x in shots_lb.curselection())
         names = {"frame": _t("ds.gen_frame"), "clip": _t("ds.gen_clip"),
-                 "take": _t("ds.take"), "concat": _t("ds.concat")}
+                 "take": _t("ds.take"), "concat": _t("ds.concat"),
+                 "concat_sel": _t("ds.concat_sel")}
         status(_t("ds.generating", n=names[kind]), busy=True)
 
         def work():

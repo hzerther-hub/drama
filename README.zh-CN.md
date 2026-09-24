@@ -120,32 +120,214 @@ main.py → ui.launch() → App (Tkinter 主循环；每条消息一个工作线
 
 兄弟产品（`devtool`、`devtool_local`、`quant`、`devrag`）仍可用于内核开发：`LOCAL_AI_PRODUCT=devtool python3 main.py`，或 `python3 products/<name>/run.py`。
 
-## 运行
+## 运行：从零搭建到首启
 
-**要求 Python 3.12+；推荐 3.14+。** Python 3.14 自带 Tcl/Tk 9.0，其彩色 emoji 引擎让工具条图标显示为彩色——3.12/3.13（Tk 8.6）在 Windows 上渲染为黑色单色字形。
+按 7 步走，Windows / macOS / Linux 全程通用。干净机器上 5–15 分钟。
+
+### 第 1 步：装 Python 3.12 或更高
+
+任选其一：
+
+- **Windows / macOS**——到 [python.org/downloads](https://www.python.org/downloads/) 装最新的 3.14.x。**安装时务必勾选 "Add Python to PATH"**。
+- **跨平台 / 想干净隔离**——Miniconda：
+
+  ```bat
+  :: Windows
+  D:\miniconda3\Scripts\conda.exe create -n py314 python=3.14 -y
+  %USERPROFILE%\.conda\envs\py314\python.exe -m venv .venv
+  .venv\Scripts\python -m pip install --upgrade pip
+  ```
+
+  ```bash
+  # macOS / Linux
+  curl -L -o miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+  bash miniconda.sh -b -p "$HOME/miniconda3" && eval "$("$HOME/miniconda3/bin/conda" shell.bash hook)"
+  conda create -n py314 python=3.14 -y && conda activate py314
+  python -m pip install --upgrade pip
+  ```
+
+> **版本说明**：Python 3.14 自带 Tcl/Tk 9.0，彩色 emoji 渲染正常；3.12/3.13 用 Tk 8.6，行内 emoji 字形在 Windows 上呈黑色。**这次换的彩色图标 PNG 是图片，不靠字体**，不受影响。
+
+### 第 2 步：克隆并装依赖
 
 ```bash
-pip install -r requirements.txt   # numpy/sounddevice/faster-whisper（语音）、psutil、tkinterdnd2
-python3 main.py                   # Windows: python main.py
+git clone https://github.com/hzerther-hub/drama.git
+cd drama
+pip install -r requirements.txt          # 核心依赖：numpy / sounddevice / faster-whisper / psutil / tkinterdnd2 / imageio-ffmpeg
+pip install -r requirements-dev.txt      # 可选，仅要跑测试时：pytest
 ```
 
-语音依赖可选——不用语音输入可跳过（语音按钮自动降级）。Windows 上到 [python.org](https://www.python.org/downloads/) 装 Python 3.14+，或用 Miniconda 建 3.12：
+Windows 上 `pip install sounddevice` 可能报缺 PortAudio，先装：
 
 ```bat
-D:\miniconda3\Scripts\conda.exe create -n py312 python=3.12 -y
-%USERPROFILE%\.conda\envs\py312\python.exe -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
-.venv\Scripts\python main.py
+:: 先试重装，多数情况下 PyPI 轮子自带
+pip uninstall sounddevice
+pip install sounddevice
+:: 还是缺就：
+::   https://visualstudio.microsoft.com/visual-cpp-build-tools/ 勾 "Desktop development with C++"
 ```
 
-> Windows 提示缺 PortAudio？重装 sounddevice：`pip uninstall sounddevice && pip install sounddevice`。
-> macOS 麦克风无权限：系统设置 → 隐私与安全 → 麦克风 → 允许 Python/终端。
+macOS：
 
-**模型**——首次运行自动生成 `models.json`：默认一个本地 Qwen 端点 + DeepSeek 占位。不跑本地后端的话，打开模型管理（模型菜单 → 添加 provider），填任意 OpenAI 兼容端点和你自己的 Key：DeepSeek、Kimi、GLM、OpenAI 或本地 llama.cpp/vLLM 服务。识图模型标 `"vision": true` 即可收图片附件。
+```bash
+xcode-select --install                  # CLT（gcc/clang）装好再 pip
+```
 
-**媒体生成服务**——短剧成片与 `image_gen` / `video_gen` 工具需要外接服务：OpenAI 兼容图像接口（`LAS_IMAGE_*` 环境变量，或在模型管理里给供应商填 `image_model`）和 Agnes 兼容视频接口（`LAS_VIDEO_BASE_URL` / `LAS_VIDEO_MODEL` / `LAS_VIDEO_API_KEY`，或供应商填 `video_model`）。配音混流与整集拼接用 [ffmpeg](https://www.gyan.dev/ffmpeg/builds/)——安装说明见 [docs/novel-setup.md](docs/novel-setup.md)；可选 `pip install edge-tts` 提升配音质量。不配置这些不影响写作主链——成片生成会明确提示缺什么。
+Linux Debian/Ubuntu：
 
-**配置与数据目录**——Linux/macOS：`~/.config/local-ai-studio/`；Windows：`%APPDATA%\local-ai-studio\`（共享内核名；旧 `wellfuture-coder` / `qwen-coder` 目录自动迁移）。内含 `models.json`、`cache.json`、`state.json`、`sessions/`、`index/`、`media/`、`extract/`。
+```bash
+sudo apt install python3-tk python3-venv libportaudio2 portaudio19-dev
+```
+
+### 第 3 步：装 ffmpeg（成片合成需要）
+
+短剧台需要 ffmpeg 做配音混流和整集拼接。三种来源：
+
+- **`imageio-ffmpeg`**（已列在 requirements.txt）—— 把 ffmpeg 二进制塞进 `imageio_ffmpeg/` 目录，应用自动找到，无需任何环境配置。
+- **PATH 上的 ffmpeg**——[gyan.dev/ffmpeg/builds](https://www.gyan.dev/ffmpeg/builds/) 下载 `release` zip，解压到任意位置，把 `bin\` 加到系统 PATH。
+- **macOS**：`brew install ffmpeg`
+- **Linux**：`sudo apt install ffmpeg`
+
+只写小说不跑成片可以跳过这步，应用会提示「未找到 ffmpeg」但写作不中断。
+
+### 第 4 步：启动
+
+```bash
+python main.py                            # 默认产品 novelwriter
+LOCAL_AI_PRODUCT=devtool python main.py   # 切到编程内核
+LOCAL_AI_PRODUCT=quant python main.py     # 切到量化翻译内核
+```
+
+启动后 3 秒内会做三件事：
+
+1. 自动把仓库根的 `models.json` 复制到 `CONFIG_DIR/models.json`（Windows 在 `%APPDATA%\local-ai-studio\`）。
+2. 主窗口打开，顶栏模型菜单只显示 `deepseek/deepseek-chat` 占位（无 Key）。
+3. 状态栏底部计数从 0 开始递增——agent loop 正常进入。
+
+### 第 5 步：配模型，跑第一次对话
+
+点顶栏 `⚙ 设置 → 模型`，看到三个供应商：
+
+- **deepseek**（默认）——空 Key。在「DeepSeek」一栏粘贴 `sk-...`，点保存。
+- **agnes**——空 Key。在「Agnes AI」一栏粘贴 `sk-...`，点保存。
+- **sensetime**（可选）——商汤日日新，给识图备用。
+
+保存后顶栏模型下拉能看到 `deepseek-chat`、`agnes-2.5-flash`、`agnes-3.0-flash` 等条目。点模型按钮选一个，输入框打「你好」，回车——收到首条回复说明配置成功；如果冒 `_post_stream` 错，模型 id 拼错，按模型下拉的菜单建议重选一次。
+
+### 第 6 步（可选）：跑测试
+
+```bash
+python -m pytest tests/ -q
+```
+
+期望输出：`471 passed, 1 skipped`。那条 fail 是 `test_quant_qmt.py::test_probe_not_found`，是上游量化的预存在问题，不阻塞使用。
+
+### 第 7 步（可选）：打包单文件可执行
+
+```bash
+pip install pyinstaller
+python packaging/build.py novelwriter          # → dist/LocalAIWriter-<platform>/
+python packaging/build.py novelwriter --clean  # 重建
+```
+
+打包器按 `products/novelwriter/profile.json` 决定 exe 名、压 torch/whisper 重量依赖。
+
+### 常见坑
+
+| 现象 | 原因 / 解决 |
+|---|---|
+| 启动报 `ModuleNotFoundError: tkinterdnd2` | 漏装：`pip install tkinterdnd2` |
+| 顶栏 emoji 字形黑色 | Tk 8.6 局限。换 py314（Tk 9.0），或忽略——**所有彩色图标 PNG 仍正常** |
+| macOS 麦克风不响应 | 系统设置 → 隐私与安全 → 麦克风 → 允许 Python / Terminal |
+| 模型下拉选 Agnes 但调用失败 | 检查 Key 与 `base_url` 是否一致（国际 vs 中国站） |
+| 短剧台报「未找到 ffmpeg」 | 装 ffmpeg 到 PATH，或确认 `imageio-ffmpeg` 已安装 |
+| 中文乱码（少见） | Windows 控制台默认 GBK。脚本 stdout 加 `PYTHONIOENCODING=utf-8` |
+
+### 配置与数据目录
+
+`CONFIG_DIR` 是跨平台唯一的运行期目录，**重启不丢失**，旧名自动迁移：
+
+- **Linux/macOS**：`~/.config/local-ai-studio/`
+- **Windows**：`%APPDATA%\local-ai-studio\`
+
+内部：`models.json`（供应商配置）、`cache.json`（LLM 缓存）、`state.json`（UI 状态）、`sessions/`、`index/`、`media/`、`extract/`。
+
+### 写第一本书（最简流程）
+
+顶栏模型下拉选 `deepseek-flash`（1M 上下文，支持识图）。输入框：
+
+```
+/novel start 末世重生女主复仇，猎杀灭门未婚夫 8
+```
+
+流水线从 `setup`（高概念）开始，写完一个文件就停下来等你审。每个阶段——`setup → world → contract → characters → outline → volume_plan → chapter_plan → chapters`——都停一审。`/novel ok` 进下一阶段、`/novel adjust <意见>` 改当前阶段、`/novel show N` 看第 N 章、`/novel rewrite N <反馈>` 重写指定章。书成后 `/novel drama 1-8` 改写成拍摄剧本，推到剧集工作台跑分镜/关键帧/视频。
+
+完整命令参考：app 内输入 `/novel help`。
+
+## 双供应商配置：Agnes + DeepSeek
+
+这一个项目就能端到端地做 **代码 / 网文 / 短剧 / 漫画**。要把所有流水线都跑一遍，最少的配置是 **两个供应商**：**DeepSeek** 提供文本推理与识图（"大脑"），**Agnes** 提供图像与视频生成（"摄影机"）。两家都是注册即送免费额度、按量计费，没有企业门槛。
+
+### 为什么是这两家
+
+- **DeepSeek** 提供写作内核和编程内核需要的长上下文推理（`agent.run()` 单轮最多 24 次工具调用；novelwriter 各阶段实际吃 30k–120k token 上下文）。`deepseek-chat` 是 `models.json` 默认。
+- **Agnes** 暴露短剧和漫画链路调用的图像和视频接口（`imggen.py` → `image_model`，`videogen.py` → `video_model`）。一个供应商、两个模型 ID，应用按每个供应商的 `image_model` / `video_model` 字段自动挑选。
+
+只配 DeepSeek、不配 Agnes：完整的写作体验（大纲 / 世界观 / 合约 / 章节剧本 / 分镜表）能跑，但不会出帧。加 Agnes 解锁 短剧→MP4、漫画→分镜图，以及 `image_gen` / `video_gen` 工具。
+
+### 申请 DeepSeek API
+
+1. **进入平台**——访问 <https://platform.deepseek.com/sign_in>。注册页是 **简体中文 + 手机号验证**；非 +86 手机号可以走「密码登录」（先用一张 +86 号收一次短信），或在页面可见 OAuth 时改用 Google / GitHub 登录。
+2. **创建账户**——填手机号 → 收短信验证码 → 同意用户协议。新手机号会自动注册。
+3. **充值**——进入 <https://platform.deepseek.com/top_up>。DeepSeek 按 1M token 计费；最小充值约 5 美元（约 35 元），充一次所有模型都可用。CN 用户支持支付宝、微信支付；国际区可在结算面板用 Stripe 通道的银行卡。
+4. **创建 Key**——<https://platform.deepseek.com/api_keys> → 「创建新密钥」。复制 `sk-...` 串（**只显示一次**，刷新页面就消失）。粘到 app 的 provider 表单 `api_key` 字段，`base_url` 填 `https://api.deepseek.com`（Anthropic 兼容格式走 `https://api.deepseek.com/anthropic`）。
+
+**现行模型清单**（已在 `api-docs.deepseek.com/quick_start/pricing` 验证）：
+
+| 模型 id | 上下文 | 最大输出 | 推理 | 识图 | 说明 |
+|---|---|---|---|---|---|
+| `deepseek-chat` | 64K | 8K | 是（可开关） | 否 | 默认；日常文本最便宜 |
+| `deepseek-flash`（别名 `deepseek-v4-flash`） | 1M | 384K | 是 | **是** | 最便宜的识图模型 |
+| `deepseek-v4-pro` | 1M | 384K | 否 | 否 | Pro 份文本（0813 版本） |
+| `deepseek-reasoner` | 64K | 8K | 是（强总为） | 否 | 纯链式思考 |
+
+`deepseek-v4-flash` 和 `deepseek-v4-flash-vision-exp` 是兼容旧名，实际都路由到 `DeepSeek-V4.1-Flash`。要新模型就往 `models.json` 现有 `deepseek` provider 里塞一条，启动时内核会自动重读。
+
+### 申请 Agnes API
+
+1. **进入平台**——访问 <https://platform.agnes-ai.com/login>（国际）或 <https://platform.agnes-ai.cn/login>（大陆）。两个站表单一致，国内访问 `.cn` 更快。
+2. **创建账户**——点 "注册/ Sign up"。表单需要 **邮箱 + 邮箱验证码 + 密码 + 确认密码**。没有纯手机号路径，用一个能收 6 位验证码的邮箱。表单旁边还有 Google / GitHub OAuth 可用。
+3. **充值**——首页大字写着「免费畅享前沿模型」。免费额度够跑几轮小规模图像/短视频做联调。短剧成片正经生产要在账单页充值（`.cn` 是支付宝/微信；`.com` 是银行卡）。
+4. **创建 Key**——侧边栏里 "API Keys" 或 "令牌" 进入。新建一次、复制一次。`base_url` 看你账号所在站：
+   - 国际：`https://apihub.agnes-ai.com/v1`
+   - 大陆：`https://apihub.agnes-ai.cn/v1`（具体在仪表盘上确认，模型 id 同名）
+
+**现行模型清单**（已在 `platform.agnes-ai.com` 首页 + AA 榜验证）：
+
+| 能力 | 模型 id | 在本应用里的用途 |
+|---|---|---|
+| 文本推理 | `agnes-3.0-flash` | agent 循环、novelwriter 链路、漫画对白 |
+| 文本（轻量） | `agnes-2.5-flash` | 例行工具调用的廉价子智能体 |
+| 图像生成 | `agnes-image-2.5-flash`（新：`agnes-image-2.0`） | 角色参考图、关键帧多图合成 |
+| 视频生成 | `agnes-video-v2.0`（新：`agnes-video-2.5`） | 单镜头视频片段 |
+| 语音合成 | 首页没标注 | 仅短剧漫画用——配 `LAS_TTS_*` 环境变量或自行接一个 TTS 供应商 |
+
+**版本号提醒**。仓库当前 `models.json` 写的是 `image_model: agnes-image-2.5-flash` 和 `video_model: agnes-video-v2.0`。AA 首页 2026 年现役叫 `Agnes-Image-2.0` / `Agnes-Video-2.5`。Agnes 网关新旧名都接受；如果旧名报「model not found」，在模型管理里换成对应的新名——应用每次都按 `image_model` / `video_model` 现读，不用重启。
+
+### 一个项目能做什么
+
+配置一次，**同一个应用实例**通过顶栏产品下拉切四种编辑形态（也可改 `products/<name>/profile.json`）。内核是共享的，只有 prompt 预设和流水线阶段不一样。
+
+| 产品 | 跑什么 | 需要哪些供应商 |
+|---|---|---|
+| `devtool` / `devtool_local` | 编程 agent、文件读写、shell 执行、代码图谱检索、MCP 工具、多轮对话 | 1 个文本模型（DeepSeek 或 Agnes 文本） |
+| `novelwriter` | 大纲 / 世界观 / 故事合约 / 角色表 / 摄影剧本 / 分镜表 → MP4 章节 | 文本（DeepSeek）+ 图像（Agnes）+ 视频（Agnes）+ 本机 ffmpeg |
+| `quant` | 聚宽 ↔ PTrade ↔ 掘金 ↔ QMT 跨平台翻译（通过确定性 IR） | 1 个文本模型（仅在 `ParseError` 兜底时用） |
+| `devrag` | 企业多根知识库，TF-IDF + 可选 embedding 混合 | 1 个文本模型 + 可选 embedding 端点（`LAS_EMBED_*`） |
+| `novelwriter` 短剧台 | 剧集工作台（`ui_panel_drama.py`）：剧本 → 资产 → 分镜表 → 关键帧 → 片段 → 配音 MP4 | 文本 + 图像 + 视频 + TTS（可选） |
+| `novelwriter` 漫画 | 按页图像生成（剧本作为分镜说明） | 文本 + 图像 |
+
+短剧台和漫画不是独立产品，而是 `novelwriter` 内的两种形态（从工作台/触发面板进入）。**一套依赖，四种编辑产出**。
 
 ## 打包
 

@@ -274,10 +274,11 @@ def _is_bailian(svc: dict) -> bool:
         or m.startswith("wan-") or m.startswith("wan2")
 
 
-def _ark_flags(seconds: float, resolution: str = "") -> str:
-    """Seedance 文本指令头：时长钳 4-15s、竖屏 9:16、关水印、开原生音频。
+def _ark_flags(seconds: float, resolution: str = "", ratio: str = "") -> str:
+    """Seedance 文本指令头：时长钳 4-15s、关水印、开原生音频。
 
-    resolution 非空（480p/720p）时优先用之；空则走 720p 默认。
+    resolution 非空（480p/720p/1080p）时优先用之；空则走 720p 默认。
+    ratio 非空（9:16/16:9/1:1/4:3/3:4）时优先用之；空则走竖屏 9:16 默认。
     """
     try:
         dur = int(round(float(seconds))) if seconds else 5
@@ -287,14 +288,17 @@ def _ark_flags(seconds: float, resolution: str = "") -> str:
     res = (resolution or "720p").strip().lower()
     if res not in ("480p", "720p", "1080p"):
         res = "720p"
-    return (f"--resolution {res} --ratio 9:16 --dur {dur} "
+    r = (ratio or "9:16").strip()
+    if r not in ("9:16", "16:9", "1:1", "4:3", "3:4"):
+        r = "9:16"
+    return (f"--resolution {res} --ratio {r} --dur {dur} "
             "--fps 24 --watermark false --audio true")
 
 
 def _ark_create(prompt: str, image: str, seconds: float, svc: dict,
-                resolution: str = "") -> str:
+                resolution: str = "", ratio: str = "") -> str:
     content = [{"type": "text",
-                "text": _ark_flags(seconds, resolution) + "\n" + prompt}]
+                "text": _ark_flags(seconds, resolution, ratio) + "\n" + prompt}]
     if image:
         content.append({"type": "image_url", "image_url": {"url": image}})
     data = _post(f"{svc['base_url']}/contents/generations/tasks",
@@ -413,13 +417,15 @@ def _ark_query(video_id: str, svc: dict) -> dict:
 
 
 def create(prompt: str, image: str = "", size: str = "", resolution: str = "",
-           seconds: float = 0, frame_rate: int = _DEFAULT_FPS,
+           ratio: str = "", seconds: float = 0, frame_rate: int = _DEFAULT_FPS,
            preferred_provider_id: str = "") -> str:
     """建任务，返回任务 ID；失败抛 VidError。
 
     size：Agnes 兼容模式像素串（"1152x768"），新代码走 resolution 即可。
     resolution：按当前 provider 原生档位传入（ark: 480p/720p、minimax: 768P/2K、
                 bailian: 480P/720P/1080P）。Agnes 兼容模式下等同 size。
+    ratio：画幅，仅 Ark（Seedance）消费（9:16/16:9/1:1/4:3/3:4）；
+           空 = 竖屏 9:16。其它 provider 忽略（画幅由 size 像素决定）。
     preferred_provider_id：UI 顶栏当前选中的 provider（覆盖 globals/env）。
     """
     svc = _service(preferred_provider_id=preferred_provider_id)
@@ -429,7 +435,7 @@ def create(prompt: str, image: str = "", size: str = "", resolution: str = "",
     res = (resolution or "").strip()
     if _is_ark(svc):
         try:
-            return _ark_create(prompt, image, seconds, svc, res)
+            return _ark_create(prompt, image, seconds, svc, res, ratio)
         except VidError:
             raise
         except Exception as e:         # noqa: BLE001
@@ -533,15 +539,17 @@ def download(url: str, out_path: str) -> str:
 
 
 def generate(prompt: str, out_path: str, image: str = "", size: str = "",
-             resolution: str = "", seconds: float = 0, timeout: float = 150.0,
+             resolution: str = "", ratio: str = "", seconds: float = 0,
+             timeout: float = 150.0,
              poll: float = 5.0, preferred_provider_id: str = "") -> str:
     """端到端：建任务 → 轮询 → 下载 MP4。超时抛 VidError（附任务 ID 可续查）。
 
     resolution：与 create() 同义，按当前 provider 原生档位传入。
+    ratio：与 create() 同义（仅 Ark 消费；空 = 9:16 竖屏）。
     preferred_provider_id：与 create() 同义，UI 顶栏 provider 选择优先。
     """
     vid = create(prompt, image=image, size=size, resolution=resolution,
-                 seconds=seconds,
+                 ratio=ratio, seconds=seconds,
                  preferred_provider_id=preferred_provider_id)
     deadline = time.monotonic() + max(10.0, timeout)
     while time.monotonic() < deadline:

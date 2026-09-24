@@ -5192,6 +5192,25 @@ class App:
         ("/undo", "cmd.undo", "undo"),
     ]
 
+    def command_candidates(self):
+        """按创作模式开关过滤后的斜杠命令表（输入弹窗 / ➕ 速查菜单用）。
+
+        drama 模式关 → 隐藏全部 /novel drama*；comic 模式关 → 隐藏全部
+        /novel comic*。返回三元组 (cmd, i18n key, group key)，结构与
+        _COMMANDS 一致——发送时的权威闸门在 _novel_command，这里是「看不见」。
+        """
+        flags = config.get_mode_flags()
+        out = []
+        for cmd, d, key in self._COMMANDS:
+            if not flags.get("drama") and (
+                    cmd == "/novel drama" or cmd.startswith("/novel drama ")):
+                continue
+            if not flags.get("comic") and (
+                    cmd == "/novel comic" or cmd.startswith("/novel comic ")):
+                continue
+            out.append((cmd, d, key))
+        return out
+
     def _run_command(self, text):
         """本地执行以 / 开头的命令；返回 True 表示已处理（不发给模型）。"""
         import re as _re
@@ -5796,6 +5815,13 @@ class App:
             self._novel_task_begin()
             self._novel_run(p)
         elif head == "drama":
+            if not config.get_mode_flags().get("drama"):
+                # 短剧模式开关未开：整条 drama 子命令链一律拦截（闸门双保险之一，
+                # 另一处在 ui_input 弹窗过滤 command_candidates）
+                msg = _t("mode.gate_drama")
+                self._set_status(msg)
+                self._append("⚠ " + msg + "\n", "denied")
+                return
             if rest.strip().startswith("new"):
                 self._novel_drama_new(rest.strip()[3:].strip())
                 return
@@ -5835,7 +5861,7 @@ class App:
                 else:
                     self._set_status(_t("novel.drama_stop_idle"))
                 return
-            if rest.strip() == "reset":
+            if rest.strip() in ("reset", "reset drama", "reset comic", "reset assets"):
                 from tkinter import messagebox
                 p0 = getattr(self, "_novel_pipe", None)
                 if p0 is None:
@@ -5844,14 +5870,31 @@ class App:
                 if self._novel_task_busy():
                     self._set_status(_t("novel.busy"))
                     return
-                if not messagebox.askyesno(
-                        _t("novel.drama_reset_title"),
-                        _t("novel.drama_reset_confirm"), parent=self.root):
+                # 三条 reset 路径各自独立的 i18n + 二次确认；reset 仍保留为「全清」
+                if rest.strip() == "reset":
+                    title = _t("novel.drama_reset_title")
+                    confirm = _t("novel.drama_reset_confirm")
+                    fn = dramavideo.reset
+                    done_key = "novel.drama_reset_done"
+                elif rest.strip() == "reset drama":
+                    title = _t("novel.drama_reset_drama_title")
+                    confirm = _t("novel.drama_reset_drama_confirm")
+                    fn = dramavideo.reset_drama
+                    done_key = "novel.drama_reset_drama_done"
+                elif rest.strip() == "reset comic":
+                    title = _t("novel.drama_reset_comic_title")
+                    confirm = _t("novel.drama_reset_comic_confirm")
+                    fn = dramavideo.reset_comic
+                    done_key = "novel.drama_reset_comic_done"
+                else:                                   # reset assets
+                    title = _t("novel.drama_reset_assets_title")
+                    confirm = _t("novel.drama_reset_assets_confirm")
+                    fn = dramavideo.reset_assets
+                    done_key = "novel.drama_reset_assets_done"
+                if not messagebox.askyesno(title, confirm, parent=self.root):
                     return
-                import dramavideo
-                n = dramavideo.reset(p0.state)
-                self._append("♻️ " + _t("novel.drama_reset_done", n=n)
-                             + "\n", "meta")
+                n = fn(p0.state)
+                self._append("♻️ " + _t(done_key, n=n) + "\n", "meta")
                 self._schedule_fs_refresh()
                 return
             if not rest.strip():
@@ -5885,7 +5928,14 @@ class App:
                     self._novel_task_end()
             threading.Thread(target=drama_work, daemon=True).start()
         elif head == "comic":
+            # 合并：远程新增「创意任务自动放行 always」（创作类不再走审批弹窗）
+            # + 本地 v2.x「漫画模式开关闸门」（drama/comic 创作模式未开则拦截）
             self._auto_always_for_creative_run("生成漫画")
+            if not config.get_mode_flags().get("comic"):
+                msg = _t("mode.gate_comic")
+                self._set_status(msg)
+                self._append("⚠ " + msg + "\n", "denied")
+                return
             self._novel_comic(rest.strip())
         elif head == "extend":
             rest, pid = _split_pid(rest)
@@ -6027,6 +6077,19 @@ class App:
                 mark = "▶ " if r["pid"] == cur_pid else "· "
                 self._append(f"{mark}{r['pid']} [{r['pipeline_status']}] "
                              f"{r['title']}（债 {r['debts']}）{warn}\n", "meta")
+
+    def _review_choice(self, choice: str, feedback: str = ""):
+        """review modal 用户选择：ok=通过当前阶段 / adjust=带反馈重做 / skip=什么都不做。
+
+        仅在 _novel_task_busy() 为 False 时响应；否则视为用户已在 chat 区手动
+        发过命令，忽略窗内点击，避免重复触发。"""
+        if self._novel_task_busy():
+            return
+        if choice == "ok":
+            self._novel_ok()
+        elif choice == "adjust" and feedback.strip():
+            self._novel_adjust(feedback.strip())
+        # "skip"：什么都不做，用户自己输 /novel ok 或 /novel adjust 即可
 
     def _novel_ok(self):
         """继续：逐阶段模式下只推进一个阶段，随后再次暂停供调定。
@@ -6980,15 +7043,27 @@ class App:
                 self._append((p.state.get(key) or "")[:1200] + "\n", "meta")
                 self._append("💡 /novel ok 继续 ｜ /novel adjust <修改意见> 调定\n",
                              "meta")
-                # 阶段暂停 → spinner 显式停（避免一直转）
+                # 合并：远程的 spinner 显式停 + 状态行更新 + 可选 C 档编辑弹窗
+                # + 本地 v2.x 阶段审阅 modal（通过/调定/跳过）
                 _spinner_stop = getattr(self, "_spinner_stop", None)
                 if _spinner_stop: _spinner_stop()
                 _set_status = getattr(self, "_set_status", None)
                 if _set_status:
                     _set_status(f"⏸ {labels.get(last, last)} 产物就绪 · 待确认")
-                # C 档：阶段后弹窗编辑产物
+                # C 档：阶段后弹窗编辑产物（远程新增的「可继续编辑」入口）
                 if getattr(self, "_stage_review_enabled", True):
                     self._stage_review_then(last)
+                # v2.x：弹阶段审阅 modal（用户评：通过/调定/跳过）
+                try:
+                    import ui_panel_novel_review as _review
+                    stage_label = labels.get(last, last)
+                    state_text = (p.state.get(key) or "")[:2400]
+                    _review.show(self, self.root,
+                                 stage_name=stage_label,
+                                 state_text=state_text,
+                                 on_choice=self._review_choice)
+                except Exception as e:        # noqa: BLE001
+                    self._set_status(_t("novel.review_fail", e=str(e)))
             else:
                 self._append("⏸ " + _t("novel.paused_msg") + "\n", "meta")
                 _spinner_stop = getattr(self, "_spinner_stop", None)

@@ -27,7 +27,16 @@ try:
 except Exception:                    # noqa: BLE001
     Image = None
 
-DEFAULT_STYLE = "电影感写实风格，统一色调与打光，画面细腻，短剧质感"
+DEFAULT_STYLE = ("high-quality 3D CG animation still, modern game-engine cinematic "
+                    "render, Unreal Engine and Pixar grade quality, semi-realistic "
+                    "stylized characters with refined facial features, clean "
+                    "sculpted anatomy, detailed skin shader with subtle subsurface "
+                    "scattering, PBR materials with crisp detailed textures, "
+                    "volumetric cinematic lighting with soft rim light, rich depth "
+                    "of field, polished film color grading, detailed environment "
+                    "art, sharp focus, consistent character design across shots, "
+                    "avoid flat lighting, avoid plastic waxy skin, avoid low-poly "
+                    "blurry look, avoid 2D flat cel shading, avoid anime line art")
 
 # 内容审核触发的特殊异常：UI 顶栏接住后可提示「切模型重试」
 class DramaModerationError(Exception):
@@ -126,132 +135,129 @@ def resolve_style(state: dict) -> str:
     return DEFAULT_STYLE
 
 
+def resolve_comic_style(state: dict) -> str:
+    """漫画画风回退链：state['comic_style']（空=跟随 drama_style）→ drama_style。
+
+    漫画线独立画风：state.comic_style 为空字符串则跟随项目视觉风格；非空
+    则覆盖。这是 v2.1 新增字段，老 book 在加载时会被 ensure_style_fields()
+    兜底初始化为 ''。
+    """
+    v = (state or {}).get("comic_style")
+    if v is None:
+        return resolve_style(state)
+    if isinstance(v, str) and v.strip():
+        return v.strip()
+    return resolve_style(state)
+
+
+def inject_style(state: dict, prompt: str) -> str:
+    """v2.1：单点风格注入。所有资产/视频/漫画 prompt 都走这条路径前缀注入
+    视觉风格词，禁止 agent prompt 模板自己写风格词（防风格词打架）。
+
+    使用例：
+        prompt = inject_style(state, f"{sec}基础形象：" + tpl.format(a=ap))
+    """
+    s = (prompt or "").strip()
+    return f"{resolve_style(state)}。{s}" if s else resolve_style(state)
+
+
+def inject_comic_style(state: dict, prompt: str) -> str:
+    """v2.1：漫画线单点风格注入。comic_style 为空时回退 drama_style。"""
+    s = (prompt or "").strip()
+    return f"{resolve_comic_style(state)}。{s}" if s else resolve_comic_style(state)
+
+
+def ensure_style_fields(state: dict) -> None:
+    """加载/新建流水线时兜底：缺 drama_style / comic_style 就补成有效值。
+
+    drama_style：回退链结果（落到 state）；下次用户改风格时直接覆写。
+    comic_style：空字符串（= 跟随 drama_style）；改成具体画风时也是覆写。
+    老 book 第一次打开工作台会自动跑一次。
+    """
+    if not state.get("drama_style"):
+        state["drama_style"] = resolve_style(state)
+    if "comic_style" not in state:
+        state["comic_style"] = ""        # 默认跟随项目视觉风格
+
+
 # 风格库（参考 Pavo 写法：风格=一段视觉质感公式——渲染质感+线条上色+
 # 色调光线+镜头语言——注入每个分镜/资产提示词，而非光杆标签）
 STYLE_LIB = (
-    # ---- 2D 动漫 ----
-    {"name": "国漫风", "category": "2D", "text":
-        "现代国漫二维动画质感，线条干净利落，色彩明快饱满，光影对比强，"
-        "人物比例修长，具有商业国漫番剧的画面张力"},
-    {"name": "古风国漫", "category": "2D", "text":
-        "古风国漫二维动画质感，飘逸衣袂线条，青绿与朱砂配色，水墨晕染背景，"
-        "仙气光效，具有国风仙侠动漫的电影构图"},
-    {"name": "新国潮插画", "category": "2D", "text":
-        "国潮插画风格，扁平化构图与传统纹样结合，高饱和撞色，金线勾边，"
-        "现代与传统融合的东方美学"},
-    {"name": "水墨国风", "category": "2D", "text":
-        "水墨动画质感，宣纸底色，浓淡干湿笔触氤氲，留白构图，"
-        "淡彩晕染，具有中国水墨动画的意境与呼吸感"},
-    {"name": "剪纸风格", "category": "2D", "text":
-        "中国剪纸风格，红色镂空纸质纹理，对称构图，锯齿纹样边缘，"
-        "平面装饰化造型，民俗年画的浓烈配色"},
-    {"name": "皮影戏风格", "category": "2D", "text":
-        "皮影戏风格，半透明驴皮质感，关节化人物造型，暖黄背光透射，"
-        "雕花镂空纹样，具有幕布投影的戏剧感"},
-    {"name": "赛璐璐动画", "category": "2D", "text":
-        "赛璐璐二维动画质感，清晰色块分layer上色，锐利阴影线，"
-        "高光透亮，日式赛璐璐工艺的干净画面"},
-    {"name": "90年代日式动画", "category": "2D", "text":
-        "90年代日式动画质感，手绘胶片颗粒感，柔和 cel 上色，"
-        "暗部偏蓝的复古色调，宽幅构图，怀旧赛璐璐气息"},
-    {"name": "宫崎骏画风", "category": "2D", "text":
-        "宫崎骏式手绘动画质感，水彩通透上色，蓬松云朵与茂密植被，"
-        "温暖自然光，柔和而充满生命力的画面"},
-    {"name": "上美厂老动画", "category": "2D", "text":
-        "上海美术电影制片厂老动画质感，工笔重彩与写意结合，装饰性构图，"
-        "民族戏曲化的造型与配色，胶片时代的温润质感"},
-    {"name": "日式少女漫", "category": "2D", "text":
-        "日式少女漫画风格，细腻网点纸质感，大眼精致五官，柔光星尘特效，"
-        "粉彩色调，浪漫氛围光"},
-    {"name": "韩漫风", "category": "2D", "text":
-        "韩国网络漫画风格，锐利线条，高级灰调上色，冷峻都市氛围，"
-        "强对比打光，电影分镜式构图"},
+    # ---- 视觉风格预设（v2.x 替换：8 个色彩饱和、含明确的"避免"项的英文提示词）----
+    # 每个预设包含 (name, key, text) 三元；text 为英文提示词片段，会被 inject_style
+    # 自动前置到资产/分镜/漫画 prompt 的最前面，作为视觉风格锚点。
+    # category 用于 UI 分组（2D / 3D / 真人 / 内置），不参与生成逻辑。
+    {"name": "3D 漫剧", "category": "3D", "text":
+        "high-quality 3D CG animation still, modern game-engine cinematic render, "
+        "Unreal Engine and Pixar grade quality, semi-realistic stylized characters "
+        "with refined facial features, clean sculpted anatomy, detailed skin shader "
+        "with subtle subsurface scattering, PBR materials with crisp detailed textures, "
+        "volumetric cinematic lighting with soft rim light, rich depth of field, "
+        "polished film color grading, detailed environment art, sharp focus, "
+        "consistent character design across shots, avoid flat lighting, "
+        "avoid plastic waxy skin, avoid low-poly blurry look, avoid 2D flat cel shading, "
+        "avoid anime line art"},
+
+    {"name": "日漫赛璐璐", "category": "2D", "text":
+        "Japanese TV anime style, clean cel shading with hard-edged shadow shapes, "
+        "crisp uniform black line art, vivid saturated color palette, expressive "
+        "large-eyed character design with on-model proportions, detailed hand-painted "
+        "anime backgrounds, dramatic anime key lighting with screentone highlights, "
+        "key-visual poster quality, consistent character design across shots, "
+        "avoid 3D CGI look, avoid painterly soft blending, avoid watercolor texture, "
+        "avoid photorealism, avoid thick western comic outlines"},
+
+    {"name": "吉卜力手绘", "category": "2D", "text":
+        "Studio Ghibli hand-drawn animation style, soft painterly brushwork with "
+        "organic hand-crafted line quality, lush warm watercolor painted backgrounds, "
+        "gentle natural daylight with nostalgic warm glow, muted earthy natural color "
+        "palette, whimsical cozy storybook atmosphere, subtle film-grain softness, "
+        "theatrical background art quality, consistent character design across shots, "
+        "avoid hard cel shading, avoid 3D render look, avoid neon over-saturated colors, "
+        "avoid sharp digital edges, avoid photorealism"},
+
+    {"name": "水彩绘本", "category": "2D", "text":
+        "delicate watercolor storybook illustration, soft translucent color washes, "
+        "visible cold-press paper texture, fluid hand-painted brushstrokes with "
+        "gentle pigment bleeds, light airy atmosphere, harmonious pastel palette, "
+        "whimsical children book charm, loose expressive edges, consistent character "
+        "design across shots, avoid bold black outlines, avoid digital airbrush look, "
+        "avoid harsh contrast, avoid 3D rendering, avoid photorealism"},
+
+    {"name": "美式漫画", "category": "2D", "text":
+        "Western graphic-novel comic book style, bold confident black ink outlines, "
+        "halftone dot shading and screentone gradients, dynamic saturated colors with "
+        "dramatic contrast, dramatic spotlight lighting, flat graphic print look, "
+        "sharp inking details, dynamic cinematic composition, consistent character "
+        "design across shots, avoid painterly soft blending, avoid watercolor washes, "
+        "avoid photorealistic rendering, avoid 3D CGI look, avoid anime cel shading"},
+
+    {"name": "国风 2.5D", "category": "3D", "text":
+        "Chinese guofeng 2.5D illustration style, semi-realistic donghua-quality "
+        "character art, elegant flowing line work, rich traditional Chinese aesthetic "
+        "elements, layered ink-wash inspired atmospheric backgrounds, refined silk "
+        "and fabric textures, soft luminous lighting with gentle haze, sophisticated "
+        "muted jewel-tone palette, xianxia drama poster quality, consistent character "
+        "design across shots, avoid flat cel shading, avoid western comic ink style, "
+        "avoid photorealism, avoid plastic 3D look, avoid modern clothing and props "
+        "unless specified"},
+
+    {"name": "韩系网漫", "category": "2D", "text":
+        "Korean webtoon manhwa style, clean digital painting with soft gradient shading, "
+        "slim elegant character proportions, large expressive eyes with detailed "
+        "highlights, soft glowing skin rendering, romantic dreamy lighting, modern "
+        "pastel-to-vivid color palette, detailed fashion and fabric rendering, "
+        "webtoon key visual quality, consistent character design across shots, "
+        "avoid heavy black ink outlines, avoid halftone dots, avoid 3D render look, "
+        "avoid watercolor paper texture, avoid chibi proportions"},
+
     {"name": "黑白漫画", "category": "2D", "text":
-        "黑白二维漫画风格，粗细变化墨线，交叉影线排线，"
-        "高反差黑白灰，具有印刷漫画的纸面质感"},
-    {"name": "美式复古漫画", "category": "2D", "text":
-        "美式复古漫画插画质感，粗犷轮廓线，半调网点（Ben-Day dots），"
-        "战前印刷的做旧纸质色调"},
-    {"name": "儿童蜡笔手绘", "category": "2D", "text":
-        "儿童蜡笔手绘插画风格，稚拙笔触，纸张肌理，明快原色，"
-        "充满童趣的歪扭造型"},
-    {"name": "像素风", "category": "2D", "text":
-        "像素艺术风格，16-bit 点阵造型，有限调色板，清晰像素网格，"
-        "复古电子游戏画面感"},
-    {"name": "赛博朋克插画", "category": "2D", "text":
-        "赛博朋克数字插画风格，霓虹紫青撞色，雨夜反光地面，"
-        "全息投影元素，高对比暗调与霓虹高光"},
-    # ---- 3D 动画 ----
-    {"name": "国漫三维动画", "category": "3D", "text":
-        "国漫三维动画质感，次世代渲染，东方美学造型，体积光与粒子特效，"
-        "精致皮肤与布料解算，商业三维番剧水准"},
-    {"name": "写实CG都市", "category": "3D", "text":
-        "写实CG现代都市质感，PBR 材质渲染，全局光照，玻璃幕墙反射，"
-        "细腻的次表面散射皮肤，电影级景深"},
-    {"name": "写实CG仙侠", "category": "3D", "text":
-        "写实CG仙侠古风质感，飘逸布料与发丝解算，灵气光效粒子，"
-        "青绿山水氛围，仙侠游戏 CG 的华丽质感"},
-    {"name": "迪士尼动画", "category": "3D", "text":
-        "迪士尼三维动画质感，圆润夸张的角色造型，大眼睛生动表情，"
-        "饱和明亮的色彩，舞台式打光，温暖童话氛围"},
-    {"name": "皮克斯质感", "category": "3D", "text":
-        "皮克斯电影质感，细腻的次表面散射皮肤，柔软全局光照，"
-        "考究的色彩脚本，情感化的角色表演"},
-    {"name": "粘土动画", "category": "3D", "text":
-        "粘土定格动画质感，指纹压痕的黏土表面，哑光材质，"
-        "手工制作的微缩场景，逐格动画的拙趣"},
-    {"name": "黑暗奇幻", "category": "3D", "text":
-        "黑暗奇幻 CG 质感，哥特式阴郁场景，低饱和冷色调，"
-        "体积雾与逆光剪影，精细的暗部细节"},
-    {"name": "3A游戏概念", "category": "3D", "text":
-        "美国3A游戏概念艺术风格，史诗构图，电影级光效，"
-        "厚涂质感的场景渲染，宏大叙事感"},
-    # ---- 真人影视 ----
-    {"name": "现代都市写实", "category": "真人", "text":
-        "现代都市真人写实质感，自然光效，浅景深，生活化表演，"
-        "干净的商业剧打光，细腻皮肤还原"},
-    {"name": "古装真人写实", "category": "真人", "text":
-        "古装真人写实质感，考据的服饰质感，柔和的古典打光，"
-        "纱幔与烛光氛围，正剧级美术"},
-    {"name": "古风仙侠写实", "category": "真人", "text":
-        "古风仙侠真人写实质感，飘逸威亚动作，仙气缭绕的雾效，"
-        "青蓝主调的光影，仙侠剧的浪漫化打光"},
-    {"name": "港风电影", "category": "真人", "text":
-        "港风电影质感，霓虹招牌雨夜，青绿与暖黄交织色调，"
-        "手持镜头呼吸感，胶片颗粒，黄金年代港片氛围"},
-    {"name": "悬疑电影", "category": "真人", "text":
-        "悬疑电影质感，低调打光（low-key），大面积阴影与百叶窗光条，"
-        "冷蓝绿调，紧张压抑的构图"},
-    {"name": "年代剧写实", "category": "真人", "text":
-        "年代剧真人写实质感，做旧的年代美术陈设，暖黄怀旧调，"
-        "柔和室内自然光，质朴生活流表演"},
-    {"name": "韩剧都市写实", "category": "真人", "text":
-        "韩剧都市写实质感，奶油色调，柔光滤镜，精致的城市中产场景，"
-        "细腻的情感特写"},
-    {"name": "末世废土", "category": "真人", "text":
-        "末世废土真人质感，灰黄沙尘色调，破败都市残骸，"
-        "硬光与烟雾，粗粝的生存美学"},
-    {"name": "昆汀胶片", "category": "真人", "text":
-        "昆汀式胶片电影质感，章节式构图，高对比硬光，"
-        "复古宽画幅，暴力美学的艳丽色彩"},
-    {"name": "黑白胶片", "category": "真人", "text":
-        "黑白胶片摄影质感，高银盐颗粒，硬朗明暗交界，"
-        "菲茨杰拉德时代的黑白光影造型"},
-    {"name": "恐怖电影", "category": "真人", "text":
-        "恐怖电影质感，冷绿低照度，不稳定手持，负空间阴影，"
-        "令人不安的倾斜构图"},
-    {"name": "复古战争片", "category": "真人", "text":
-        "复古战争电影质感，漂白褪色的高对比色调，战地烟尘，"
-        "手持纪录片式镜头，粗颗粒胶片"},
-    {"name": "是枝裕和日式纪实", "category": "真人", "text":
-        "是枝裕和式日式纪实质感，自然柔和的家庭光线，生活化固定机位，"
-        "浅淡的低饱和色调，克制的情感表达"},
-    {"name": "蓝橙影视调色", "category": "真人", "text":
-        "好莱坞蓝橙调色风格，青橙对比的视觉冲击，"
-        "冷暖分区的打光，商业大片质感"},
-    # ---- 通用 ----
-    {"name": "电影感写实（默认）", "category": "内置", "text":
-        "电影感写实风格，统一色调与打光，画面细腻，短剧质感"},
+        "black and white manga illustration, high-contrast monochrome ink work, "
+        "dynamic hatching and cross-hatching shading, bold solid blacks with dramatic "
+        "negative space, screentone gray gradation, expressive confident ink linework, "
+        "cinematic noir lighting, professional manga page quality, consistent "
+        "character design across shots, strictly no color, avoid grayscale blur "
+        "smudging, avoid painterly soft edges, avoid photorealism, avoid 3D render look"},
 )
 
 # 兼容旧引用：只剩纯文本清单
@@ -317,9 +323,41 @@ def _book_dir(state: dict) -> str:
     return novel_chain._book_dir(state)
 
 
+_SCREENPLAY_DIR = "短剧剧本"                # 工作台账词改写出的拍摄剧本（优先于小说原文）
+
+
+def _screenplay_path(state: dict, ch) -> str:
+    return os.path.join(_book_dir(state), _SCREENPLAY_DIR, f"第{ch}章-剧本.md")
+
+
+def _chapter_source_text(state: dict, chapter: dict) -> str:
+    """分镜/资产的输入文本：拍摄剧本（短剧剧本/第N章-剧本.md）优先。
+
+    文件存在即覆盖小说原文——工作台「AI 改写→存为拍摄剧本」的产物由此
+    进入生产链；删掉该文件即回退原文。「文件存在即缓存」同哲学。
+    空文件不算数 → 回退原文，避免空白剧本误删全部 cache。
+    """
+    p = _screenplay_path(state, chapter.get("idx"))
+    if p and os.path.exists(p):
+        try:
+            with open(p, encoding="utf-8") as f:
+                t = f.read().strip()
+            if t:
+                return t
+        except OSError:
+            pass
+    return chapter.get("text") or ""
+
+
 def _ask(state: dict, system: str, user: str) -> str:
+    """v2.1：在 system 提示前自动前缀注入项目视觉风格（单点注入）。
+
+    所有上层调用点（build_cast / build_shots / 资产生成）一律走 _ask()，
+    无需再各自手动 f"{style}..."——这套机制保证「风格词单点注入」。
+    """
     import novel_chain
-    return novel_chain._ask(state, system, user)
+    full_system = inject_style(state, system)
+    return novel_chain._ask(state, full_system, user)
 
 
 def _stop(msg: str):
@@ -579,7 +617,6 @@ def build_cast(state: dict, on_event=None, stop=None, redo: bool = False) -> dic
                 cast[k] = entry
             cast[f"_done_{sec}"] = True
             _json_dump(cast_path, cast)
-    style = resolve_style(state)
     for name, info in list(cast.items()):
         if name.startswith("_") or not isinstance(info, dict):
             continue
@@ -598,9 +635,10 @@ def build_cast(state: dict, on_event=None, stop=None, redo: bool = False) -> dic
             on_event({"type": "drama_media", "kind": "cast",
                       "label": f"{name}（{sec}）"})
             path, url = imggen.generate_ex(
-                f"{style}。{sec}基础形象：" +
-                tpl.format(a=_anchored_appearance(
-                    info.get("appearance", ""))),
+                # v2.1 单点风格注入（保留远程新增的 _drama_sizes() 尺寸解析）
+                inject_style(state, f"{sec}基础形象：" +
+                             tpl.format(a=_anchored_appearance(
+                                 info.get("appearance", "")))),
                 out, size=_drama_sizes()[0], ratio=ratio)
             info["path"], info["url"] = path, url
             _json_dump(cast_path, cast)
@@ -622,14 +660,15 @@ def build_cast(state: dict, on_event=None, stop=None, redo: bool = False) -> dic
             refs = [face_ref] if face_ref and os.path.exists(face_ref) else []
             try:
                 lp, lu = imggen.generate_ex(
-                    f"{style}。{sec}基础形象·{era}阶段：" +
-                    tpl.format(a=_anchored_appearance(
-                        lk.get("appearance", ""))) +
-                    ("。参考图是同一人物：严格保持参考图的脸型五官、发际线"
-                     "与体格不变，仅更换为本阶段的服装发型与配饰。"
-                     if refs else
-                     "。同一人物：保持脸型五官与体格特征与其它阶段一致，"
-                     "仅更换该阶段的服装发型。"),
+                    # v2.1 单点风格注入 + 远程新增的 _drama_sizes() 尺寸解析
+                    inject_style(state, f"{sec}基础形象·{era}阶段：" +
+                                 tpl.format(a=_anchored_appearance(
+                                     lk.get("appearance", ""))) +
+                                 ("。参考图是同一人物：严格保持参考图的脸型五官、发际线"
+                                  "与体格不变，仅更换为本阶段的服装发型与配饰。"
+                                  if refs else
+                                  "。同一人物：保持脸型五官与体格特征与其它阶段一致，"
+                                  "仅更换该阶段的服装发型。")),
                     lk_out, size=_drama_sizes()[0], ratio=ratio, image_refs=refs)
                 lk["path"], lk["url"] = lp, lu
             except Exception as e:          # noqa: BLE001  单套失败不阻断
@@ -654,15 +693,15 @@ def three_view(state: dict, name: str, info: dict, on_event=None) -> str:
     if not src or not os.path.exists(src):
         raise _stop("先有该角色的形象图，才能生成三视图"
                     f"（{name} 还没有定妆照）")
-    style = resolve_style(state)
     on_event({"type": "drama_media", "kind": "cast",
               "label": f"{name} 三视图"})
     imggen.generate_ex(
-        f"{style}。角色三视图设定图：以参考图角色为同一人；16:9 版面，"
-        "左侧三分之一为该角色面部特写，右侧三分之二从左到右依次为"
-        "正面、侧面、背面全身立像；自然直立站姿无动作，纯白色背景，"
-        "人物比例与头身比严格一致，三个视图的服装发型配饰完全相同，"
-        "线条清晰流畅，视觉焦点集中在角色身上。",
+        # v2.1 单点风格注入 + 远程新增的 _drama_sizes() 尺寸解析
+        inject_style(state, "角色三视图设定图：以参考图角色为同一人；16:9 版面，"
+                     "左侧三分之一为该角色面部特写，右侧三分之二从左到右依次为"
+                     "正面、侧面、背面全身立像；自然直立站姿无动作，纯白色背景，"
+                     "人物比例与头身比严格一致，三个视图的服装发型配饰完全相同，"
+                     "线条清晰流畅，视觉焦点集中在角色身上。"),
         out, size=_drama_sizes()[0], ratio="16:9", image_refs=[src])
     return out
 
@@ -685,13 +724,12 @@ def gen_asset(state: dict, name: str, info: dict, on_event=None,
         fallback_dir or _global_base(state), f"{_safe_name(name)}.png")
     sec = info.get("type") or "角色"
     tpl, ratio = _ASSET_TPL.get(sec, _ASSET_TPL["角色"])
-    style = resolve_style(state)
     if custom_prompt.strip():
-        prompt = f"{style}。{custom_prompt.strip()}"
+        prompt = inject_style(state, custom_prompt.strip())
     else:
-        prompt = (f"{style}。{sec}基础形象：" +
-                  tpl.format(a=_anchored_appearance(
-                      info.get("appearance", ""))))
+        prompt = inject_style(state, f"{sec}基础形象：" +
+                                     tpl.format(a=_anchored_appearance(
+                                         info.get("appearance", ""))))
     refs = []
     if image_ref and os.path.exists(out):
         refs.append(out)
@@ -722,14 +760,13 @@ def gen_look(state: dict, name: str, info: dict, era: str,
         _global_base(state), f"{_safe_name(name)}-{_safe_name(era)}.png")
     sec = info.get("type") or "角色"
     tpl, ratio = _ASSET_TPL.get(sec, _ASSET_TPL["角色"])
-    style = resolve_style(state)
     if custom_prompt.strip():
-        prompt = f"{style}。{custom_prompt.strip()}"
+        prompt = inject_style(state, custom_prompt.strip())
     else:
-        prompt = (f"{style}。{sec}基础形象·{era}阶段：" +
-                  tpl.format(a=_anchored_appearance(
-                      lk.get("appearance")
-                      or info.get("appearance", ""))))
+        prompt = inject_style(state, f"{sec}基础形象·{era}阶段：" +
+                                     tpl.format(a=_anchored_appearance(
+                                         lk.get("appearance")
+                                         or info.get("appearance", ""))))
     refs = []
     if main and os.path.exists(main):
         refs.append(main)
@@ -774,6 +811,30 @@ def _resolve_asset_path(state: dict, name: str, info: dict,
     return (os.path.join(base, "cast.json"
                          if sub == _ASSET_GLOBAL else "assets.json"),
             os.path.join(base, f"{_safe_name(name)}.png"))
+
+
+def _resolve_asset_image(state: dict, name: str, info: dict,
+                          base: str = "") -> None:
+    """info['path'] 缺失但 url 存在时，从 URL 下载到 base 目录并回填 path。
+
+    是 gen_asset() / 手动上传替换之外的第三条补图路径——专给「生图服务只返回 URL
+    未本地落盘」的旧数据做事后补建。path 已有则跳过；url 与 path 都空则不动（视为
+    资产尚未生成）。download 失败时静默不抛——调用方按"未变更"处理即可。
+    """
+    p = (info.get("path") or "").strip()
+    if p and os.path.exists(p):
+        return
+    url = (info.get("url") or "").strip()
+    if not url or not base:
+        return
+    out = os.path.join(base, f"{_safe_name(name)}.png")
+    try:
+        from videogen import download as _vg_download
+        _vg_download(url, out)
+        if os.path.exists(out):
+            info["path"] = out
+    except Exception:                  # noqa: BLE001
+        pass
 
 
 def _global_base(state: dict) -> str:
@@ -859,7 +920,6 @@ def chapter_assets(state: dict, chapter: dict, shots: list, cast: dict,
                                     if k in ("path", "url")}}
             local["_done"] = True
             _json_dump(path, local)
-    style = resolve_style(state)
     base = os.path.join(_book_dir(state), _ASSET_DIR,
                         _chapter_asset_subdir(chapter["idx"]))
     for name, info in list(local.items()):
@@ -873,8 +933,9 @@ def chapter_assets(state: dict, chapter: dict, shots: list, cast: dict,
                   "label": f"{name}（{sec}·第{chapter['idx']}章）"})
         try:
             p, url = imggen.generate_ex(
-                f"{style}。{sec}基础形象：" + tpl.format(
-                    a=_anchored_appearance(info.get("appearance", ""))),
+                # v2.1 单点风格注入 + 远程新增的 _drama_sizes() 尺寸解析
+                inject_style(state, f"{sec}基础形象：" + tpl.format(
+                    a=_anchored_appearance(info.get("appearance", "")))),
                 out, size=_drama_sizes()[0], ratio=ratio)
             info["path"], info["url"] = p, url
         except Exception as e:          # noqa: BLE001  单个失败不阻断
@@ -923,7 +984,6 @@ def build_shots(state: dict, chapter: dict, on_event=None,
         return cached
     on_event = on_event or (lambda e: None)
     on_event({"type": "drama_media", "kind": "shots", "label": chapter["title"]})
-    style = resolve_style(state)
     era_names = sorted({str(k) for info in (cast or {}).values()
                         if isinstance(info, dict)
                         for k in ((info.get("looks") or {}))})
@@ -936,7 +996,8 @@ def build_shots(state: dict, chapter: dict, on_event=None,
         state,
         "你是短剧导演。把小说章节改编为竖屏短剧分镜表（参考火宝短剧规范）。"
         "一个镜头=一个分镜段落=一次视频生成任务，全程只发生在一个场景内。"
-        f"全书统一画面风格（description 必须体现其质感与光影词汇）：{style}。"
+        # v2.1：画面风格由 inject_style 在 prompt 前缀注入；此处不再硬写
+        "description 必须体现项目视觉风格的质感与光影词汇。"
         "【拆段规则】先识别叙事节拍（地点转移/规则揭示/情绪爆发/反转是强制"
         "切段点），一条因果链（铺垫-发生-反应）不拆散到不同段落；"
         "总量锚定：目标镜头数 ≈ 章节字数÷500字每分钟÷12秒，允许±20%。"
@@ -1045,6 +1106,43 @@ def _video_prompts(state: dict, chapter: dict, shots: list):
         pass
 
 
+def regen_video_prompt(state: dict, chapter_idx: int, shot_idx: int) -> str:
+    """单镜 video_prompt 重生成：只改目标镜头、结果落盘、其他镜不受影响。
+
+    越界镜头号 → 不写、不炸、返回空串。LLM 失败（空 JSON）→ 原文件
+    不动，返回空串（调用方可当作"未变更"处理）。v2.1 风格由 _ask() 透传
+    inject_style，agent prompt 无需再手动前缀风格词。
+    """
+    path = os.path.join(_book_dir(state), _SHOT_DIR,
+                        f"第{chapter_idx}章.json")
+    shots = _json_load(path, [])
+    if not isinstance(shots, list) or shot_idx < 1 or shot_idx > len(shots):
+        return ""
+    s = shots[shot_idx - 1]
+    desc = (s.get("description") or "").strip()
+    if not desc:
+        return ""
+    sys_p = ("你是视频提示词工程师。把单条分镜的 description 写成按时间分段的"
+             "视频生成提示词：每段以「N-M秒：景别运镜，主体+动作+台词」格式，"
+             "段数=时长÷3秒向上取整。严格遵循 description，不创作新台词。"
+             "输出必须是 JSON：{\"1\": \"0-3秒：…\"}")
+    user_p = (f"分镜 #{shot_idx}（{int(s.get('duration', 0))}秒，场景"
+              f"「{s.get('scene', '')}」，角色{'、'.join(s.get('characters') or []) or '无'}，"
+              f"道具{'、'.join(s.get('props') or []) or '无'}）：\n{desc}")
+    try:
+        raw = _ask(state, sys_p, user_p)
+        data = _extract_json(raw) or {}
+        v = data.get("1") or data.get(1)
+        if isinstance(v, str) and v.strip():
+            v = _clean_text(v)
+            s["video_prompt"] = v
+            _json_dump(path, shots)
+            return v
+    except Exception:                  # noqa: BLE001
+        pass
+    return ""
+
+
 # ---------------- 3. 关键帧 + 镜头视频 ----------------
 
 def _urls_path(state: dict) -> str:
@@ -1064,7 +1162,6 @@ def keyframe(state: dict, cast: dict, shot: dict, ch: int, i: int,
     if os.path.exists(out) and not force:
         url = _json_load(_urls_path(state), {}).get(f"{ch}-{i:02d}", "")
         return out, url
-    style = resolve_style(state)
     refs, scene_ref, who, props = [], None, [], []
 
     def _img(info):
@@ -1118,7 +1215,7 @@ def keyframe(state: dict, cast: dict, shot: dict, ch: int, i: int,
     if scene_ref:
         refs.insert(0, scene_ref)
     refs.extend(props)
-    prompt = (f"{style}。{shot['description']}。"
+    prompt = (inject_style(state, f"{shot['description']}。") +
               f"场景：{scene_name}。出场角色：{'、'.join(who) or '（无）'}。"
               "参考图依次为场景空镜、角色形象、道具，"
               "严格保持参考图中场景布置、角色长相与道具外观一致。"
@@ -1199,7 +1296,6 @@ def _speech_seconds(shot: dict) -> int:
 def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
                  out: str, on_event) -> str:
     """渲染一条镜头视频到指定路径（clip 与抽卡 gen_clip_take 共用）。"""
-    style = resolve_style(state)
     narration = (shot.get("narration") or "").strip()
     dialogue = (shot.get("dialogue") or "").strip()
     camera = (shot.get("camera") or "").strip()
@@ -1211,13 +1307,14 @@ def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
     vp = (shot.get("video_prompt") or "").strip()
     if vp:
         # 火宝式 3 秒分段时间轴：段内已含切镜衔接与台词分配，直接用
-        prompt = (f"{style}。按时间分段执行以下画面：\n{vp}\n"
+        prompt = (inject_style(state, "按时间分段执行以下画面：") +
+                  "\n" + vp + "\n"
                   "画面中不要出现任何字幕、文字、标题、水印或字母字符；"
                   "分段之间用硬切，全程不跨场景。")
         if camera:
             prompt += f"主导运镜：{camera}。"
     else:
-        prompt = (f"{style}。画面：{shot['description']}。"
+        prompt = (inject_style(state, f"画面：{shot['description']}。") +
                   "画面中不要出现任何字幕、文字、标题、水印或字母字符。")
         if camera:
             prompt += f"镜头运动：{camera}。"
