@@ -1397,6 +1397,7 @@ def _speech_seconds(shot: dict) -> int:
 def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
                  out: str, on_event) -> str:
     """渲染一条镜头视频到指定路径（clip 与抽卡 gen_clip_take 共用）。"""
+    who = list(shot.get("characters") or [])   # 手/脚解剖 guard 用的角色名
     narration = (shot.get("narration") or "").strip()
     dialogue = (shot.get("dialogue") or "").strip()
     camera = (shot.get("camera") or "").strip()
