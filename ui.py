@@ -2809,7 +2809,8 @@ class App:
                                font=(FONT_UI, 10), command=_ai_run)
         run_btn.pack(side="left", padx=4)
         ok_btn = _flat_button(bar, text=_t("ed.apply"), width=12,
-                              font=(FONT_UI, 10), command=_apply, state="disabled")
+                              font=(FONT_UI, 10), command=_apply)
+        ok_btn.config(state="disabled")
         ok_btn.pack(side="left", padx=4)
         _flat_button(bar, text=_t("btn.cancel"), width=12,
                      font=(FONT_UI, 10), command=_cancel).pack(side="left", padx=4)
