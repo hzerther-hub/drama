@@ -551,6 +551,33 @@ def _pipelines_dir() -> str:
     return os.path.join(config._CONFIG_DIR, "pipelines")
 
 
+def _existing_books():
+    """列出 novels/ 下当前存在的书目目录（剔除系统保留目录）。
+
+    orphan helper 用 + 单书约束用：返回磁盘上用户级别的"在写"书名清单。
+    """
+    root = _novels_root()
+    if not os.path.isdir(root):
+        return []
+    skip = {".git", "node_modules", "__pycache__", "_archive", "archive"}
+    return sorted(d for d in os.listdir(root)
+                 if d not in skip and os.path.isdir(os.path.join(root, d)))
+
+
+def _propose_book_dirname(idea, pid):
+    """与 new_pipeline 同口径：推算灵感会落到哪个 books/<dirname>/ 目录。
+
+    用于单书约束 — 防止"重开同一本被拦"。同名不算「别的书」。
+    《书名》前缀 → 立刻拿到书名；否则用 pid 占位（重开时与原书同）。
+    """
+    idea = (idea or "").strip()
+    title = ""
+    m = re.match(r"^\s*《(.+?)》", idea)
+    if m:
+        title = _safe_name(m.group(1))[:30]
+        idea = idea[m.end():].strip() or title
+    return title or pid
+
 def _orphan_book_dir(state: dict, root: str) -> str | None:
     """根据 state 推断本书本应该所在的磁盘目录。返回 None 表示无法判断。"""
     if not state:
@@ -636,6 +663,7 @@ def new_pipeline(idea: str, total: int, model_key: str,
             errlog.log("novel.start: 清孤儿 state", {"removed": n_orphan})
         except Exception:              # noqa: BLE001  errlog 缺失不阻断
             pass
+    # 单书约束：novels/ 下另有别书时拒绝开新书。同书重开（state 仍在，仅磁盘被动了）放行。
     total = max(1, min(int(total or 3), _MAX_CHAPTERS))
     pid = "novel-" + time.strftime("%Y%m%d-%H%M%S")
     idea = (idea or "").strip()
@@ -645,6 +673,14 @@ def new_pipeline(idea: str, total: int, model_key: str,
         title = _safe_name(m.group(1))[:30]
         idea = idea[m.end():].strip() or title
     dirname = title or pid
+    # 单书约束：novels/ 下另有别书时拒绝开新书。同书重开（state 仍在，仅磁盘被动了）放行。
+    other = [d for d in _existing_books() if d and d != dirname]
+    if other:
+        raise StageStopError(
+            f"工作区已有别的书：{other}。\n"
+            f"按你的工作模式（1次只跑一本），请先在 app 文件树面板里删/移走旧书（或移到 archive/ 子目录），\n"
+            f"再重试 /novel。"
+        )
     book_dir = _unique_dir(os.path.join(_novels_root(), dirname))
     state = {"idea": idea, "total_chapters": total, "model_key": model_key,
              "style": (style or "").strip(), "chapters": [], "debts": [],
