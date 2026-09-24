@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import drama_body_guard as _dbg
 import re
 import shutil
 import subprocess
@@ -1319,7 +1320,7 @@ def keyframe(state: dict, cast: dict, shot: dict, ch: int, i: int,
               "参考图依次为场景空镜、角色形象、道具，"
               "严格保持参考图中场景布置、角色长相与道具外观一致。"
               "画面中不要出现任何字幕、文字、标题、水印或字母字符。竖屏构图。"
-            + " " + HAND_GUARD)
+            + " " + _dbg.body_guard(state, who))
     on_event({"type": "drama_media", "kind": "frame",
               "label": f"第{ch}章 镜头{i}"})
     path, url = imggen.generate_ex(prompt, out, size=_drama_sizes()[0],
@@ -1410,13 +1411,14 @@ def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
         prompt = (inject_style(state, "按时间分段执行以下画面：") +
                   "\n" + vp + "\n"
                   "画面中不要出现任何字幕、文字、标题、水印或字母字符；"
-                  "分段之间用硬切，全程不跨场景。")
+                  "分段之间用硬切，全程不跨场景。"
+                  + _dbg.body_guard(state, who))
         if camera:
             prompt += f"主导运镜：{camera}。"
     else:
         prompt = (inject_style(state, f"画面：{shot['description']}。") +
                   "画面中不要出现任何字幕、文字、标题、水印或字母字符。"
-                  + HAND_GUARD)
+                  + _dbg.body_guard(state, who))
         if camera:
             prompt += f"镜头运动：{camera}。"
         elif dialogue:
