@@ -50,3 +50,8 @@ novels/
 _seedance_test.mp4
 # 应用生成的媒体产物（截图/测试图）
 media/
+
+# 图标/字体生成脚本的依赖目录（按需装，非仓库资产）
+node_modules/
+# 一次性 PPT 导出产物（Makefile/用户手工放，非代码资产）
+_ppt_assets/
