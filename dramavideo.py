@@ -668,7 +668,9 @@ def build_cast(state: dict, on_event=None, stop=None, redo: bool = False) -> dic
         if cast.get(f"_done_{sec}"):
             continue
         if sec == "角色":
-            src = f"角色设定：\n{chars_md}"
+            src = (f"世界观：\n{world_md}\n\n角色设定：\n{chars_md}"
+                    if world_md else
+                    f"角色设定：\n{chars_md}")
         elif sec == "场景":
             src = f"世界观：\n{world_md}\n\n章节文本：\n{chapters_txt}"
         else:
