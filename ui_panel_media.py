@@ -164,12 +164,12 @@ def _drama_section(win):
     grid = tk.Frame(win, bg=theme.PANEL)
     grid.pack(anchor="w", padx=16)
     choices = {
-        "image_size": ("1K", "2K", "3K", "4K"),
+        "image_size": ("", "1K", "2K", "3K", "4K"),  # "" = 后端默认 1024x1024
         "image_ratio": ("9:16", "16:9", "1:1", "3:4", "4:3",
                         "2:3", "3:2", "21:9"),
-        "video_size": ("", "720x1280", "1080x1920",
+        "video_size": ("", "720x1280", "1080x1920",  # "" = 后端默认 1152x768
                        "1280x720", "1920x1080"),
-        "comic_size": ("1K", "2K"),
+        "comic_size": ("", "1K", "2K"),  # "" = 后端默认 1024x1024
         "comic_ratio": ("2:3", "3:4", "9:16", "1:1"),
     }
     labels = {"image_size": "media.drama_isz",
@@ -212,7 +212,7 @@ def show(app):
     win = tk.Toplevel(app.root)
     win.configure(bg=theme.PANEL)
     win.title(_t("media.title"))
-    win.geometry("640x780")
+    win.geometry("780x900")
     ui._make_modal(win, app.root)
 
     saves, clears = [], []
@@ -250,9 +250,11 @@ def show(app):
             c()
         status.config(text=_t("media.cleared"), fg="#64748b")
 
+    # 底部按钮栏：side="bottom" 让它始终贴底，避免内容多时挤掉
     btns = tk.Frame(win, bg=theme.PANEL)
-    btns.pack(anchor="w", padx=16, pady=(8, 4))
-    ui._flat_button(btns, _t("media.save"), _save_all).pack(side="left")
+    btns.pack(side="bottom", anchor="w", padx=16, pady=(8, 12), fill="x")
+    save_btn = ui._flat_button(btns, "💾  " + _t("media.save"), _save_all)
+    save_btn.pack(side="left")
     ui._flat_button(btns, _t("media.clear"), _clear_all).pack(
         side="left", padx=(8, 0))
 
