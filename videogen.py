@@ -196,6 +196,20 @@ def _retry(fetch):
     raise last
 
 
+def _err_text(e: Exception) -> str:
+    """异常 → 带响应体的短文本：4xx/5xx 的真实原因（审核/配额/过载）都在
+    body 里，只报 HTTP Error 503 没法诊断。"""
+    import urllib.error
+    if isinstance(e, urllib.error.HTTPError):
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", "replace")[:300].strip()
+        except Exception:              # noqa: BLE001
+            pass
+        return f"HTTP {e.code}" + (f"｜{detail}" if detail else "")
+    return str(e)
+
+
 def _post(url: str, body: dict, api_key: str) -> dict:
     req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
                                  method="POST")
@@ -457,21 +471,21 @@ def create(prompt: str, image: str = "", size: str = "", resolution: str = "",
         except VidError:
             raise
         except Exception as e:         # noqa: BLE001
-            raise VidError(f"视频任务创建失败：{e}") from e
+            raise VidError(f"视频任务创建失败：{_err_text(e)}") from e
     if _is_minimax(svc):
         try:
             return _minimax_create(prompt, image, seconds, svc, res)
         except VidError:
             raise
         except Exception as e:         # noqa: BLE001
-            raise VidError(f"视频任务创建失败：{e}") from e
+            raise VidError(f"视频任务创建失败：{_err_text(e)}") from e
     if _is_bailian(svc):
         try:
             return _bailian_create(prompt, image, seconds, svc, res)
         except VidError:
             raise
         except Exception as e:         # noqa: BLE001
-            raise VidError(f"视频任务创建失败：{e}") from e
+            raise VidError(f"视频任务创建失败：{_err_text(e)}") from e
     w, h = _parse_size(res or size)
     body = {"model": svc["model"], "prompt": prompt,
             "width": w, "height": h,
@@ -483,7 +497,7 @@ def create(prompt: str, image: str = "", size: str = "", resolution: str = "",
     try:
         data = _post(f"{svc['base_url']}/videos", body, svc.get("api_key", ""))
     except Exception as e:             # noqa: BLE001
-        raise VidError(f"视频任务创建失败：{e}") from e
+        raise VidError(f"视频任务创建失败：{_err_text(e)}") from e
     vid = _pick_id(data)
     if not vid:
         raise VidError(f"视频接口未返回任务 ID：{json.dumps(data, ensure_ascii=False)[:300]}")

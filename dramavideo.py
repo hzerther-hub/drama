@@ -2105,24 +2105,36 @@ def run(state: dict, ch_start: int, ch_end: int, on_event=None,
         local = chapter_assets(state, c, shots, cast, on_event)
         cast_ch = effective_cast(cast, local)   # 长期 + 本章暂时
         clips = []
+        fail_streak = 0                # 连续失败计数：服务整体不可用时别逐镜空转
         for i, shot in enumerate(shots, 1):
             if _stopped():
                 raise _stop("已手动停止：已完成产物保留，重跑命令自动续造")
+            if fail_streak >= 4:
+                raise _stop(f"连续 {fail_streak} 镜失败（{str(e_last)[:60]}）——"
+                            "供应商疑似不可用，已停止；稍后重跑自动续造")
             url = ""
             if do["keyframes"]:
                 try:
                     _, url = keyframe(state, cast_ch, shot, c["idx"], i, on_event)
+                    fail_streak = 0
                 except Exception as e:       # noqa: BLE001  单镜失败不阻断
                     debts.append(f"第{c['idx']}章 镜头{i} 关键帧：{e}")
+                    e_last = e
+                    fail_streak += 1
                     on_event({"type": "drama_media", "kind": "debt",
-                              "label": f"第{c['idx']}章 镜头{i} 关键帧失败，跳过"})
+                              "label": f"第{c['idx']}章 镜头{i} 关键帧失败，"
+                                       f"跳过（{str(e)[:60]}）"})
             if do["clips"]:
                 try:
                     clips.append(clip(state, shot, url, c["idx"], i, on_event))
-                except Exception as e:       # noqa: BLE001
+                    fail_streak = 0
+                except Exception as e:       # noqa: BLE001  单镜失败不阻断
                     debts.append(f"第{c['idx']}章 镜头{i} 视频：{e}")
+                    e_last = e
+                    fail_streak += 1
                     on_event({"type": "drama_media", "kind": "debt",
-                              "label": f"第{c['idx']}章 镜头{i} 视频失败，跳过"})
+                              "label": f"第{c['idx']}章 镜头{i} 视频失败，"
+                                       f"跳过（{str(e)[:60]}）"})
         if do["clips"] and not clips:
             continue                      # 本章全军覆没：不合成，重跑续造
         if not do["compose"]:
