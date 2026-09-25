@@ -86,7 +86,10 @@ def data_uri(path: str) -> str:
 
 
 def _retry(fetch):
-    """瞬时错误退避重试：429 限流等 20/40/60s；502/503/504 与连接错误等 4/8s。"""
+    """瞬时错误退避重试：429 限流等 20/40/60s；5xx 与连接错误等 4/8s。
+
+    500 一并重试：云端网关偶发内部错误很常见（成功案例里 500 多为瞬时），
+    真因（内容审核/参数问题）重试两次仍 500 会把响应体带进报错。"""
     import time as _time
     import urllib.error
     last = None
@@ -98,7 +101,7 @@ def _retry(fetch):
         try:
             return fetch()
         except urllib.error.HTTPError as e:
-            if e.code in (502, 503, 504, 429):
+            if e.code in (500, 502, 503, 504, 429):
                 last = e
                 continue
             raise
@@ -511,6 +514,14 @@ def generate_ex(prompt: str, out_path: str, size: str = "", ratio: str = "",
     try:
         data = _retry(_do_post)
         item = (data.get("data") or [{}])[0]
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:                           # 500/4xx 的真实原因在响应体里，必须带出来
+            detail = e.read().decode("utf-8", "replace")[:300].strip()
+        except Exception:              # noqa: BLE001
+            pass
+        raise ImgError(f"图像生成请求失败：HTTP {e.code}"
+                       + (f"｜{detail}" if detail else "")) from e
     except Exception as e:             # noqa: BLE001
         raise ImgError(f"图像生成请求失败：{e}") from e
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)

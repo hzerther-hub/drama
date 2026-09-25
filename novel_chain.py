@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 
 import config
+import errlog
 import llm
 import tools
 import vecstore

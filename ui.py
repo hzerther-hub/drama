@@ -2774,9 +2774,9 @@ class App:
                 try:
                     new = fallback_task(text)
                 except Exception as e:    # noqa: BLE001
-                    self.root.after(0, lambda: (
-                        status.config(text=f"❌ {type(e).__name__}: {e}",
-                                       fg="#dc2626"),
+                    _m = f"❌ {type(e).__name__}: {e}"   # e 在 except 块退出即删，
+                    self.root.after(0, lambda: (         # 延迟 lambda 里引用必炸
+                        status.config(text=_m, fg="#dc2626"),
                         run_btn.config(state="normal")))
                     return
                 self.root.after(0, lambda: _show_preview(new))
@@ -5338,8 +5338,9 @@ class App:
                     if ev["type"] == "text":
                         summary.append(ev["delta"])
             except Exception as e:        # noqa: BLE001
+                _m = str(e)[:120]         # e 在 except 块退出即删，先固化消息
                 self.root.after(0, lambda: self._set_status(
-                    _t("compress.fail", e=str(e)[:120])))
+                    _t("compress.fail", e=_m)))
                 return
             if not summary:
                 self.root.after(0, lambda: self._set_status(_t("compress.fail",
@@ -5697,8 +5698,8 @@ class App:
                            f"跳过 {st['skipped']}）\n")
                     self.root.after(0, lambda: self._append(msg, "meta"))
                 except Exception as e:      # noqa: BLE001
-                    self.root.after(0, lambda: self._append(
-                        "❌ 建图失败：" + str(e) + "\n", "denied"))
+                    _m = "❌ 建图失败：" + str(e) + "\n"   # 同上：先固化再延迟用
+                    self.root.after(0, lambda: self._append(_m, "denied"))
             threading.Thread(target=_work, daemon=True).start()
             return
 
@@ -5959,6 +5960,7 @@ class App:
                 return
             if rest.strip() in ("reset", "reset drama", "reset comic", "reset assets"):
                 from tkinter import messagebox
+                import dramavideo          # reset 分支要用；本函数其他路径不导入
                 p0 = getattr(self, "_novel_pipe", None)
                 if p0 is None:
                     self._set_status(_t("novel.none"))

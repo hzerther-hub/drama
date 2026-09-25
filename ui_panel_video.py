@@ -301,5 +301,6 @@ def show(app, ch: int = 0):
         cast[name] = dramavideo.replace_asset_image(state, name, info, src)
         save_cast(cast, cast_path)
 
+    _reload_all = lambda: (_reload_rows(), _reload_assets())   # noqa: E731
     box.bind("<<ComboboxSelected>>", lambda e: _reload_all())
     _reload_all()

@@ -1055,7 +1055,7 @@ def show(app):
             提示词框非空时作为该阶段的主体提示词（取代外貌描述），
             生成前手改构图/版式从这里进。
             """
-            _save_look_to_json(ent)             # 先存描述框改动
+            item = _save_look_to_json(ent)      # 先存描述框改动，取回资产记录
             custom = pmt.get().strip()          # 与主图共用自定义提示词框
             if st["busy"]:
                 status(_t("ds.busy"), busy=True)
@@ -1063,9 +1063,10 @@ def show(app):
             status(_t("ds.generating", n=f"{name}·{era}"), busy=True)
 
             def work():
+                ev = lambda e: win.after(0, lambda: _gen_event(e))   # noqa: E731
                 try:
                     lk = dramavideo.gen_look(state, name, dict(item), era,
-                                             custom_prompt=custom)
+                                             custom_prompt=custom, on_event=ev)
                 except Exception as e:           # noqa: BLE001
                     win.after(0, lambda err=e: status(f"❌ {type(err).__name__}: {err}"))
                 else:
@@ -1588,6 +1589,7 @@ def show(app):
             return
 
         def work():
+            ev = lambda e: win.after(0, lambda: _gen_event(e))   # noqa: E731
             try:
                 res = dramavideo.run_clips_batch(state, ch, on_event=ev)
                 win.after(0, lambda: status(
@@ -1617,6 +1619,7 @@ def show(app):
             return
 
         def work():
+            ev = lambda e: win.after(0, lambda: _gen_event(e))   # noqa: E731
             try:
                 res = dramavideo.run_clips_batch(state, ch, on_event=ev)
                 win.after(0, lambda: status(
