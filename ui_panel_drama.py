@@ -216,8 +216,15 @@ def show(app):
             f.pack_forget()
         steps[n].pack(fill="both", expand=True, padx=14, pady=6)
         for k, b in step_btns.items():
-            b.config(bg=theme.ACCENT if k == n else theme.PANEL,
-                     fg="white" if k == n else theme.TEXT)
+            active = (k == n)
+            b.config(bg=theme.ACCENT if active else theme.PANEL,
+                     fg="white" if active else theme.TEXT)
+            # _flat_button 自带的悬停钩子会把 bg 刷回浅色，激活页签
+            # 白字配浅底就隐形了——这里按激活态重新接管悬停配色
+            b.bind("<Enter>", lambda _e, b=b, a=active: b.config(
+                bg=theme.ACCENT if a else theme.ACCENT_FAINT))
+            b.bind("<Leave>", lambda _e, b=b, a=active: b.config(
+                bg=theme.ACCENT if a else theme.BG))
 
     bar = tk.Frame(top, bg=theme.BG)
     bar.pack(side="left", padx=16)
@@ -879,14 +886,26 @@ def show(app):
                          ).grid(row=row, column=0, columnspan=4, sticky="w",
                                 padx=4, pady=(10, 2))
                 row += 1
-                for j, (name, info) in enumerate(items):
-                    card = tk.Frame(inner2, bg=theme.PANEL,
-                                    highlightthickness=1,
-                                    highlightbackground=theme.BORDER)
-                    card.grid(row=row + j // 4, column=j % 4, sticky="nw",
-                              padx=6, pady=6)
-                    _build_cast_card(card, name, info, store_path)
-                row += (len(items) + 3) // 4
+                if sec == "角色":
+                    # 每个角色一行：形象列 | 信息与按钮列 | 三视图列
+                    for j, (name, info) in enumerate(items):
+                        rowf = tk.Frame(inner2, bg=theme.PANEL,
+                                        highlightthickness=1,
+                                        highlightbackground=theme.BORDER)
+                        rowf.grid(row=row + j, column=0, columnspan=4,
+                                  sticky="ew", padx=6, pady=6)
+                        _build_cast_card(rowf, name, info, store_path,
+                                         horizontal=True)
+                    row += len(items)
+                else:
+                    for j, (name, info) in enumerate(items):
+                        card = tk.Frame(inner2, bg=theme.PANEL,
+                                        highlightthickness=1,
+                                        highlightbackground=theme.BORDER)
+                        card.grid(row=row + j // 4, column=j % 4, sticky="nw",
+                                  padx=6, pady=6)
+                        _build_cast_card(card, name, info, store_path)
+                    row += (len(items) + 3) // 4
 
         _grid_group(cast, "通用库·", cast_path)     # 全书长期资产（所有章共用）
         _grid_group(local, f"第{st['ch']}章·",      # 本章暂时资产，随章切换
@@ -896,7 +915,7 @@ def show(app):
         return _load_json(
             dramavideo._chapter_assets_path(state, ch), {})
 
-    def _build_cast_card(card, name, info, store_path):
+    def _build_cast_card(card, name, info, store_path, horizontal=False):
         dramavideo._resolve_asset_image(
             state, name, info, base=os.path.dirname(store_path))
         # 默认套（default_look，单击阶段图切换）：大图随默认套显示；
@@ -905,12 +924,20 @@ def show(app):
         dpath = (((info.get("looks") or {}).get(dft) or {})
                  .get("path") or "")
         disp = dpath if dpath and os.path.exists(dpath) else (info.get("path") or "")
+        imgcol = midcol = tvcol = card
+        if horizontal:
+            imgcol = tk.Frame(card, bg=theme.PANEL)
+            imgcol.pack(side="left", padx=(10, 4), pady=8, anchor="n")
+            midcol = tk.Frame(card, bg=theme.PANEL)
+            midcol.pack(side="left", fill="y", padx=(2, 6), pady=6)
+            tvcol = tk.Frame(card, bg=theme.PANEL)
+            tvcol.pack(side="right", padx=(4, 10), pady=8, anchor="n")
         ph = _thumb(disp, (150, 200))
         if ph:
-            lbl = tk.Label(card, image=ph, bg=theme.PANEL)
+            lbl = tk.Label(imgcol, image=ph, bg=theme.PANEL)
             lbl.pack(padx=8, pady=(8, 2))
             st["img_refs"].append(ph)
-        tk.Label(card, text=f"{name}", font=(FONT_UI, 11, "bold"),
+        tk.Label(midcol, text=f"{name}", font=(FONT_UI, 11, "bold"),
                  bg=theme.PANEL, fg=theme.TEXT).pack()
         # 多阶段形象（现代/古装…）：小缩略图行，单击＝设为默认套（再点取消），
         # 双击＝重生成该阶段（主图锁脸）。单击/双击用 240ms 延迟区分。
@@ -946,7 +973,7 @@ def show(app):
                     pend["aid"] = None
                 _regen_look(era)
 
-            lrow = tk.Frame(card, bg=theme.PANEL)
+            lrow = tk.Frame(imgcol, bg=theme.PANEL)
             lrow.pack(pady=1)
             for era, lk in looks.items():
                 cell = tk.Frame(lrow, bg=theme.PANEL)
@@ -968,19 +995,21 @@ def show(app):
                                lambda e, era=era: _era_click(era))
                         w.bind("<Double-Button-1>",
                                lambda e, era=era: _era_dbl(era))
-            tk.Label(lrow, text="单击阶段图＝设为默认套（再点取消）；"
-                                "双击＝重生成（主图锁脸，提示词框可手改）",
+            tk.Label(imgcol, text="单击设默认套 · 双击重生成",
                      font=(FONT_UI, 7), bg=theme.PANEL,
                      fg=theme.MUTED).pack()
-        ent = tk.Entry(card, width=22, font=(FONT_UI, 9), relief="flat",
+        ent = tk.Entry(midcol, width=(52 if horizontal else 22),
+                       font=(FONT_UI, 9), relief="flat",
                        bg=theme.BG, fg=theme.TEXT)
         ent.insert(0, info.get("appearance", ""))
-        ent.pack(padx=8, pady=2)
-        tk.Label(card, text=_t("ds.prompt"), font=(FONT_UI, 8),
-                 bg=theme.PANEL, fg=theme.MUTED).pack()
-        pmt = tk.Entry(card, width=22, font=(FONT_UI, 9), relief="flat",
+        ent.pack(padx=8, pady=2, anchor="w" if horizontal else "n")
+        tk.Label(midcol, text=_t("ds.prompt"), font=(FONT_UI, 8),
+                 bg=theme.PANEL, fg=theme.MUTED).pack(
+            anchor="w" if horizontal else "n")
+        pmt = tk.Entry(midcol, width=(52 if horizontal else 22),
+                       font=(FONT_UI, 9), relief="flat",
                        bg=theme.ACCENT_FAINT, fg=theme.TEXT)
-        pmt.pack(padx=8, pady=(0, 2))
+        pmt.pack(padx=8, pady=(0, 2), anchor="w" if horizontal else "n")
 
         def _store():
             return _load_json(store_path, {})
@@ -1045,6 +1074,12 @@ def show(app):
                     c = _store()
                     c[name] = item
                     _dump_json(store_path, c)
+                    try:
+                        # 形象图一变，旧三视图即过期：自动续做（约定免手点）
+                        dramavideo.three_view(state, name, dict(item),
+                                              force=True)
+                    except Exception:        # noqa: BLE001  失败可手点按钮补
+                        pass
                     win.after(0, lambda: (_refresh_cast(),
                                           status(_t("ds.ready"))))
             threading.Thread(target=work, daemon=True).start()
@@ -1079,20 +1114,27 @@ def show(app):
                     looks[era] = old
                     it["looks"] = looks
                     _dump_json(store_path, c)
+                    try:
+                        # 阶段图一变，该阶段旧三视图即过期：自动续做
+                        dramavideo.three_view(state, name, dict(it), era=era,
+                                              ref_path=old.get("path"),
+                                              force=True)
+                    except Exception:        # noqa: BLE001  失败不阻断
+                        pass
                     win.after(0, lambda: (_refresh_cast(),
                                           status(_t("ds.ready"))))
             threading.Thread(target=work, daemon=True).start()
 
-        row1 = tk.Frame(card, bg=theme.PANEL)
-        row1.pack(pady=(0, 2))
+        row1 = tk.Frame(midcol, bg=theme.PANEL)
+        row1.pack(pady=(0, 2), anchor="w")
         ui._flat_button(row1, text=_t("ds.save_look"), width=9,
                         font=(FONT_UI, 9), command=_save_app
                         ).pack(side="left", padx=2)
         ui._flat_button(row1, text=_t("ds.upload"), width=9,
                         font=(FONT_UI, 9), command=_upload
                         ).pack(side="left", padx=2)
-        row2 = tk.Frame(card, bg=theme.PANEL)
-        row2.pack(pady=(0, 8))
+        row2 = tk.Frame(midcol, bg=theme.PANEL)
+        row2.pack(pady=(0, 8), anchor="w")
         ui._flat_button(row2, text=_t("ds.gen_t2i"), width=9,
                         font=(FONT_UI, 9), command=lambda: _regen_by("t2i")
                         ).pack(side="left", padx=2)
@@ -1120,8 +1162,7 @@ def show(app):
                 else:
                     def done():
                         status(_t("ds.ready"))
-                        if os.path.exists(tp):
-                            os.startfile(tp)
+                        _refresh_cast()          # 三视图立即显示在角色行内
                     win.after(0, done)
             threading.Thread(target=work, daemon=True).start()
 
@@ -1129,6 +1170,36 @@ def show(app):
                         font=(FONT_UI, 9),
                         command=lambda: _three_view()
                         ).pack(side="left", padx=2)
+
+        if horizontal:
+            # 三视图列：主形象 + 各阶段各一张（描述生成/阶段图重生成后自动续做）
+            _gb = dramavideo._global_base(state)
+            _sn = dramavideo._safe_name(name)
+            shown = 0
+            for tv_era in [""] + list((info.get("looks") or {}).keys()):
+                suffix = f"-{dramavideo._safe_name(tv_era)}" if tv_era else ""
+                tvp = os.path.join(
+                    _gb, f"{_sn}{suffix}-三视图.png")
+                if not os.path.isfile(tvp):
+                    continue
+                tvph = _thumb(tvp, (176, 99))
+                if not tvph:
+                    continue
+                st["img_refs"].append(tvph)
+                tk.Label(tvcol, text=f"三视图·{tv_era or '主形象'}"
+                         "（点击放大）",
+                         font=(FONT_UI, 7), bg=theme.PANEL,
+                         fg=theme.MUTED).pack()
+                tvl = tk.Label(tvcol, image=tvph, bg=theme.PANEL,
+                               cursor="hand2")
+                tvl.pack(pady=(0, 4))
+                tvl.bind("<Button-1>", lambda e, p=tvp: os.startfile(p))
+                shown += 1
+            if not shown:
+                tk.Label(tvcol, text="暂无三视图（生成形象图后自动续做，"
+                         "或点「三视图」）",
+                         font=(FONT_UI, 8), bg=theme.PANEL,
+                         fg=theme.MUTED, justify="center").pack(pady=(36, 0))
 
     ui._flat_button(foot2, text=_t("ds.fill_cast"), width=14,
                     font=(FONT_UI, 10),

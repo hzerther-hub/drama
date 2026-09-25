@@ -772,23 +772,30 @@ def build_cast(state: dict, on_event=None, stop=None, redo: bool = False) -> dic
     return cast
 
 
-def three_view(state: dict, name: str, info: dict, on_event=None) -> str:
+def three_view(state: dict, name: str, info: dict, on_event=None,
+               era: str = "", ref_path: str = "", force: bool = False) -> str:
     """角色三视图设定图：左 1/3 面部特写 + 右 2/3 正/侧/背全身（16:9 白底）。
 
     以定妆照为参考图锁脸（同一人），给后续关键帧多一个高一致性参考源；
     产物存 全书/{name}-三视图.png，存在即复用。
+    era 非空：按该阶段出图（阶段服装与主形象不同，三视图必须按阶段各自
+    出），参考图取 ref_path（阶段形象图），产物 {name}-{阶段}-三视图.png。
+    force=True：无视缓存重做——主形象/阶段图重生成后旧三视图已过期，
+    自动续做时必须覆盖。
     """
     on_event = on_event or (lambda e: None)
     base = _global_base(state)
-    out = os.path.join(base, f"{_safe_name(name)}-三视图.png")
-    if os.path.exists(out):
+    suffix = f"-{_safe_name(era)}" if era else ""
+    out = os.path.join(base, f"{_safe_name(name)}{suffix}-三视图.png")
+    if os.path.exists(out) and not force:
         return out
-    src = info.get("path") or ""
+    src = ref_path or ((info.get("looks") or {}).get(era) or {}).get("path", "")
+    src = src or info.get("path") or ""
     if not src or not os.path.exists(src):
         raise _stop("先有该角色的形象图，才能生成三视图"
                     f"（{name} 还没有定妆照）")
     on_event({"type": "drama_media", "kind": "cast",
-              "label": f"{name} 三视图"})
+              "label": f"{name}{era + ' ' if era else ' '}三视图"})
     imggen.generate_ex(
         # v2.1 单点风格注入 + 远程新增的 _drama_sizes() 尺寸解析
         inject_style(state, "角色三视图设定图：以参考图角色为同一人；16:9 版面，"
@@ -1049,7 +1056,7 @@ def effective_cast(cast: dict, local: dict) -> dict:
 
 # ---------------- 2. 分镜表（LLM → JSON） ----------------
 
-def _clean_text(t: str, limit: int = 0) -> str:
+def _clean_text(t: str, limit: int = 0, keep_nl: bool = False) -> str:
     """分镜字段消毒：剔 <think> 块（含内容）、代码围栏（含语言标签）、引导语。"""
     t = re.sub(r"<think>.*?</think>", "", str(t or ""), flags=re.S)
     t = re.sub(r"```[a-zA-Z]*", "", t)            # 围栏起始（含语言标签）
@@ -1060,7 +1067,10 @@ def _clean_text(t: str, limit: int = 0) -> str:
     head = re.sub(r"^(好的|以下是|根据要求[，,]?|让我们?[，,]?)[\s，,]*,?\s*",
                   "", head)
     t = head + t.strip()[80:]
-    t = re.sub(r"\s+", " ", t).strip()
+    if keep_nl:                        # 视频提示词的 3 秒分段靠换行分行
+        t = re.sub(r"[ \t\r\f\v]+", " ", t).strip()
+    else:
+        t = re.sub(r"\s+", " ", t).strip()
     return t[:limit] if limit else t
 
 
@@ -1161,6 +1171,29 @@ def build_shots(state: dict, chapter: dict, on_event=None,
     return clean
 
 
+def _costume_lines(state: dict, characters: list, era: str) -> str:
+    """本镜角色造型语境（移植 huobao）：按镜头 era 取角色该阶段外貌/服装。
+
+    video_prompt 的着装描写必须与此一致——「参考图是古装、提示词写现代
+    夹克」的错位会原样传导进成片。"""
+    if not characters:
+        return ""
+    cast = _json_load(os.path.join(_global_base(state), "cast.json"), {})
+    lines = []
+    for name in characters:
+        info = cast.get(name)
+        if not isinstance(info, dict):
+            continue
+        look = (info.get("looks") or {}).get(era) or {}
+        desc = (look.get("appearance") or info.get("appearance") or "").strip()
+        if desc:
+            lines.append(f"{name} → 本镜阶段「{era or '主形象'}」：{desc[:100]}")
+    if not lines:
+        return ""
+    head = "本镜角色造型（video_prompt 中的着装描写必须与此一致，不得混穿其他阶段服装）："
+    return "\n" + head + "\n" + "\n".join(lines)
+
+
 def _video_prompts(state: dict, chapter: dict, shots: list):
     """给每个分镜段落二次生成 video_prompt（火宝规范）：按 3 秒分段。
 
@@ -1177,21 +1210,31 @@ def _video_prompts(state: dict, chapter: dict, shots: list):
             s = shots[i]
             lines.append(
                 f"镜头{i + 1}（{int(s['duration'])}秒，场景「{s['scene']}」，"
+                f"阶段「{s.get('era', '')}」，氛围「{s.get('mood', '')}」，"
                 f"角色{'、'.join(s['characters']) or '无'}，"
-                f"道具{'、'.join(s['props']) or '无'}）：\n{s['description']}")
+                f"道具{'、'.join(s['props']) or '无'}）：\n{s['description']}"
+                + _costume_lines(state, s.get("characters"), s.get("era", "")))
         text = _ask(
             state,
             "你是视频提示词工程师（火宝规范）。把每个分镜段落的 description"
-            "转成按时间分段的视频生成提示词。规则："
-            "段数=时长÷3秒向上取整，各段时间连续无重叠；"
-            "每段一行「N-M秒：景别运镜，主体+具体动作与表情，台词或旁白」；"
-            "第一段必须建立空间（场景+机位+角色位置）；子镜头切镜处用"
-            "「切到/切回」衔接并重述景别；台词写「角色名说：「台词」」"
-            "从 description 的对应【镜头N】提取，3 秒念不完拆多段，"
-            "不得创作 description 之外的新台词；情绪转可见动作描写；"
-            "表演克制写实：禁止尖叫/大喊/夸张惊吓动作，受惊用微反应"
-            "（僵住、后退半步），台词按日常音量说话；"
-            "一个段落只发生在一个场景。"
+            "转成按时间分段的视频生成提示词，供图生视频直接执行。规则："
+            "【分段】每 3 秒一段，段首用「0.0-3.0秒：」格式（秒数带一位小数），"
+            "各段各占一行、时间连续无重叠，段数=时长÷3向上取整；"
+            "【段结构】景别（中景/近景/特写）+机位视角开头，主体+连续具体动作"
+            "与表情（写可见的身体行为，不写心理词）；角色出场一律写"
+            "「@角色名」（名字与给出的角色列表逐字一致，用于挂接参考素材图），"
+            "提到场景用「@场景名」；着装细节按「本镜角色造型」写进段内；"
+            "【光线】每段结尾以本镜氛围光线收尾（如「灰蓝色冷调清晨车厢光线」），"
+            "全镜各段保持同一光线基调；"
+            "【台词】从 description 对应【镜头N】原样提取，写"
+            "「——@角色名 说：「台词」」，3 秒念不完拆多段，"
+            "不得创作 description 之外的新台词；"
+            "【切镜】段内可切镜（换景别/角度/对象），用「切到/切回」衔接并"
+            "重述景别；第一段必须建立空间（场景+机位+角色位置）；"
+            "不跨场景；"
+            "【表演分层】日常与过渡段必须日常语气与自然动作，仅爆点段允许"
+            "强情绪表演；受惊用微反应（僵住、后退半步、手一抖），"
+            "台词按日常音量；情绪转可见动作描写。"
             '只输出 JSON：{"1": "第一镜 video_prompt", "2": "..."}'
             "（键=镜头号，字符串内用换行分隔时间段）。",
             "\n\n".join(lines))
@@ -1200,7 +1243,7 @@ def _video_prompts(state: dict, chapter: dict, shots: list):
             for i in todo:
                 v = data.get(str(i + 1)) or data.get(i + 1)
                 if isinstance(v, str) and v.strip():
-                    shots[i]["video_prompt"] = _clean_text(v)
+                    shots[i]["video_prompt"] = _clean_text(v, keep_nl=True)
     except Exception:                      # noqa: BLE001 失败不阻断，回退模板
         pass
 
@@ -1221,21 +1264,31 @@ def regen_video_prompt(state: dict, chapter_idx: int, shot_idx: int) -> str:
     desc = (s.get("description") or "").strip()
     if not desc:
         return ""
-    sys_p = ("你是视频提示词工程师。把单条分镜的 description 写成按时间分段的"
-             "视频生成提示词：每段以「N-M秒：景别运镜，主体+动作+台词」格式，"
-             "段数=时长÷3秒向上取整。严格遵循 description，不创作新台词。"
-             "表演克制写实：禁止尖叫/大喊/夸张惊吓动作，受惊用微反应"
-             "（僵住、后退半步），台词按日常音量。"
-             "输出必须是 JSON：{\"1\": \"0-3秒：…\"}")
+    sys_p = ("你是视频提示词工程师（火宝规范）。把单条分镜的 description 写成"
+             "按时间分段的视频生成提示词，供图生视频直接执行。规则："
+             "每 3 秒一段，段首「0.0-3.0秒：」格式（秒数带一位小数），"
+             "各段各占一行换行分隔，段数=时长÷3向上取整；"
+             "每段：景别（中景/近景/特写）+机位视角开头，主体+连续具体动作"
+             "与表情；角色出场一律写「@角色名」（与给出的角色列表逐字一致，"
+             "用于挂接参考素材图），提到场景用「@场景名」；着装按"
+             "「本镜角色造型」写进段内；每段结尾以本镜氛围光线收尾；"
+             "台词从 description 原样提取写「——@角色名 说：「台词」」，"
+             "不创作新台词；段内可切镜（换景别/对象），用「切到/切回」衔接，"
+             "不跨场景；表演分层：日常与过渡段日常语气自然动作，仅爆点段"
+             "允许强情绪，受惊用微反应（僵住、后退半步）。"
+             "输出必须是 JSON：{\"1\": \"0.0-3.0秒：…\"}")
     user_p = (f"分镜 #{shot_idx}（{int(s.get('duration', 0))}秒，场景"
-              f"「{s.get('scene', '')}」，角色{'、'.join(s.get('characters') or []) or '无'}，"
-              f"道具{'、'.join(s.get('props') or []) or '无'}）：\n{desc}")
+              f"「{s.get('scene', '')}」，阶段「{s.get('era', '')}」，氛围"
+              f"「{s.get('mood', '')}」，"
+              f"角色{'、'.join(s.get('characters') or []) or '无'}，"
+              f"道具{'、'.join(s.get('props') or []) or '无'}）：\n{desc}"
+              + _costume_lines(state, s.get("characters"), s.get("era", "")))
     try:
         raw = _ask(state, sys_p, user_p)
         data = _extract_json(raw) or {}
         v = data.get("1") or data.get(1)
         if isinstance(v, str) and v.strip():
-            v = _clean_text(v)
+            v = _clean_text(v, keep_nl=True)
             s["video_prompt"] = v
             _json_dump(path, shots)
             return v
@@ -1656,6 +1709,8 @@ def gen_asset_comic(state: dict, name: str, info: dict, era: str = "",
               tpl.format(a=_anchored_appearance(
                   (lk or {}).get("appearance") if era
                   else info.get("appearance", ""))))
+    if sec == "角色":
+        prompt += " " + _dbg.body_guard(state, [name])
     refs = []
     if src and os.path.exists(src):
         refs.append(src)
@@ -1775,6 +1830,7 @@ def comic_panel_image(state: dict, cast: dict, panel: dict, ch: int, i: int,
     body_text = panel.get("description", "") + " " + panel.get("dialogue", "")
     shot_props = set(panel.get("props") or [])
     refs, scene_ref, who, props = [], None, [], []
+    who_names = []
 
     for name, info in cast.items():
         if name.startswith("_") or not isinstance(info, dict):
@@ -1790,6 +1846,7 @@ def comic_panel_image(state: dict, cast: dict, panel: dict, ch: int, i: int,
                                       or info.get("appearance", ""))
             if ap:
                 who.append(f"{name}（{ap}）")
+            who_names.append(name)
         elif sec == "场景" and scene_name and not scene_ref:
             if p and (name in scene_name or scene_name in name):
                 scene_ref = p
@@ -1804,7 +1861,9 @@ def comic_panel_image(state: dict, cast: dict, panel: dict, ch: int, i: int,
               f"场景：{scene_name}。出场角色：{'、'.join(who) or '（无）'}。"
               "参考图依次为场景、角色形象、道具，严格保持参考图中场景布置、"
               "角色长相与道具外观一致。单幅漫画格构图，画面层次清晰。"
-              "画面中不要出现任何字幕、文字、对话框、标题、水印或字母字符。")
+              "画面中不要出现任何字幕、文字、对话框、标题、水印或字母字符。"
+              + " " + _dbg.body_guard(state, who_names)
+              + " 表情自然克制，不画夸张嘶吼扭曲的表情脸，情绪靠姿态与构图传达。")
     on_event({"type": "drama_media", "kind": "comic_panel",
               "label": f"第{ch}章 格{i}"})
     path, _ = imggen.generate_ex(prompt, out, size=csize, ratio=cratio,

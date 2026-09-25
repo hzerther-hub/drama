@@ -65,4 +65,9 @@ def body_guard(state, names) -> str:
     else:
         foot_line = ("出场人物脚部都按 5 趾画，无多趾、无并趾、无趾节缺失、"
                      "无脚趾融合/弯折畸形；脚部比例与人物体型一致。")
-    return hand_line + " " + foot_line
+    limb_line = ("人物均为正常人形：两条手臂、两条腿，无第三只手、无三条腿、"
+                 "无多余肢体、无肢体复制或扭曲拉长。")
+    ghost_line = ("画面同一时刻每名角色只出现一个人影，无重影、无分身、"
+                  "无多人复制；五官位置稳定不畸变、不融化，长相前后一致。")
+    logo_line = ("画面不出现真实品牌标志、不出现可辨识的真人明星脸。")
+    return hand_line + " " + foot_line + " " + limb_line + " " + ghost_line + " " + logo_line
