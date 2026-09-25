@@ -61,6 +61,57 @@ def _thumb(path, size):
         return None
 
 
+def _show_image_modal(parent, path):
+    """点击缩略图 → 应用内模态大图窗（Toplevel + grab_set），替代外部看图器。"""
+    if Image is None or not os.path.exists(path):
+        return
+    try:
+        img = Image.open(path)
+        sw = parent.winfo_screenwidth() or 1280
+        sh = parent.winfo_screenheight() or 800
+        scale = min(1.0, sw * 0.6 / max(1, img.width),
+                    sh * 0.7 / max(1, img.height))
+        if scale < 1.0:
+            img = img.resize((max(1, int(img.width * scale)),
+                              max(1, int(img.height * scale))),
+                             Image.LANCZOS)
+        photo = ImageTk.PhotoImage(img)
+    except Exception:                  # noqa: BLE001  坏图回退文件名提示
+        photo = None
+
+    win = tk.Toplevel(parent)
+    win.title(os.path.basename(path))
+    win.configure(bg=theme.BG)
+    if photo is not None:
+        lbl = tk.Label(win, image=photo, bg=theme.BG)
+        lbl.image = photo              # 挂控件上防 GC
+        lbl.pack(padx=12, pady=(12, 4))
+    else:
+        tk.Label(win, text="图片无法显示：" + os.path.basename(path),
+                 font=(FONT_UI, 10), bg=theme.BG,
+                 fg=theme.MUTED).pack(padx=20, pady=20)
+    tk.Label(win, text="点击图片 / Esc 关闭", font=(FONT_UI, 8),
+             bg=theme.BG, fg=theme.MUTED).pack(pady=(0, 10))
+    win.transient(parent)
+    win.grab_set()                     # 模态：关闭前阻断工作台交互
+
+    def _close(_e=None):
+        try:
+            win.grab_release()
+        except Exception:              # noqa: BLE001
+            pass
+        win.destroy()
+
+    if photo is not None:
+        lbl.bind("<Button-1>", _close)
+    win.bind("<Escape>", _close)
+    win.bind("<Button-1>", _close)
+    x = max(0, parent.winfo_rootx() + 60)
+    y = max(0, parent.winfo_rooty() + 60)
+    win.geometry(f"+{x}+{y}")
+    win.focus_set()
+
+
 def _comic_panels(md_text: str, ch: int) -> list:
     """从漫画分镜 md 抽取第 ch 章的出图提示词列表（纯函数，便于测试）。
 
@@ -934,9 +985,12 @@ def show(app):
             tvcol.pack(side="right", padx=(4, 10), pady=8, anchor="n")
         ph = _thumb(disp, (150, 200))
         if ph:
-            lbl = tk.Label(imgcol, image=ph, bg=theme.PANEL)
+            lbl = tk.Label(imgcol, image=ph, bg=theme.PANEL, cursor="hand2")
             lbl.pack(padx=8, pady=(8, 2))
             st["img_refs"].append(ph)
+            if disp:
+                lbl.bind("<Button-1>",
+                         lambda e, p=disp: _show_image_modal(win, p))
         tk.Label(midcol, text=f"{name}", font=(FONT_UI, 11, "bold"),
                  bg=theme.PANEL, fg=theme.TEXT).pack()
         # 多阶段形象（现代/古装…）：小缩略图行，单击＝设为默认套（再点取消），
@@ -979,8 +1033,12 @@ def show(app):
                 cell = tk.Frame(lrow, bg=theme.PANEL)
                 cell.pack(side="left", padx=3)
                 lph = _thumb(lk.get("path") or "", (56, 74))
-                img_lbl = (tk.Label(cell, image=lph, bg=theme.PANEL)
-                           if lph else None)
+                img_lbl = (tk.Label(cell, image=lph, bg=theme.PANEL,
+                                    cursor="hand2") if lph else None)
+                if img_lbl is not None and lk.get("path"):
+                    img_lbl.bind("<Button-3>",
+                                 lambda e, p=lk.get("path"):
+                                 _show_image_modal(win, p))
                 if img_lbl is not None:
                     img_lbl.pack()
                     st["img_refs"].append(lph)
@@ -1074,12 +1132,20 @@ def show(app):
                     c = _store()
                     c[name] = item
                     _dump_json(store_path, c)
-                    try:
-                        # 形象图一变，旧三视图即过期：自动续做（约定免手点）
-                        dramavideo.three_view(state, name, dict(item),
-                                              force=True)
-                    except Exception:        # noqa: BLE001  失败可手点按钮补
-                        pass
+                    if horizontal:
+                        # 仅角色行自动续做（场景固定视角/道具白底无三视图）。
+                        # 形象图一变旧三视图即过期；主形象=默认阶段定妆照，
+                        # 续做默认阶段那张
+                        try:
+                            _looks = item.get("looks") or {}
+                            _dft = (item.get("default_look")
+                                    or next(iter(_looks), ""))
+                            dramavideo.three_view(state, name, dict(item),
+                                                  era=_dft,
+                                                  ref_path=item.get("path"),
+                                                  force=(_dft != ""))
+                        except Exception:    # noqa: BLE001  失败可手点按钮补
+                            pass
                     win.after(0, lambda: (_refresh_cast(),
                                           status(_t("ds.ready"))))
             threading.Thread(target=work, daemon=True).start()
@@ -1114,13 +1180,15 @@ def show(app):
                     looks[era] = old
                     it["looks"] = looks
                     _dump_json(store_path, c)
-                    try:
-                        # 阶段图一变，该阶段旧三视图即过期：自动续做
-                        dramavideo.three_view(state, name, dict(it), era=era,
-                                              ref_path=old.get("path"),
-                                              force=True)
-                    except Exception:        # noqa: BLE001  失败不阻断
-                        pass
+                    if horizontal:
+                        try:
+                            # 阶段图一变，该阶段旧三视图即过期：自动续做
+                            dramavideo.three_view(state, name, dict(it),
+                                                  era=era,
+                                                  ref_path=old.get("path"),
+                                                  force=True)
+                        except Exception:    # noqa: BLE001  失败不阻断
+                            pass
                     win.after(0, lambda: (_refresh_cast(),
                                           status(_t("ds.ready"))))
             threading.Thread(target=work, daemon=True).start()
@@ -1143,7 +1211,10 @@ def show(app):
                         ).pack(side="left", padx=2)
 
         def _three_view():
-            """三视图设定图（面特+正/侧/背，锁脸）：关键帧的高一致参考源。"""
+            """三视图设定图（面特+正/侧/背，锁脸）：关键帧的高一致参考源。
+
+            一阶段对应一张：按阶段表逐个补齐缺失的；无阶段表的角色出主三视图。
+            已存在的不重做（force 语义留给重新生成阶段图的自动续做）。"""
             item2 = _save_look_to_json(ent)     # 先把描述框的改动存进去
             if st["busy"]:
                 status(_t("ds.busy"), busy=True)
@@ -1151,35 +1222,54 @@ def show(app):
             if not (item2.get("path") or ""):
                 status(_t("ds.need_face", n=name))
                 return
-            status(_t("ds.generating", n=f"{name} 三视图"), busy=True)
+            looks = item2.get("looks") or {}
+            todo = ([(era, ((looks.get(era) or {}).get("path") or ""))
+                     for era in looks] if looks
+                    else [("", item2.get("path") or "")])
+            missing = [x for x in todo if not os.path.exists(os.path.join(
+                dramavideo._global_base(state),
+                f"{dramavideo._safe_name(name)}{dramavideo._safe_name(x[0]) and '-' + dramavideo._safe_name(x[0]) or ''}-三视图.png"))]
+            if not missing:
+                status(_t("ds.ready"))
+                return
+            status(_t("ds.generating", n=f"{name} 三视图×{len(missing)}"),
+                   busy=True)
 
             def work():
-                try:
-                    tp = dramavideo.three_view(state, name, dict(item2))
-                except Exception as e:       # noqa: BLE001
-                    win.after(0, lambda err=e: status(
-                        f"❌ {type(err).__name__}: {err}"))
-                else:
-                    def done():
+                errs = []
+                for era, ref in missing:
+                    try:
+                        dramavideo.three_view(state, name, dict(item2),
+                                              era=era, ref_path=ref or "")
+                    except Exception as e:   # noqa: BLE001  单张失败继续补
+                        errs.append(f"{era or '主形象'}: {e}")
+                def done():
+                    if errs:
+                        status("⚠ 三视图部分未完成：" + "；".join(errs)[:80])
+                    else:
                         status(_t("ds.ready"))
-                        _refresh_cast()          # 三视图立即显示在角色行内
-                    win.after(0, done)
+                    _refresh_cast()          # 三视图立即显示在角色行内
+                win.after(0, done)
             threading.Thread(target=work, daemon=True).start()
 
-        ui._flat_button(row2, text=_t("ds.three_view"), width=9,
-                        font=(FONT_UI, 9),
-                        command=lambda: _three_view()
-                        ).pack(side="left", padx=2)
+        if horizontal:          # 三视图是角色专属；场景固定视角/道具白底不需要
+            ui._flat_button(row2, text=_t("ds.three_view"), width=9,
+                            font=(FONT_UI, 9),
+                            command=lambda: _three_view()
+                            ).pack(side="left", padx=2)
 
         if horizontal:
-            # 三视图列：主形象 + 各阶段各一张（描述生成/阶段图重生成后自动续做）
+            # 三视图列：一阶段对应一张。有阶段表就只显示阶段三视图
+            # （主形象即默认阶段的定妆照，单独一张属于重复）；
+            # 无阶段表的角色才回退显示主三视图
             _gb = dramavideo._global_base(state)
             _sn = dramavideo._safe_name(name)
+            looks = info.get("looks") or {}
+            tv_list = ([(era, f"-{dramavideo._safe_name(era)}") for era in looks]
+                       if looks else [("", "")])
             shown = 0
-            for tv_era in [""] + list((info.get("looks") or {}).keys()):
-                suffix = f"-{dramavideo._safe_name(tv_era)}" if tv_era else ""
-                tvp = os.path.join(
-                    _gb, f"{_sn}{suffix}-三视图.png")
+            for tv_era, suffix in tv_list:
+                tvp = os.path.join(_gb, f"{_sn}{suffix}-三视图.png")
                 if not os.path.isfile(tvp):
                     continue
                 tvph = _thumb(tvp, (176, 99))
@@ -1193,7 +1283,7 @@ def show(app):
                 tvl = tk.Label(tvcol, image=tvph, bg=theme.PANEL,
                                cursor="hand2")
                 tvl.pack(pady=(0, 4))
-                tvl.bind("<Button-1>", lambda e, p=tvp: os.startfile(p))
+                tvl.bind("<Button-1>", lambda e, p=tvp: _show_image_modal(win, p))
                 shown += 1
             if not shown:
                 tk.Label(tvcol, text="暂无三视图（生成形象图后自动续做，"
