@@ -135,16 +135,25 @@ def show(app):
         app._set_status(_t("novel.none"))
         return
     state = p.state
+    import config
+    import novel_chain
+    chapters = [c for c in state.get("chapters", []) if c.get("text")]
+    if not chapters:
+        # 当前书没正文 ≠ 没书可做：重启后自动选中的常是 paused 大纲书，
+        # 而写完的全本就在书稿根里——改投章节最多的那本
+        p2, _n = app._pick_book_with_chapters()
+        if p2 is not None:
+            app._novel_pipe = p2
+            p, state = p2, p2.state
+            chapters = [c for c in state.get("chapters", []) if c.get("text")]
+    if not chapters:
+        app._set_status(_t("novel.no_chapters"))
+        app._append("💡 " + _t("ds.no_chapters_hint") + "\n", "meta")
+        return
     # v2.1：兜底补 drama_style / comic_style 字段，确保后续 inject_style 不空
     import dramavideo
     dramavideo.ensure_style_fields(state)
-    import config
-    import novel_chain
     book = novel_chain._book_dir(state)
-    chapters = [c for c in state.get("chapters", []) if c.get("text")]
-    if not chapters:
-        app._set_status(_t("novel.no_chapters"))
-        return
 
     win = tk.Toplevel(app.root)
     win.configure(bg=theme.BG)

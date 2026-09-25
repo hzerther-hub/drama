@@ -59,3 +59,70 @@ def test_command_candidates_respect_mode_flags(monkeypatch):
     assert "/novel drama" in cmds
     assert "/novel comic" not in cmds
     assert "/novel comic cast" not in cmds
+
+
+# ---- /novel use 选书匹配：序号 / pid 中段子串 / 书名关键词 ----
+
+_ROWS = [
+    {"pid": "novel-20260919-083522", "title": "深井之下大纲",
+     "pipeline_status": "paused"},
+    {"pid": "novel-20260919-090815", "title": "双井长生",
+     "pipeline_status": "done"},
+    {"pid": "novel-20260919-171111", "title": "井穿两界：我用打印机制符长生",
+     "pipeline_status": "done"},
+]
+
+
+class _FakePipe:
+    def __init__(self, pid):
+        self.pid = pid
+        self.title = "书"
+        self.pipeline_status = "done"
+
+
+def _pick(monkeypatch, arg):
+    import types
+
+    import pipeline as _pl
+    monkeypatch.setattr(_pl, "list_pipelines", lambda: list(_ROWS))
+    monkeypatch.setattr(_pl, "load", lambda pid, stages: _FakePipe(pid))
+    fake = types.SimpleNamespace()
+    p, err = ui.App._novel_pick(fake, arg)
+    return (p.pid if p else None), err
+
+
+def test_pick_by_row_index(monkeypatch):
+    # 序号 = /novel status 列表里的展示行号（1 起，新→旧）
+    assert _pick(monkeypatch, "2") == ("novel-20260919-090815", None)
+
+
+def test_pick_by_timestamp_tail_digits(monkeypatch):
+    # 纯数字但超出序号范围 → 退化为 pid 子串匹配（时间戳尾段是最常用敲法）
+    assert _pick(monkeypatch, "171111") == ("novel-20260919-171111", None)
+
+
+def test_pick_by_title_keyword(monkeypatch):
+    assert _pick(monkeypatch, "井穿两界") == ("novel-20260919-171111", None)
+    assert _pick(monkeypatch, "双井") == ("novel-20260919-090815", None)
+
+
+def test_pick_ambiguous_and_notfound(monkeypatch):
+    assert _pick(monkeypatch, "井")[1] == "ambiguous"       # 双井/井穿两界都命中
+    assert _pick(monkeypatch, "修仙界首席")[1] == "notfound"
+    assert _pick(monkeypatch, "novel-20260919-")[1] == "ambiguous"      # 前缀撞三条
+
+
+def test_pick_ambiguous_records_global_row_numbers(monkeypatch):
+    # 歧义时把候选连同书单全局序号记在 self 上，供 use 分支列给用户按号重选
+    import types
+
+    import pipeline as _pl
+    monkeypatch.setattr(_pl, "list_pipelines", lambda: list(_ROWS))
+    monkeypatch.setattr(_pl, "load", lambda pid, stages: _FakePipe(pid))
+    fake = types.SimpleNamespace()
+    p, err = ui.App._novel_pick(fake, "井")
+    assert p is None and err == "ambiguous"
+    cand = fake._novel_pick_candidates
+    assert [gi for gi, _r in cand] == [1, 2, 3]          # 三个书名都含「井」
+    assert cand[0][1]["title"] == "深井之下大纲"
+    assert cand[2][1]["pid"] == "novel-20260919-171111"

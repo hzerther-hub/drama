@@ -938,6 +938,28 @@ def set_jev(cfg: dict | None) -> None:
     _save_models_data(data)
 
 
+def get_route_judge() -> bool:
+    """LLM 路由判官开关：智排开启时，关键词未命中是否问一次 TypeSafe 判官。
+
+    默认开（判官按句缓存、失败静默回退关键词，成本可控）；
+    配了 jev key 但想省这笔小钱时置 false。
+    """
+    try:
+        data = _load_models_data()
+    except Exception:                  # noqa: BLE001
+        return True
+    return bool(data.get("route_judge", True))
+
+
+def set_route_judge(on: bool) -> None:
+    """开关 LLM 路由判官。"""
+    data = _load_models_data()
+    on = bool(on)
+    if bool(data.get("route_judge", True)) != on:
+        data["route_judge"] = on
+        _save_models_data(data)
+
+
 def video_services() -> list:
     """枚举所有视频供应商（带 video_model 字段；UI 顶栏下拉数据源）。
 

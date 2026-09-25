@@ -612,7 +612,7 @@ _ICON_ALIAS = {
     "2753": "help",         # ❓ 帮助
     "1f4f8": "camera",      # 📸 截图
     "1f504": "refresh",     # 🔄 刷新
-    "1f500": "route",       # 🔀 路由
+    "1f6a6": "traffic",     # 🚦 路由（原 🔀 洗牌箭头与刷新太像，换红绿灯）
     "23f1": "timer",        # ⏱ 排队
     "26aa": "circle",       # ⚪ 推理：默认
     "1f6ab": "ban",         # 🚫 推理：关
@@ -1378,7 +1378,7 @@ class App:
             lambda: self._show_think_menu(anchor=self.bottom_think_btn))
         self.bottom_think_btn.pack(side="left", padx=(4, 0))
         self.bottom_route_btn = self._icon_button(
-            ctrlbar, "🔀", lambda: self._route_mode_text(),
+            ctrlbar, "🚦", lambda: self._route_mode_text(),
             self._cycle_route_override)
         self.bottom_route_btn.pack(side="right", padx=(4, 0))
         _flat_emoji_button(ctrlbar, "\U0001F4F8",
@@ -1727,7 +1727,7 @@ class App:
         tk.Label(head, text="🗂 " + _t("sess.workspace"), font=(FONT_UI, 10, "bold")).pack(side="left")
         # 路由模式按钮：自动/本地/云端 循环（local 保存自动路由，仅覆盖当前轮）
         self._route_btn = _flat_emoji_button(
-            head, "🔀", command=self._cycle_route_override)
+            head, "🚦", command=self._cycle_route_override)
         self._route_btn.pack(side="right", padx=(6, 0))
         self._bind_hint(self._route_btn, "route.auto")
         self._sidebar_more = _flat_button(
@@ -3720,7 +3720,7 @@ class App:
         self._editor_hl_apply(txt)
 
     # ---- 输入框 placeholder ----
-    PLACEHOLDER = _t("input.placeholder")
+    PLACEHOLDER = _t("input.placeholder", build=_BUILD_TAG)
 
     def _setup_placeholder(self):
         """占位提示改为悬浮灰字层：不再往输入框里插入真实文本。
@@ -4016,7 +4016,7 @@ class App:
         self.send_btn.config(text=_t("btn.send"))
         self.status_badge.config(text=_t("status.idle"))
         # 重设 placeholder：悬浮层文本随语言刷新（内容为空才显示）
-        self._ph_label.config(text=_t("input.placeholder"))
+        self._ph_label.config(text=_t("input.placeholder", build=_BUILD_TAG))
         self._ph_update()
         if self.lang_btn:
             self.lang_btn.config(text="中/EN")
@@ -5163,6 +5163,7 @@ class App:
         ("/novel insert", "cmd.novel_insert", "novel"),
         ("/novel rename", "cmd.novel_rename", "novel"),
         ("/novel check", "cmd.novel_check", "novel"),
+        ("/novel delete", "cmd.novel_delete", "novel"),
         ("/novel compare", "cmd.novel_compare", "novel"),
         ("/novel resume", "cmd.novel_resume", "novel"),
         ("/novel drama", "cmd.novel_drama", "novel"),
@@ -5385,7 +5386,26 @@ class App:
                 if len(cand) == 1:
                     row = cand[0]
                 elif len(cand) > 1:
+                    # 记下候选（带书单全局序号，供 use 分支列出来让用户按号重选）
+                    self._novel_pick_candidates = [
+                        (rows.index(r) + 1, r) for r in cand]
                     return None, "ambiguous"
+            if row is None:
+                if pid.isdigit() and 1 <= int(pid) <= len(rows):
+                    # 序号：与 /novel status、/novel list 的展示顺序一致（1 起）
+                    row = rows[int(pid) - 1]
+                else:
+                    # 中段子串（如时间戳尾段 171111）或书名关键词；纯数字且
+                    # 恰好落在序号范围外时也走子串，两种意图都不漏
+                    cand = [r for r in rows
+                            if pid in (r.get("pid") or "")
+                            or pid in (r.get("title") or "")]
+                    if len(cand) == 1:
+                        row = cand[0]
+                    elif len(cand) > 1:
+                        self._novel_pick_candidates = [
+                            (rows.index(r) + 1, r) for r in cand]
+                        return None, "ambiguous"
             if row is None:
                 return None, "notfound"
             p = _pl.load(row["pid"], novel_chain.STAGES)
@@ -5426,12 +5446,64 @@ class App:
         if not rows:
             self._append("⚠ 还没有流水线记录（先 /novel start <灵感>）\n", "meta")
             return
-        self._append(f"📚 共 {len(rows)} 本：\n", "meta")
-        for r in rows:
-            self._append(f"  · {r['pid']} [{r['pipeline_status']}] "
-                         f"{r['title'] or '（无标题）'}（债 {r['debts']}）\n", "meta")
-        self._append("💡 /novel use <pid> 切入 / /novel resume [pid] 续跑 / "
-                     "/novel ok 在 paused 上继续\n", "meta")
+        # 分栏：书稿目录（书架）与 CONFIG_DIR 兜底位分开标注——用户约定
+        # 档案只应出现在书目录，列出存档位是为了可清可查、不混淆计数
+        book_rows = [r for r in rows if r.get("loc") == "book"]
+        cfg_rows = [r for r in rows if r.get("loc") != "book"]
+        self._append(f"📚 共 {len(rows)} 本（书稿目录 {len(book_rows)}"
+                     f"｜兜底位 {len(cfg_rows)}）：\n", "meta")
+
+        def _emit(rows_, base):
+            for i, r in enumerate(rows_, base):
+                self._append(f"  {i}. {r['pid']} [{r['pipeline_status']}] "
+                             f"{r['title'] or '（无标题）'}（债 {r['debts']}）\n",
+                             "meta")
+            return base + len(rows_)
+
+        n = _emit(book_rows, 1)
+        if cfg_rows:
+            self._append("  —— 以下在 CONFIG_DIR 兜底位（/novel delete 可清）——\n",
+                         "meta")
+            _emit(cfg_rows, n)
+        self._append("💡 /novel use <序号|pid|书名关键词> 切入 / /novel resume [pid] 续跑 / "
+                     "/novel delete <…> 删档 / /novel ok 在 paused 上继续\n", "meta")
+
+    def _novel_delete(self, rest: str):
+        """/novel delete <序号|pid|关键词>[,…]：删流水线档案（书稿目录与正文不动）。"""
+        import pipeline as _pl
+        from tkinter import messagebox
+        if self._novel_task_busy():
+            self._set_status(_t("novel.busy"))
+            return
+        targets = [s for s in re.split(r"[,，\s]+", (rest or "").strip()) if s]
+        if not targets:
+            self._append("💡 /novel delete <序号|pid|书名关键词>"
+                         "（可逗号分隔多个，如 /novel delete 2,4,6）\n", "meta")
+            return
+        picks, bad = [], []
+        for t in targets:
+            p, err = self._novel_pick(t, load=False)   # 只解析，不切当前书
+            if p is None:
+                bad.append(t if err == "notfound" else f"{t}({err})")
+            elif not any(x.pid == p.pid for x in picks):
+                picks.append(p)
+        if bad:
+            self._append("⚠ 解析不到：" + "、".join(bad) + "\n", "denied")
+        if not picks:
+            return
+        lines = "\n".join(f"· {p.pid} [{p.pipeline_status}] "
+                          f"{(p.title or '').splitlines()[0][:30]}"
+                          for p in picks)
+        if not messagebox.askyesno(
+                _t("novel.delete_title"),
+                _t("novel.delete_confirm", n=len(picks)) + "\n" + lines,
+                parent=self.root):
+            return
+        gone = [p for p in picks if _pl.delete_record(p.pid)]
+        cur = getattr(self, "_novel_pipe", None)
+        if cur is not None and any(p.pid == cur.pid for p in gone):
+            self._novel_pipe = None
+        self._append("🗑 " + _t("novel.delete_done", n=len(gone)) + "\n", "meta")
 
     def _novel_diagnose(self):
         """/novel diagnose：自动诊断重复 / 占位 / 卡死 / 可续写 的书。"""
@@ -5706,7 +5778,9 @@ class App:
         head = sub[0] if sub else "status"
         rest = sub[1] if len(sub) > 1 else ""
         # _novel_pipe 是内存态，重启后丢失；需要它的命令在此自动载入最近一本书。
-        if head not in ("start", "status", "help", "deconstruct", "use", "resume") \
+        # delete 豁免：删档不该顺手切换当前书
+        if head not in ("start", "status", "help", "deconstruct", "use",
+                        "resume", "delete", "list") \
                 and not getattr(self, "_novel_pipe", None):
             p, _err = self._novel_pick("")
             if p is None:
@@ -5727,6 +5801,9 @@ class App:
         if head == "list":
             self._novel_list()
             return
+        if head == "delete":
+            self._novel_delete(rest)
+            return
         if head == "diagnose":
             self._novel_diagnose()
             return
@@ -5739,6 +5816,15 @@ class App:
             return
         if head == "use":
             p, err = self._novel_pick(rest)
+            if err == "ambiguous":
+                # 候选带书单全局序号：用户直接 /novel use <序号> 即可接上
+                self._set_status(_t("novel.ambiguous"))
+                self._append("⚠ " + _t("novel.ambiguous") + "\n", "denied")
+                for gi, r in (getattr(self, "_novel_pick_candidates", None)
+                              or []):
+                    self._append(f"  {gi}. {r['pid']} [{r['pipeline_status']}] "
+                                 f"{r['title']}（债 {r['debts']}）\n", "meta")
+                return
             if err:
                 self._set_status(_t("novel." + err) if err in
                                  ("none", "notfound", "ambiguous")
@@ -6080,13 +6166,15 @@ class App:
                 return
             cur = getattr(self, "_novel_pipe", None)
             cur_pid = cur.pid if cur else ""
-            for r in rows:
+            for i, r in enumerate(rows, 1):
                 warn = ""
                 if r.get("save_errors"):
                     warn = f" ⚠检查点落盘失败×{r['save_errors']}"
-                mark = "▶ " if r["pid"] == cur_pid else "· "
-                self._append(f"{mark}{r['pid']} [{r['pipeline_status']}] "
+                mark = "▶" if r["pid"] == cur_pid else " "
+                self._append(f"{mark}{i}. {r['pid']} [{r['pipeline_status']}] "
                              f"{r['title']}（债 {r['debts']}）{warn}\n", "meta")
+            self._append("💡 /novel use <序号|pid|书名关键词> 切入 ｜ "
+                         "/novel delete <…> 删档\n", "meta")
 
     def _review_choice(self, choice: str, feedback: str = ""):
         """review modal 用户选择：ok=通过当前阶段 / adjust=带反馈重做 / skip=什么都不做。
@@ -7344,11 +7432,11 @@ class App:
         """自动→云端→自动 循环切换，并刷新按钮/状态。"""
         self._route_override = {"auto": "cloud",
                                 "cloud": "auto"}.get(self._route_override, "auto")
-        # 图标化：按钮固定 🔀，当前模式悬停状态栏可见
+        # 图标化：按钮固定 🚦，当前模式悬停状态栏可见
         if hasattr(self, "_route_btn") and self._route_btn:
-            self._route_btn.config(text="🔀")
+            self._route_btn.config(text="🚦")
         if hasattr(self, "bottom_route_btn") and self.bottom_route_btn:
-            self.bottom_route_btn.config(text="🔀")
+            self.bottom_route_btn.config(text="🚦")
         self._set_status(_t("route.status", mode=self._route_mode_text()))
 
     def _route_complex(self, text: str) -> str | None:
@@ -7518,6 +7606,41 @@ class App:
 
         def worker():
             self._rec.run = run               # 本线程后续输出都记到 run
+            # —— LLM 判官（路由第 1 层）：关键词未命中时问一次 TypeSafe 判官，
+            # pro 档则本轮切到云端高性能模型。放在 worker 里执行：判官的
+            # 网络延迟（秒级）不卡 UI 线程；任何失败静默回退当前模型。
+            try:
+                if (routed_key is None and ov == "auto" and dispatch_on
+                        and config.get_dispatch_smart()
+                        and config.get_route_judge()
+                        and config.get_dispatch_flash()
+                        != config.get_dispatch_pro()
+                        and run_model.key != config.get_dispatch_pro()):
+                    jk = (config.get_jev() or {}).get("api_key") or ""
+                    if jk:
+                        import route_judge
+                        tier = route_judge.judge_tier(
+                            text, api_key=jk,
+                            model=(config.get_jev() or {}).get("model") or "")
+                        if tier == "pro":
+                            mc = config.find_model(config.get_dispatch_pro())
+                            if mc is not None and mc.key != run_model.key:
+                                prev_name = run_model.display_name
+                                routed_key = mc.key
+                                run_model = mc
+                                run.model = mc
+                                if not getattr(self, "_dispatch_notes", None):
+                                    self._dispatch_notes = []
+                                self._dispatch_notes.append({
+                                    "kind": "model_switch", "turn": turn_no,
+                                    "on": prev_name, "to": mc.display_name,
+                                    "to_key": mc.key})
+                                self._append(
+                                    _t("ui.dispatch_complex_switch",
+                                       on=prev_name,
+                                       to=mc.display_name) + "\n", "dispatch")
+            except Exception:              # noqa: BLE001  判官永不阻断发送
+                pass
             a = agent_mod.Agent(on_event=lambda e: self._on_event(e, run),
                                 on_approval=self._approve,
                                 on_stop=lambda: run.stop,

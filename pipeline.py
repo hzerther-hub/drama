@@ -5,8 +5,9 @@
 - 每个阶段是纯函数 fn(state, ctx) -> dict，返回值合并进流水线 state；
 - 阶段失败分两级：fail="debt" 记质量债继续跑（局部问题不放大为全局失败），
   fail="stop" 立即停链（结构级失败）；
-- 全量状态落 JSON（CONFIG_DIR/pipelines/<pid>.json，临时文件 + os.replace
-  原子替换），每个阶段结束即落盘，中断后 restore 即可从断点恢复；
+- 全量状态落 JSON（优先 `<书稿目录>/pipelines/<pid>.json`，书未建目录或目录
+  被删时回落 `CONFIG_DIR/pipelines/<pid>.json`；临时文件 + os.replace 原子替换），
+  每个阶段结束即落盘，中断后 restore 即可从断点恢复；
 - 阶段内部可循环（如逐章生成）时用 ctx.save_state 做中间落盘、用
   ctx.is_stopped / ctx.pause 协作式暂停——恢复时阶段自己跳过已完成部分；
 - on_stop 协作式停止：每个阶段开始前检查。
@@ -72,7 +73,7 @@ class Pipeline:
 
     def __init__(self, pid: str, title: str, stages: list, state: dict | None = None):
         self.pid = pid
-        self.title = title
+        self._title = title          # 建管线时的灵感截断，仅作兜底
         self.stages = stages
         self.state = state or {}
         self.status: dict[str, str] = {s.name: "pending" for s in stages}
@@ -86,6 +87,16 @@ class Pipeline:
         # 静默吞掉会让「已保存」成为假象，故随状态一起持久化供排查。
         self.save_errors = 0
         self.save_error = ""
+
+    @property
+    def title(self) -> str:
+        """书名：优先 state.title（setup 阶段定的正式书名），
+        否则退回建管线时的灵感截断。"""
+        return (self.state or {}).get("title") or self._title
+
+    @title.setter
+    def title(self, v: str):
+        self._title = v or ""
 
     # ---------------- 执行 ----------------
 
@@ -153,9 +164,10 @@ class Pipeline:
         return sink
 
     def _log_event(self, e: dict):
-        """SSOT-lite：append-only 事件日志（CONFIG_DIR/pipelines/<pid>.events.jsonl）。"""
+        """SSOT-lite：append-only 事件日志（书目录 pipelines/ 内，旧档回落
+        CONFIG_DIR/pipelines/）。"""
         try:
-            d = _root()
+            d = _book_pipeline_dir(self.state) or _root()
             os.makedirs(d, exist_ok=True)
             with open(os.path.join(d, self.pid + ".events.jsonl"), "a",
                       encoding="utf-8") as f:
@@ -209,17 +221,33 @@ class Pipeline:
 
     def save(self):
         try:
-            d = _root()
+            book_d = _book_pipeline_dir(self.state)
+            d = book_d or _root()
             os.makedirs(d, exist_ok=True)
             tmp = os.path.join(d, self.pid + ".tmp")
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self.to_dict(), f, ensure_ascii=False, indent=1)
-            os.replace(tmp, _path(self.pid))
+            os.replace(tmp, os.path.join(d, self.pid + ".json"))
+            if book_d:
+                # 单档约束：书目录的 pipelines/ 只挂当前这条（用户约定：
+                # novels 只有一个书目录、目录下只有一个 pipelines、%APPDATA%
+                # 不留存档），其他 pid 的旧档直接删除
+                _evict_others(book_d, self.pid)
+                self._remove_legacy()
         except Exception as e:         # noqa: BLE001  落盘失败不阻断执行（下个阶段再试）
             # 记录健康信号：断点恢复依赖落盘，静默失败必须可查。
             # 下次 save 成功时会连同计数一起持久化。
             self.save_errors += 1
             self.save_error = f"{type(e).__name__}: {e}"[:200]
+
+    def _remove_legacy(self):
+        """状态已迁入书目录后删除 CONFIG_DIR 同名旧档（不存在则忽略）。"""
+        try:
+            legacy = _path(self.pid)
+            if os.path.isfile(legacy):
+                os.remove(legacy)
+        except OSError:
+            pass
 
     @classmethod
     def restore(cls, data: dict, stages: list) -> "Pipeline":
@@ -249,6 +277,7 @@ class Pipeline:
 
 
 def _root() -> str:
+    """兼容落点：CONFIG_DIR/pipelines（未建书目录的书、旧档、测试打桩点）。"""
     return os.path.join(config.CONFIG_DIR, "pipelines")
 
 
@@ -256,35 +285,185 @@ def _path(pid: str) -> str:
     return os.path.join(_root(), pid + ".json")
 
 
-def load(pid: str, stages: list) -> Pipeline | None:
-    """按 pid 恢复流水线；不存在/损坏返回 None。"""
-    try:
-        with open(_path(pid), encoding="utf-8") as f:
-            return Pipeline.restore(json.load(f), stages)
-    except Exception:                  # noqa: BLE001
+_DIR_NAME = "pipelines"                # 书稿目录内的流水线子目录名
+
+
+def _books_root() -> str:
+    """书稿根（novels/）：委托 novel_chain 推导（函数内导入避免循环依赖）。"""
+    import novel_chain
+    return novel_chain._novels_root()
+
+
+def _book_pipeline_dir(state: dict | None) -> str | None:
+    """书目录内的流水线目录；无书目录或书目录已被删除时返回 None。"""
+    d = (state or {}).get("dir")
+    if not d:
         return None
+    # 书目录被用户删掉时不复活它（makedirs 会重建整棵书目录）：回落旧位置
+    if not os.path.isdir(d):
+        return None
+    return os.path.join(d, _DIR_NAME)
 
 
-def list_pipelines() -> list[dict]:
-    """全部流水线摘要（按更新时间新→旧）。"""
-    out = []
+def _archive_move(src: str, dst_dir: str, name: str):
+    """把文件挪进 CONFIG_DIR 存档区（可能跨盘：写 tmp + replace + 删源）。"""
+    dst = os.path.join(dst_dir, name)
+    tmp = dst + ".tmp"
+    with open(src, encoding="utf-8") as f, open(tmp, "w",
+                                                encoding="utf-8") as g:
+        g.write(f.read())
+    os.replace(tmp, dst)
+    os.remove(src)
+
+
+def _evict_others(book_pipelines_dir: str, keep_pid: str):
+    """单档约束：书目录 pipelines/ 只保留 keep_pid 一条，其他 pid 的档案
+    （含事件日志）直接删除——按用户约定 %APPDATA% 不留存档，书目录外
+    不应有旧档案残留。""" 
+    try:
+        names = os.listdir(book_pipelines_dir)
+    except OSError:
+        return
+    for name in names:
+        pid = name[:-5] if name.endswith(".json") else ""
+        if not pid or pid == keep_pid:
+            continue
+        try:
+            os.remove(os.path.join(book_pipelines_dir, name))
+            ev = os.path.join(book_pipelines_dir, pid + ".events.jsonl")
+            if os.path.isfile(ev):
+                os.remove(ev)
+        except OSError:
+            continue
+
+
+def _migrate_legacy_all():
+    """把 CONFIG_DIR 旧档批量迁进各自书目录（幂等，list_pipelines 时触发）。
+
+    只迁 state.dir 在磁盘上真实存在的书；书目录 pipelines/ 已被别的 pid
+    占用时跳过（单档约束：迁入会和占位档打架，等该书下次 save 自然换防）；
+    书目录内已有同名档时保留 updated 较新的那份。
+    """
     try:
         names = os.listdir(_root())
     except OSError:
-        return []
+        return
     for name in names:
         if not name.endswith(".json"):
             continue
+        src = os.path.join(_root(), name)
         try:
-            with open(os.path.join(_root(), name), encoding="utf-8") as f:
-                d = json.load(f)
-            out.append({"pid": d.get("pid"), "title": d.get("title", ""),
-                        "pipeline_status": d.get("pipeline_status"),
-                        "cursor": d.get("cursor"),
-                        "debts": len(d.get("debts") or []),
-                        "save_errors": int(d.get("save_errors", 0) or 0),
-                        "updated": d.get("updated", 0)})
-        except Exception:              # noqa: BLE001  损坏文件跳过
+            with open(src, encoding="utf-8") as f:
+                jd = json.load(f)
+            d = _book_pipeline_dir(jd.get("state"))
+            if not d:
+                continue
+            occupied = any(n.endswith(".json") and n != name
+                           for n in os.listdir(d)) if os.path.isdir(d) else False
+            if occupied:
+                continue               # 目录挂着别的 pid：单档约束，不迁入
+            os.makedirs(d, exist_ok=True)
+            if os.path.isfile(os.path.join(d, name)):
+                with open(os.path.join(d, name), encoding="utf-8") as f:
+                    cur = json.load(f)
+                if float(jd.get("updated", 0) or 0) <= float(
+                        cur.get("updated", 0) or 0):
+                    os.remove(src)     # 书目录那份更新：旧档直接丢弃
+                    continue
+            _archive_move(src, d, name)
+        except Exception:              # noqa: BLE001  单档迁移失败不影响其余
             continue
-    out.sort(key=lambda x: -x["updated"])
-    return out
+
+
+def _find_in_books(pid: str) -> str | None:
+    """在各书的 pipelines/ 子目录里找 <pid>.json；找不到返回 None。"""
+    try:
+        root = _books_root()
+        names = os.listdir(root)
+    except Exception:                  # noqa: BLE001  无书稿根/不可读 → 当作没有
+        return None
+    for name in names:
+        cand = os.path.join(root, name, _DIR_NAME, pid + ".json")
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def load(pid: str, stages: list) -> Pipeline | None:
+    """按 pid 恢复流水线：先查 CONFIG_DIR（旧档/未建书），再扫各书目录。"""
+    for path in (_path(pid), _find_in_books(pid)):
+        if not path:
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                return Pipeline.restore(json.load(f), stages)
+        except Exception:              # noqa: BLE001
+            continue
+    return None
+
+
+def delete_record(pid: str) -> bool:
+    """删除一条流水线档案（状态 json + 事件日志；CONFIG_DIR 或书目录均可）。
+    只删档案，不动书稿目录与正文。返回是否删到了状态 json。"""
+    removed = False
+    for path in (_path(pid), _find_in_books(pid)):
+        if path and os.path.isfile(path):
+            try:
+                os.remove(path)
+                removed = True
+            except OSError:
+                pass
+    ev = pid + ".events.jsonl"
+    for d in (_root(), os.path.dirname(_find_in_books(pid) or "")):
+        p = os.path.join(d, ev) if d else ""
+        if p and os.path.isfile(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    return removed
+
+
+def list_pipelines() -> list[dict]:
+    """全部流水线摘要（按更新时间新→旧）：CONFIG_DIR 旧档 + 各书目录新档，
+    同 pid 双份并存时保留 updated 较新的一份。"""
+    _migrate_legacy_all()
+    by_pid: dict = {}
+    dirs = [_root()]
+    try:
+        root = _books_root()
+        dirs += [os.path.join(root, n, _DIR_NAME)
+                 for n in os.listdir(root)
+                 if os.path.isdir(os.path.join(root, n, _DIR_NAME))]
+    except Exception:                  # noqa: BLE001
+        pass
+    for d in dirs:
+        loc = "book" if d != _root() else "cfg"
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for name in names:
+            if not name.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(d, name), encoding="utf-8") as f:
+                    jd = json.load(f)
+                row = {"pid": jd.get("pid"),
+                       # 书名优先取 state.title（正式书名）；顶层 title 是
+                       # 建管线时的灵感截断，多行粘贴时会是一段正文开头
+                       "title": ((jd.get("state") or {}).get("title")
+                                 or jd.get("title", "")),
+                       "pipeline_status": jd.get("pipeline_status"),
+                       "cursor": jd.get("cursor"),
+                       "debts": len(jd.get("debts") or []),
+                       "save_errors": int(jd.get("save_errors", 0) or 0),
+                       "updated": jd.get("updated", 0),
+                       "loc": loc}
+            except Exception:          # noqa: BLE001  损坏文件跳过
+                continue
+            pid = row["pid"] or name[:-5]
+            old = by_pid.get(pid)
+            if old is None or row["updated"] >= old["updated"]:
+                by_pid[pid] = row
+    return sorted(by_pid.values(), key=lambda x: -x["updated"])

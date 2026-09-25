@@ -71,7 +71,7 @@ main.py（Python 3.12 版本守卫，必须在 import ui 之前）
 - **面板**：`import ui` 必须写在**函数内部**（顶层会循环导入、启动即炸）；`ui.FONT_UI` / `FONT_MONO` 在打开时读、勿在 import 期缓存；复用 `ui._make_modal`、`ui._flat_button`、`theme.*`。
 - **输入框**：占位符是浮动 `tk.Label` 覆盖层，不写入输入缓冲区；`<<Modified>>` 标志粘滞，处理完必须 `edit_modified(False)`。改动输入/弹窗逻辑前先读 `docs/harness-notes.md`。
 - **i18n**：所有用户可见文案走 `i18n.t(key, **kw)`，词表为稀疏 `key → {en, zh}`；语言持久化在 `CONFIG_DIR/models.json`。
-- **存储**：一切路径派生自 `config.CONFIG_DIR`；SQLite 模块统一 WAL + `RLock` + 线程本地连接；流水线落盘原子（tmp + `os.replace`）。
+- **存储**：一切路径派生自 `config.CONFIG_DIR`；SQLite 模块统一 WAL + `RLock` + 线程本地连接；流水线落盘原子（tmp + `os.replace`）。例外：pipeline 状态优先落 `<书稿目录>/pipelines/<pid>.json`（书未建目录/目录被删时回落 `CONFIG_DIR/pipelines/`，`list_pipelines` 幂等迁移旧档）；单档约束——`novels/` 只有一个书目录（`/novel start` 单书约束保障），书目录 `pipelines/` 只挂当前一条，save 时其他 pid 的档案直接删除（%APPDATA% 不留存档，被占目录不迁入）；`/novel delete` 删档案不动书稿文件。
 - **模型配置**：provider id 需匹配 `^[a-z0-9_-]+$`，id 与显示名必须唯一；模型级字段 `vision` / `context_window` / `max_tokens` / `reasoning`。
 - **静默降级是有意设计**（vecstore / codera / embed / weblinks / attach 都不打断主流程）；健康度看元数据，如 codera 结果 `source='tfidf'` 还是 `'hybrid'`。
 - **构建标记**：窗口标题为 `<profile.title> - build <ui._BUILD_TAG>`（`ui.py:49`，当前 `0906-3`）；多实例/多版本混用时先看标题，改核心逻辑请同步 bump（发布清单见 `docs/optimization-design.md`）。

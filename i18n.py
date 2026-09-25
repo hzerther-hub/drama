@@ -53,10 +53,10 @@ STRINGS: dict = {
     "input.placeholder": {
         "en": "Type a message… (Enter to send, Shift+Enter for newline)\n"
               "· paste an image/file path (C:\\ or file://) to auto-attach\n"
-              "· 🎤 hold to talk / auto transcribe · 📎 attach · ❓ full usage · build 0906-2",
+              "· 🎤 hold to talk / auto transcribe · 📎 attach · ❓ full usage · build {build}",
         "zh": "输入消息…（回车发送，Shift+回车换行）\n"
               "· 粘贴图片/文件路径（C:\\ 或 file://）自动转附件\n"
-              "· 🎤 按住说话 / 自动识别 · 📎 附件识图 · ❓ 查看完整使用方式 · build 0906-2",
+              "· 🎤 按住说话 / 自动识别 · 📎 附件识图 · ❓ 查看完整使用方式 · build {build}",
     },
     "status.idle":     {"en": "○ Idle", "zh": "○ 空闲"},
     "status.thinking": {"en": "Thinking", "zh": "思考"},
@@ -1043,12 +1043,24 @@ index_search（语义检索代码库）/ shell / web_search（联网搜索）
                               "/novel extend N（再加写 N 章，从最后一章"
                               "接着写）"},
     "novel.notfound": {"en": "Pipeline not found", "zh": "找不到这本书（pid 不存在）"},
-    "novel.ambiguous": {"en": "Multiple pipelines match that prefix",
-                        "zh": "pid 前缀匹配到多本书，请输入更完整的 pid"},
+    "cmd.novel_delete": {"en": "Delete pipeline record(s): /novel delete <row#|pid|keyword>[,…]",
+                         "zh": "删除流水线档案：/novel delete <序号|pid|关键词>[,…]"},
+    "novel.delete_title": {"en": "Delete pipelines", "zh": "删除流水线档案"},
+    "novel.delete_confirm": {
+        "en": "Delete {n} pipeline record(s)? Book folders and chapter files are kept.",
+        "zh": "确认删除 {n} 条流水线档案？书稿目录与正文文件不会删除。"},
+    "novel.delete_done": {"en": "Deleted {n} record(s)", "zh": "已删除 {n} 条档案"},
+    "novel.ambiguous": {"en": "Multiple books match; re-pick by number: /novel use <row#>",
+                        "zh": "匹配到多本书，按序号重选：/novel use <序号>"},
     "novel.using":  {"en": "Current book: {pid}（{t}）",
                      "zh": "当前书：{pid}（{t}）"},
     "novel.no_book": {"en": "Manuscript not found", "zh": "书稿文件不存在"},
     "novel.no_chapters": {"en": "No finished chapters yet", "zh": "还没有已完成的章节"},
+    "ds.no_chapters_hint": {
+        "en": "This book has no chapter text yet: run /novel start through the "
+              "chapters stage, or start an original drama with /novel drama new <idea>",
+        "zh": "本书还没有带正文的章节：先用 /novel start 续跑到章节阶段写出正文，"
+              "或用 /novel drama new <灵感> 直接原创短剧"},
     "novel.drama_video_done": {"en": "Episode video ready: {p}",
                                "zh": "本集成片完成：{p}"},
     "novel.help": {

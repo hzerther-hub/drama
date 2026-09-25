@@ -120,6 +120,17 @@ class TestHelpers:
     def test_book_title_falls_back_to_idea(self):
         assert publisher._book_title({"idea": "灵感句"}) == "灵感句"
 
+    def test_book_title_prefers_explicit_title(self):
+        st = {"title": "深井之下", "idea": "整份粘贴的设定文档" * 20}
+        assert publisher._book_title(st) == "深井之下"
+
+    def test_book_title_multiline_idea_takes_first_line(self):
+        st = {"idea": "深井之下\n## 一、核心设定\n现实线：42岁的王安平"}
+        assert publisher._book_title(st) == "深井之下"
+
+    def test_book_title_strips_markdown_heading(self):
+        assert publisher._book_title({"idea": "# 深井之下\n正文"}) == "深井之下"
+
     def test_safe_filename_strips_windows_illegal(self):
         assert publisher._safe_filename('a<b>c:d/e\\f|g?h*i') == "abcdefghi"
 

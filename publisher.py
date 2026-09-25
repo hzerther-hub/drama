@@ -44,9 +44,10 @@ def webhook_url() -> str:
 
 def cover(state: dict, out_path: str = "") -> str:
     """生成书封：标题 + 题材 + 简介融合成图像提示词，走图像服务。"""
+    t = _book_title(state)[:20]
     prompt = (f"小说封面设计，竖版 {imggen.default_size()}。"
-              f"书名「{state['idea'][:20]}」。"
-              f"题材氛围：{state.get('genre', state['idea'][:20])}。"
+              f"书名「{t}」。"
+              f"题材氛围：{state.get('genre', t)}。"
               f"{state.get('framing', '')[:160]} "
               "风格：高对比度、电影感构图、书名文字清晰可读、无水印。")
     out = out_path or _book_sibling(state, "-封面.png")
@@ -214,15 +215,24 @@ def _safe_filename(name: str) -> str:
 
 
 def _book_title(state: dict) -> str:
-    """书名：优先取大纲首行里的《书名》，否则用灵感句前 40 字。"""
+    """书名：优先显式书名（rename_book 写入），其次大纲首行里的《书名》，
+    否则取灵感/大纲首行。灵感可能是整份粘贴的设定文档，绝不能跨行截 40 字，
+    否则首行和正文在文件名里粘连（`_safe_filename` 会剥掉换行）。"""
     import re
+    title = (state.get("title") or "").strip()
+    if title:
+        return title[:40]
     first = ""
     if state.get("outline"):
         first = state["outline"].splitlines()[0].strip()
     m = re.search(r"《(.+?)》", first)
     if m:
         return m.group(1)[:40]
-    return (first or state.get("idea", ""))[:40]
+    line = first
+    if not line:
+        idea = (state.get("idea", "") or "").strip()
+        line = idea.splitlines()[0].strip() if idea else ""
+    return re.sub(r"^#+\s*", "", line)[:40]
 
 
 def _first_line(text: str) -> str:

@@ -123,7 +123,11 @@ _README_FILE = "说明.md"
 _NOVELS_DIRNAME = "novels"
 
 _SYS_PLANNER = "你是资深网文主编，只输出规划本身，不写正文，不解释。"
-_SYS_WRITER = "你是网文作者，直接输出章节正文，正文前第一行是章节标题。硬约束条款不得违反。"
+_SYS_WRITER = ("你是网文作者，正文前第一行输出「第N章《短标题》」：短标题 2-8 字，"
+               "点出本章最核心的事件或悬念，禁止只写「第N章」。硬约束条款不得违反。")
+_SYS_TITLE = ("你是网文编辑。给章节起一个标题：严格 2-8 个汉字，网文风格，"
+              "点出本章最核心的事件或悬念。只输出标题本身——不要序号、书名号、"
+              "标点或任何解释。")
 
 # 结构化产出模板（对齐 webnovel-writer 生态的固定字段约定）。
 # 用法：把模板原文作为「骨架」塞进提示词，要求模型逐字段填写；
@@ -485,7 +489,8 @@ def st_chapters(state: dict, ctx) -> dict:
                 facts = facts2 + [f for f in facts if f not in facts2]
                 fsh = fsh2 + [f for f in fsh if f not in fsh2]
                 closes = closes + closes2
-        title = _planned_title(state, idx) or _chapter_title(text, idx)
+        title = (_planned_title(state, idx) or _ask_title(state, text, idx)
+                 or _chapter_title(text, idx))
         text = _strip_title(text, title)      # 去掉正文首行重复的标题
         chap = {"idx": idx, "title": title,
                 "text": text, "summary": text[:_MAX_WORDS].replace("\n", " "),
@@ -1443,10 +1448,46 @@ def _arc_compress(state: dict, ctx, upto_idx: int):
 
 
 def _chapter_title(text: str, idx: int) -> str:
+    """章节标题（启发式兜底）：首行「第N章《标题》/第N章 标题」取标题部分；
+    裸「第N章」不算标题；否则取正文首个短句（如「变富的第五天」）。
+    起名优先走 _ask_title（模型），这里只做最后的兜底。"""
     first = text.splitlines()[0].strip() if text else ""
-    if re.match(r"^第[0-9一二三四五六七八九十百千]+章", first):
-        return first[:40]
+    m = re.match(r"^(第[0-9一二三四五六七八九十百千]+章)\s*(.*)", first)
+    if m:
+        rest = m.group(2).strip().strip("《》「」")
+        if rest:
+            return _safe_name(rest)[:16]
+        body = "\n".join(text.splitlines()[1:])      # 剔掉裸章标行再取首句
+    else:
+        body = text or ""
+    line = _first_meaningful_line(body)
+    if line:
+        head = re.split(r"[，。！？；：,!?;:]", line, maxsplit=1)[0].strip()
+        return _safe_name(head if len(head) >= 2 else line)[:16]
     return f"第{idx}章"
+
+
+def _ask_title(state: dict, text: str, idx: int) -> str:
+    """让模型给本章起 2-8 字标题；任何失败或结果不可用都返回空（退化启发式）。
+
+    模型常不听话：带「第N章」前缀、带标点长句、多行输出——这里统一清洗：
+    去章标前缀 → 取书名号内 → 取首个短句 → 截 10 字。
+    """
+    try:
+        t = _ask(state, _SYS_TITLE,
+                 f"第{idx}章开头：\n{(text or '')[:600]}")
+    except Exception:              # noqa: BLE001  起名是锦上添花，失败不影响出稿
+        return ""
+    raw = (t or "").strip().splitlines()[0] if (t or "").strip() else ""
+    raw = re.sub(r"^第[0-9一二三四五六七八九十百千]+章\s*", "", raw)
+    raw = raw.strip().strip("《》「」\"\"# ")
+    seg = re.split(r"[，。！？；：,!?;:·—…]", raw, maxsplit=1)[0].strip() or raw
+    if len(seg) < 2:
+        return ""
+    t = _safe_name(seg)[:10]
+    if re.fullmatch(r"第[0-9一二三四五六七八九十百千]+章", t):
+        return ""
+    return t
 
 
 def _novels_root() -> str:
@@ -1779,7 +1820,9 @@ def _strip_title(text: str, title: str) -> str:
     first = lines[0].strip().lstrip("#").strip()
     if first and (first == (title or "").strip()
                   or first in (title or "")
-                  or (title or "") in first):
+                  or (title or "") in first
+                  # 裸「第N章」行：纯章标零信息，标题换成了短句也要剥掉
+                  or re.fullmatch(r"第[0-9一二三四五六七八九十百千]+章", first)):
         rest = lines[1:]
         while rest and not rest[0].strip():
             rest.pop(0)

@@ -635,3 +635,49 @@ def test_rework_polish_keeps_index_and_title(fake, tmp_path):
     assert len(os.listdir(Path(st["dir"]) / "正文")) == 1
     with pytest.raises(novel_chain.StageStopError):
         novel_chain.rework_chapter(st, 1, "不存在模式")
+
+
+def test_chapter_title_prefers_model_heading_then_first_clause():
+    # 首行「第N章《标题》」→ 取书名号内
+    assert novel_chain._chapter_title("第3章《夜行》\n正文", 3) == "夜行"
+    # 首行「第N章 标题」→ 取章标后的文字
+    assert novel_chain._chapter_title("第3章 夜行\n正文", 3) == "夜行"
+    # 裸「第N章」不算标题 → 取正文首个短句，而不是退化「第N章」
+    assert novel_chain._chapter_title(
+        "第4章\n变富的第五天，王安平做的第一件事是抄账本。", 4) == "变富的第五天"
+    # 无章标行 → 取正文首个短句
+    assert novel_chain._chapter_title(
+        "变富的第五天，王安平做的第一件事是抄账本。", 4) == "变富的第五天"
+    # 整句无标点 → 整行裁短
+    assert novel_chain._chapter_title("井底传来敲击声", 5) == "井底传来敲击声"
+    # 空文本才兜底 第N章
+    assert novel_chain._chapter_title("", 6) == "第6章"
+
+
+def test_ask_title_uses_model_with_sane_fallback(monkeypatch):
+    # 模型正常返回 → 清洗后采用
+    monkeypatch.setattr(novel_chain, "_ask",
+                        lambda state, sys, user, role="default": "《井底的账本》")
+    assert novel_chain._ask_title({}, "正文开头", 4) == "井底的账本"
+    # 模型不听话带前缀/长句 → 去前缀、取首短句、截 10 字
+    monkeypatch.setattr(novel_chain, "_ask",
+                        lambda state, sys, user, role="default": "第4章 古井问话")
+    assert novel_chain._ask_title({}, "正文开头", 4) == "古井问话"
+    monkeypatch.setattr(novel_chain, "_ask",
+                        lambda state, sys, user, role="default": "烧符止损，藏不住的符边纹")
+    assert novel_chain._ask_title({}, "正文开头", 7) == "烧符止损"
+    # 模型偷懒只回「第4章」→ 不算标题，退化启发式
+    monkeypatch.setattr(novel_chain, "_ask",
+                        lambda state, sys, user, role="default": "第4章")
+    assert novel_chain._ask_title({}, "正文开头", 4) == ""
+    # 模型炸了 → 空串（调用方退 _chapter_title，不抛异常）
+    def boom(*a, **k):
+        raise RuntimeError("网络炸了")
+    monkeypatch.setattr(novel_chain, "_ask", boom)
+    assert novel_chain._ask_title({}, "正文开头", 4) == ""
+
+
+def test_strip_title_removes_bare_heading_line():
+    # 标题改成短句后，正文首行的裸「第N章」章标行也要剥掉
+    assert novel_chain._strip_title("第4章\n\n正文开始", "变富的第五天") == "正文开始"
+    assert novel_chain._strip_title("第4章《变富的第五天》\n\n正文", "变富的第五天") == "正文"
