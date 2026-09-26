@@ -7607,10 +7607,14 @@ class App:
         self._refresh_sidebar()               # 侧栏标出「进行中」
 
         def worker():
+            # run_model/routed_key 在 worker 内有赋值（判官切档）——不声明
+            # nonlocal 两者就成了局部变量，判官块里先读后写会抛
+            # UnboundLocalError，且异常在 try 外二次触发时直接炸掉发送线程
+            nonlocal run_model, routed_key
             self._rec.run = run               # 本线程后续输出都记到 run
-            # —— LLM 判官（路由第 1 层）：关键词未命中时问一次 TypeSafe 判官，
-            # pro 档则本轮切到云端高性能模型。放在 worker 里执行：判官的
-            # 网络延迟（秒级）不卡 UI 线程；任何失败静默回退当前模型。
+            # —— LLM 判官（路由第 1 层）：关键词未命中时用「派发-轻量」模型
+            # 问一次 fast/pro，pro 档则本轮切到云端高性能模型。放在 worker 里
+            # 执行：判官的网络延迟（秒级）不卡 UI 线程；任何失败静默回退当前模型。
             try:
                 if (routed_key is None and ov == "auto" and dispatch_on
                         and config.get_dispatch_smart()
@@ -7618,12 +7622,10 @@ class App:
                         and config.get_dispatch_flash()
                         != config.get_dispatch_pro()
                         and run_model.key != config.get_dispatch_pro()):
-                    jk = (config.get_jev() or {}).get("api_key") or ""
-                    if jk:
+                    jmc = config.find_model(config.get_dispatch_flash())
+                    if jmc is not None:
                         import route_judge
-                        tier = route_judge.judge_tier(
-                            text, api_key=jk,
-                            model=(config.get_jev() or {}).get("model") or "")
+                        tier = route_judge.judge_tier(text, model_config=jmc)
                         if tier == "pro":
                             mc = config.find_model(config.get_dispatch_pro())
                             if mc is not None and mc.key != run_model.key:
