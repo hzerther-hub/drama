@@ -1,0 +1,87 @@
+# 构建产物
+build/
+dist/
+__pycache__/
+*.pyc
+
+# 本地工具配置
+.claude/
+.zcode/
+.mimosa/
+.runlog
+
+# 打包 spec（按需保留，默认忽略）
+# QwenCoder.spec
+packaging/*.spec
+test_perm.py
+
+# agent 工作目录
+.omc/
+.omo/
+
+# 本地虚拟环境与临时日志
+.venv/
+app_out.txt
+app_err.txt
+# docs 目录默认不提交，仅放行 README 用的截图
+docs/*
+!docs/screenshots/
+!docs/screenshots/*.png
+# 会话内临时截图
+.tmp-*.png
+# 量化数据缓存（akshare 拉取结果，可随时重拉）
+products/quant/data/cache/
+
+# 本地调试日志
+gui_err*.log
+send_debug.log
+popup_debug.log
+novels/
+# 根目录手工导出/发布测试产物（正式导出落在 novels/，已忽略）
+/*.epub
+# 测试/工具产生的临时目录（可随时删除）
+.pytmp/
+.pyttmp/
+# 量化互转产物（面板/命令生成的平台版策略文件）
+聚宽_ptrade/
+# 小说流程事件日志（落在书目录，随书走，不入库）
+*.events.jsonl
+# 测试视频（本地保留）
+_seedance_test.mp4
+# 应用生成的媒体产物（截图/测试图）
+media/
+
+# 图标/字体生成脚本的依赖目录（按需装，非仓库资产）
+node_modules/
+# 一次性 PPT 导出产物（Makefile/用户手工放，非代码资产）
+_ppt_assets/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

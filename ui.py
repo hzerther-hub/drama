@@ -7613,21 +7613,24 @@ class App:
             nonlocal run_model, routed_key
             self._rec.run = run               # 本线程后续输出都记到 run
             # —— LLM 判官（路由第 1 层）：关键词未命中时用「派发-轻量」模型
-            # 问一次 fast/pro，pro 档则本轮切到云端高性能模型。放在 worker 里
-            # 执行：判官的网络延迟（秒级）不卡 UI 线程；任何失败静默回退当前模型。
+            # 问一次 fast/pro，两档都自动切 glm：pro→高性能目标、fast→轻量目标
+            # （带附件时不降档，识图走原模型）。放在 worker 里执行：判官的
+            # 网络延迟（秒级）不卡 UI 线程；任何失败静默回退当前模型。
             try:
                 if (routed_key is None and ov == "auto" and dispatch_on
                         and config.get_dispatch_smart()
                         and config.get_route_judge()
                         and config.get_dispatch_flash()
                         != config.get_dispatch_pro()
-                        and run_model.key != config.get_dispatch_pro()):
+                        and not attachments):
                     jmc = config.find_model(config.get_dispatch_flash())
                     if jmc is not None:
                         import route_judge
                         tier = route_judge.judge_tier(text, model_config=jmc)
-                        if tier == "pro":
-                            mc = config.find_model(config.get_dispatch_pro())
+                        if tier in ("fast", "pro"):
+                            want_key = (config.get_dispatch_pro() if tier == "pro"
+                                        else config.get_dispatch_flash())
+                            mc = config.find_model(want_key)
                             if mc is not None and mc.key != run_model.key:
                                 prev_name = run_model.display_name
                                 routed_key = mc.key
