@@ -465,6 +465,13 @@ def create(prompt: str, image: str = "", size: str = "", resolution: str = "",
         raise VidError("未配置视频生成服务（LAS_VIDEO_BASE_URL / LAS_VIDEO_MODEL，"
                        "或在供应商管理里给视频供应商填 API Key）")
     res = (resolution or "").strip()
+    if (svc.get("kind") or "").strip().lower() == "agnes":
+        try:
+            return _agnes_create(prompt, image, seconds, svc, res, ratio)
+        except VidError:
+            raise
+        except Exception as e:         # noqa: BLE001
+            raise VidError(f"视频任务创建失败：{_err_text(e)}") from e
     if _is_ark(svc):
         try:
             return _ark_create(prompt, image, seconds, svc, res, ratio)
@@ -501,6 +508,45 @@ def create(prompt: str, image: str = "", size: str = "", resolution: str = "",
     vid = _pick_id(data)
     if not vid:
         raise VidError(f"视频接口未返回任务 ID：{json.dumps(data, ensure_ascii=False)[:300]}")
+    return vid
+
+
+def _agnes_create(prompt: str, image: str, seconds: float, svc: dict,
+                  res: str, ratio: str) -> str:
+    """Agnes Video 原生字段创建（对齐火宝 agnes-video 适配器）。
+
+    seconds/size(720P|1080P)/aspect_ratio/mode：关键帧图走
+    mode=keyframe + first_frame（真实首帧硬锁定）。此前走通用字段
+    （width/height/num_frames/mode=ti2vid），网关忽略后时长分辨率全按
+    模型默认，语音语言也随默认漂移——英文/字幕乱入的诱因之一。
+    """
+    import re as _re
+    is_flash = "flash" in (svc.get("model") or "").lower()
+    nums = _re.findall(r"(\d{3,4})", (res or size or ""))
+    px = min(int(x) for x in nums) if nums else 720
+    size_tag = "1080P" if px >= 1080 else "720P"
+    if is_flash:
+        size_tag = "720P"                      # flash 仅 720P
+    ratio_v = (ratio or "9:16").strip()
+    if ratio_v not in ("16:9", "9:16", "1:1", "4:3", "3:4"):
+        ratio_v = "9:16"
+    body = {"model": svc.get("model"), "prompt": prompt,
+            "seconds": max(4, min(15, int(seconds or 0) or 5)),
+            "size": size_tag, "aspect_ratio": ratio_v, "n": 1}
+    if image:
+        body["mode"] = "keyframe"
+        body["first_frame"] = image
+    else:
+        body["mode"] = "text"
+    try:
+        data = _post(f"{svc['base_url']}/videos", body,
+                     svc.get("api_key", ""))
+    except Exception as e:                     # noqa: BLE001
+        raise VidError(f"视频任务创建失败：{_err_text(e)}") from e
+    vid = _pick_id(data)
+    if not vid:
+        raise VidError("视频接口未返回任务 ID："
+                       + json.dumps(data, ensure_ascii=False)[:300])
     return vid
 
 

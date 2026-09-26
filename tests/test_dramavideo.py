@@ -615,8 +615,8 @@ def test_clip_prompt_separates_visual_and_voice(book, monkeypatch):
     p = captured["prompt"]
     assert "画面：" in p and "配音要求" in p
     assert "不要朗读" in p and "中文普通话" in p and "不要出现英语" in p
-    assert "旁白（第三人称解说，整句朗读）" in p
-    assert "台词（角色对白）" in p
+    assert "旁白（第三人称解说，中文普通话整句朗读）" in p
+    assert "台词（角色对白，中文普通话逐字朗读，禁止英文）" in p
     # 无旁白无台词：明确只要环境音
     shot2 = dict(shot, narration="", dialogue="")
     dramavideo.clip(state, shot2, "", 1, 10)

@@ -1227,7 +1227,8 @@ def _video_prompts(state: dict, chapter: dict, shots: list):
             "【光线】每段结尾以本镜氛围光线收尾（如「灰蓝色冷调清晨车厢光线」），"
             "全镜各段保持同一光线基调；"
             "【台词】从 description 对应【镜头N】原样提取，写"
-            "「——@角色名 说：「台词」」，3 秒念不完拆多段，"
+            "「——@角色名 用中文普通话说：「台词」」，3 秒念不完拆多段，"
+            "台词必须是中文，一个英文单词都不出现；"
             "不得创作 description 之外的新台词；"
             "【切镜】段内可切镜（换景别/角度/对象），用「切到/切回」衔接并"
             "重述景别；第一段必须建立空间（场景+机位+角色位置）；"
@@ -1272,7 +1273,8 @@ def regen_video_prompt(state: dict, chapter_idx: int, shot_idx: int) -> str:
              "与表情；角色出场一律写「@角色名」（与给出的角色列表逐字一致，"
              "用于挂接参考素材图），提到场景用「@场景名」；着装按"
              "「本镜角色造型」写进段内；每段结尾以本镜氛围光线收尾；"
-             "台词从 description 原样提取写「——@角色名 说：「台词」」，"
+             "台词从 description 原样提取写「——@角色名 用中文普通话说："
+             "「台词」」，台词必须是中文，一个英文单词都不出现，"
              "不创作新台词；段内可切镜（换景别/对象），用「切到/切回」衔接，"
              "不跨场景；表演分层：日常与过渡段日常语气自然动作，仅爆点段"
              "允许强情绪，受惊用微反应（僵住、后退半步）。"
@@ -1517,10 +1519,14 @@ def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
     # 屏显文字一律禁止：模型烧录的字幕中英夹杂、汉字常渲染成乱码，
     # 解说信息由配音承担，画面保持纯净
     vp = (shot.get("video_prompt") or "").strip()
+    # 硬约束前置：视频模型对长提示词中后段的指令注意力很差，
+    # 语言/字幕/解剖这类高优负向必须放在首因位置，尾部详情只作兜底
+    hard = ("硬约束：所有人物开口只说中文普通话，禁止英语等任何外语；"
+            "画面严禁出现字幕、文字、水印；人物五指五趾、两臂两腿、无重影。")
     if vp:
         # 火宝式 3 秒分段时间轴：段内已含切镜衔接与台词分配，直接用
         prompt = (inject_style(state, "按时间分段执行以下画面：") +
-                  "\n" + vp + "\n"
+                  "\n" + hard + "\n" + vp + "\n"
                   "画面中不要出现任何字幕、文字、标题、水印或字母字符；"
                   "分段之间用硬切，全程不跨场景。"
                   + _dbg.body_guard(state, who))
@@ -1528,6 +1534,7 @@ def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
             prompt += f"主导运镜：{camera}。"
     else:
         prompt = (inject_style(state, f"画面：{shot['description']}。") +
+                  "\n" + hard + "\n"
                   "画面中不要出现任何字幕、文字、标题、水印或字母字符。"
                   + _dbg.body_guard(state, who))
         if camera:
@@ -1560,9 +1567,9 @@ def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
         prompt += f"语气贴合「{mood}」的情绪。"
     prompt += "\n"
     if narration:
-        prompt += f"旁白（第三人称解说，整句朗读）：{narration}\n"
+        prompt += f"旁白（第三人称解说，中文普通话整句朗读）：{narration}\n"
     if dialogue:
-        prompt += f"台词（角色对白）：{dialogue}"
+        prompt += f"台词（角色对白，中文普通话逐字朗读，禁止英文）：{dialogue}"
     if not narration and not dialogue:
         prompt += "旁白/台词：无——本镜只有环境音，不要生成任何人声。"
     sec = max(float(shot.get("duration") or _MIN_SEC), _speech_seconds(shot))
