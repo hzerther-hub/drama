@@ -349,6 +349,193 @@ STYLE_LIB = (
         "cinematic noir lighting, professional manga page quality, consistent "
         "character design across shots, strictly no color, avoid grayscale blur "
         "smudging, avoid painterly soft edges, avoid photorealism, avoid 3D render look"},
+
+    # ---- 宣传推广（对标即梦/可灵/剪映的营销场景模板分类：产品、口播、
+    # 品牌片、信息流、美食、文旅、房产）——生产级深度：镜头词汇、灯光设计、
+    # 产品/人物一致性铁律、节拍结构、平台安全区、加长 avoid 清单----
+    {"name": "电商产品", "category": "宣传推广", "text":
+        "premium e-commerce product commercial; the hero product is the absolute "
+        "protagonist of every frame. Seamless studio sweep backdrop in a controlled "
+        "neutral tone chosen to complement the packaging. Three-point lighting: "
+        "large softbox key, subtle fill, crisp rim light separating the product "
+        "from background. Slow orbiting camera, macro detail passes on materials "
+        "and finish, rack focus traveling from logo to feature points. Product "
+        "label, logo, shape and color must stay perfectly consistent and legible "
+        "in every shot — never morphing, warping or redesigning the packaging. "
+        "Clean specular highlights, polished high-contrast advertising grade. Beat "
+        "structure: hook shot, feature close-ups, lifestyle context, hero finish. "
+        "avoid: morphing or redrawing the packaging, misspelled or gibberish label "
+        "text, extra fake buttons or ports, floating disembodied logos, cluttered "
+        "props stealing focus, harsh on-camera flash, cheap infomercial look, "
+        "blurry soft footage"},
+
+    {"name": "品牌片", "category": "宣传推广", "text":
+        "cinematic corporate brand film; restrained premium storytelling where "
+        "every shot feels intentional. Sweeping aerial establishing shots, smooth "
+        "gimbal tracking and slow push-ins. Golden-hour and blue-hour lighting, "
+        "elegant warm-amber key with cool teal fill, sophisticated filmic grade "
+        "with gentle film grain. Wide negative space and title-safe composition "
+        "reserved for brand copy added in post. Diverse authentic people in "
+        "natural professional moments instead of staged stock poses; architecture "
+        "and environment shots conveying scale and trust. Beat structure: "
+        "aspiration opener, human moments, capability montage, confident closing "
+        "frame for the logo. avoid: burned-in captions or watermarks, chaotic "
+        "busy frames, cheap stock-footage cheese, harsh consumer flash, "
+        "over-saturated theme-park colors, shaky amateur handheld, low-resolution "
+        "inserts, melodramatic acting"},
+
+    {"name": "带货口播", "category": "宣传推广", "text":
+        "live-commerce talking-head sales video; charismatic host as the clear "
+        "focal point in a bright tidy studio. Large softbox key with subtle hair "
+        "light, even flattering skin tones. Steady eye-level medium close-up; the "
+        "host addresses the camera directly with confident warm energy while "
+        "demonstrating the product in hand, lifting it toward the lens for "
+        "feature moments without covering the face. Tidy set with gentle depth "
+        "so the eye stays on host and product. Natural conversational pacing "
+        "with small demonstrative gestures. Host face, hairstyle and outfit must "
+        "stay identical across shots. avoid: covering the face with the product, "
+        "dark moody lighting, busy distracting background, extreme dutch angles, "
+        "morphing hands or extra fingers, gibberish on-screen text, cinematic "
+        "letterbox bars, sudden outfit or hairstyle changes"},
+
+    {"name": "知识口播", "category": "宣传推广", "text":
+        "educational knowledge-video aesthetic; a presenter explaining ideas "
+        "clearly in a minimal modern set. Clean solid-tone or softly blurred "
+        "bookshelf background, even soft frontal lighting with gentle separation. "
+        "Steady medium shot with occasional slow push-in; purposeful hand "
+        "gestures supporting the explanation; composed authoritative body "
+        "language. Lower third of the frame kept clean for caption overlays "
+        "added in post. Presenter identity and wardrobe identical across shots. "
+        "avoid: dramatic noir shadows, neon saturated gamer lighting, shaky "
+        "handheld camera, cluttered desks and props, exaggerated expressions, "
+        "gibberish slides or text in frame, harsh contrast, erratic framing "
+        "jumps between shots"},
+
+    {"name": "信息流广告", "category": "宣传推广", "text":
+        "vertical feed-advertisement creative engineered for thumb-stopping "
+        "retention; an oversized hero subject occupying most of the frame within "
+        "the first beat. High-saturation bold complementary palette with punchy "
+        "contrast. Rapid push-ins, whip transitions and snappy pacing with a new "
+        "beat every second. Vertical mobile-first staging with all key elements "
+        "inside the center safe zone, clean large shapes readable at small "
+        "sizes. Surprise transformations or physical comedy as hooks. Product "
+        "and character identity stay consistent across rapid cuts. beat "
+        "structure: hook, payoff, second hook, call-to-action frame. avoid: "
+        "slow boring openings, muted washed-out palette, long static takes, "
+        "horizontal cinematic black bars, small hard-to-read subjects, gibberish "
+        "captions burned into frame, watermark artifacts, cluttered composition"},
+
+    {"name": "美食广告", "category": "宣传推广", "text":
+        "appetite-driven food commercial cinematography. Macro close-ups of "
+        "dishes with rising steam, dripping sauce pours and slow-motion sizzle. "
+        "Warm directional side-back light sculpting textures, shallow depth of "
+        "field isolating the hero dish. Fresh ingredients caught mid-preparation "
+        "— chopping, flame tossing, plating. Rich warm grade with deep "
+        "appetizing contrast. Ingredients and plating must stay identical "
+        "between shots — no dish swapping mid-story. Beat structure: ingredient "
+        "beauty shots, cooking action, hero dish reveal. avoid: unappetizing "
+        "flat overhead fluorescent light, cold blue tones on food, messy sloppy "
+        "plating, plastic-looking fake food, dirty kitchen background, wilted "
+        "or browned produce, warped cutlery and plates"},
+
+    {"name": "城市文旅", "category": "宣传推广", "text":
+        "destination tourism promotion aesthetic. Sweeping drone aerials "
+        "revealing landmarks, coastlines and skylines in golden-hour light. "
+        "Smooth reveal moves over ridgelines and push-ins toward city icons. "
+        "Transparent clear air with layered atmospheric depth, vibrant postcard "
+        "grade with luminous skies. Travelers as small human scale elements "
+        "within grand landscapes. Architecture geometry kept straight and "
+        "undistorted. Beat structure: epic aerial opener, street-level human "
+        "moments, signature landmark finale. avoid: grey overcast skies, cramped "
+        "indoor framing, warped or melting buildings, gibberish foreign signage, "
+        "watermark artifacts, washed-out haze unless intentional, chaotic "
+        "traffic clutter, flickering exposure between shots"},
+
+    {"name": "房产漫游", "category": "宣传推广", "text":
+        "luxury real-estate showcase. Steady gimbal walkthrough moving at a calm "
+        "constant pace through bright staged interiors. Generous natural window "
+        "light with soft interior fill balancing exposures. Wide-angle "
+        "composition revealing room flow, sightlines and spatial depth. "
+        "Magazine-grade staging with curated furniture and decor; straight "
+        "verticals and level horizons. Smooth transitions linking rooms into one "
+        "continuous journey. Beat structure: exterior approach, living spaces, "
+        "standout feature room, view finale. avoid: fisheye distortion, dark "
+        "underexposed corners, cluttered personal items, tilted horizon lines, "
+        "warped doorframes and windows, people staring at the camera, jarring "
+        "speed changes"},
+
+    # ---- 短剧题材（霸总/逆袭/宫斗/悬疑/家庭/玄幻——剧种层风格，与视觉
+    # 质感层叠加使用；题材决定服装场景与叙事镜头语言，质感决定渲染规格）----
+    {"name": "霸总甜宠", "category": "短剧题材", "text":
+        "urban CEO-romance drama look. Ice-cold handsome male lead in impeccably "
+        "tailored dark designer suits, glamorous penthouse offices, luxury cars "
+        "and skyline floor-to-ceiling windows. Soft flattering beauty light with "
+        "gentle diffusion, shallow depth of field isolating faces in intimate "
+        "moments, warm skin tones against cool steel-blue city tones. Cinematic "
+        "framing built around lingering eye-contact close-ups and slow-motion "
+        "romantic beats. Consistent character design across shots. avoid: "
+        "wrinkled cheap suits, cluttered messy backgrounds, harsh unflattering "
+        "lighting, cartoonish exaggerated expressions, hand-held documentary "
+        "look, gibberish on-screen text"},
+
+    {"name": "逆袭打脸", "category": "短剧题材", "text":
+        "urban revenge comeback drama look. Strong-contrast dramatic lighting "
+        "with hard key and deep shadows, low-angle hero shots making the "
+        "protagonist tower over humiliated antagonists, oppressive downward "
+        "perspectives during bullying beats. High-saturation punchy palette, "
+        "theatrical rim lighting on triumph moments, snappy rhythmic pacing "
+        "built for satisfying payoff beats. Emotionally charged close-ups: "
+        "clenched fists, trembling lips, cold smirks. Consistent character "
+        "design across shots. avoid: flat even boring lighting, comedic silly "
+        "expressions, bright cheerful palette during conflict beats, warped "
+        "faces mid-emotion, gibberish text overlays"},
+
+    {"name": "宫斗古装", "category": "短剧题材", "text":
+        "imperial-court costume drama look. Ornate embroidered silk robes with "
+        "accurate dynasty-informed silhouettes, candlelit warm interiors with "
+        "gauzy canopies and carved lacquer architecture. Symmetrical formal "
+        "composition echoing court hierarchy, soft-focus romantic glow balanced "
+        "with muted sophisticated grey-green palette, delicate period hairpieces "
+        "and jewelry. Slow deliberate camera moves with meaningful glances "
+        "across the frame. Consistent costume and styling across shots. avoid: "
+        "modern clothing or props leaking in, cheap shiny polyester sheen, "
+        "cluttered anachronistic sets, harsh digital sharpness, neon colors, "
+        "warped hands on fans and sleeves"},
+
+    {"name": "悬疑复仇", "category": "短剧题材", "text":
+        "revenge-thriller drama look. Dark low-key lighting with cold "
+        "blue-green teal grade, rain-slicked night streets with neon "
+        "reflections, characters half-hidden in deep shadow. High-contrast "
+        "chiaroscuro, restless handheld tension breaking into razor-sharp pupil "
+        "and iris extreme close-ups, voyeuristic through-the-door framing. "
+        "Cinematic desaturated palette with selective warm accents on blood or "
+        "fire. Consistent character design across shots. avoid: bright cheerful "
+        "daylight palette, flat soft sitcom lighting, cartoonish villainy, "
+        "gore splatter close-ups, gibberish notes and documents in frame, "
+        "warped facial features mid-expression"},
+
+    {"name": "家庭伦理", "category": "短剧题材", "text":
+        "family-life drama look. Authentic lived-in apartment interiors — "
+        "kitchens with steam, cluttered but warm living rooms, balcony laundry. "
+        "Natural practical lighting with warm household lamps, gentle realistic "
+        "skin texture over beauty-filter smoothness. Medium close-up coverage "
+        "built for kitchen-table confrontations and doorway standoffs, teary "
+        "emotional close-ups with restrained camerawork. Everyday down-to-earth "
+        "wardrobe consistent across shots. avoid: glossy studio perfection, "
+        "dramatic neon styling, luxury penthouse sets, exaggerated soap-opera "
+        "slaps and falls, warped hands during gestures, gibberish packaging "
+        "text in kitchen shots"},
+
+    {"name": "玄幻战神", "category": "短剧题材", "text":
+        "xuanhuan battle-god drama look. Ornate ancient armor with glowing "
+        "runes and flowing battle cloaks, golden energy auras and swirling "
+        "spiritual particles. Epic vast scale — celestial palaces, mountain-top "
+        "arenas, armies in formation. Dynamic motion blur on strikes, impact-"
+        "frame flashes, dramatic low-angle god-shot compositions, high-"
+        "saturation high-contrast filmic CG grade. Consistent armor and weapon "
+        "design across shots. avoid: cheap plastic armor, flat video-game HUD "
+        "overlays, gibberish glowing runes, warped weapons mid-swing, cartoon "
+        "2D fireball stickers, washed-out low-contrast grade"},
 )
 
 # 兼容旧引用：只剩纯文本清单
@@ -363,6 +550,8 @@ def _preset_lib() -> list:
 def load_style_lib() -> tuple:
     """读 models.json 风格库：没有就播种全部预设并写回。
 
+    已有库时按 name 合并新版本 STYLE_LIB 增补的预设（用户改过的同名
+    条目保留用户的），保证升级后新预设能进老库。
     返回 (styles 列表, 默认风格, data, path)；path 为 None 表示无法
     持久化（此时返回内存副本，功能可用但不跨会话）。
     """
@@ -379,6 +568,29 @@ def load_style_lib() -> tuple:
     if not glb.get("drama_styles"):
         glb["drama_styles"] = _preset_lib()
         if path:
+            try:
+                _save_style_lib(data, path)
+            except Exception:              # noqa: BLE001
+                pass
+    else:
+        # 预设版本同步：内置同名条目以新版本 STYLE_LIB 为准原位更新
+        # （面板不支持编辑内置条目，想自定义请「新增」另起名字）；
+        # 新增补的条目按 name 追加；用户自建条目永不动
+        builtins = {p["name"]: p for p in _preset_lib()}
+        changed = False
+        for idx, s in enumerate(glb["drama_styles"]):
+            b = builtins.get(s.get("name")) if isinstance(s, dict) else None
+            if b and (s.get("text") != b["text"]
+                      or s.get("category") != b.get("category")):
+                glb["drama_styles"][idx] = dict(b)
+                changed = True
+        have = {s.get("name") for s in glb["drama_styles"]
+                if isinstance(s, dict)}
+        missing = [p for p in _preset_lib() if p["name"] not in have]
+        if missing:
+            glb["drama_styles"].extend(missing)
+            changed = True
+        if changed and path:
             try:
                 _save_style_lib(data, path)
             except Exception:              # noqa: BLE001
@@ -1221,7 +1433,11 @@ def _video_prompts(state: dict, chapter: dict, shots: list):
             "【分段】每 3 秒一段，段首用「0.0-3.0秒：」格式（秒数带一位小数），"
             "各段各占一行、时间连续无重叠，段数=时长÷3向上取整；"
             "【段结构】景别（中景/近景/特写）+机位视角开头，主体+连续具体动作"
-            "与表情（写可见的身体行为，不写心理词）；角色出场一律写"
+            "与表情（写可见的身体行为，不写心理词）；"
+            "【景别语义】对话戏=中景过肩；情绪爆发=近景浅景深；关键细节=大特写；"
+            "压迫/霸气=低角度仰拍；孤独/绝望=俯拍上帝视角；紧张=手持跟拍——"
+            "按各镜 mood 选对景别；"
+            + _EXPRESSION_BANK + "；角色出场一律写"
             "「@角色名」（名字与给出的角色列表逐字一致，用于挂接参考素材图），"
             "提到场景用「@场景名」；着装细节按「本镜角色造型」写进段内；"
             "【光线】每段结尾以本镜氛围光线收尾（如「灰蓝色冷调清晨车厢光线」），"
@@ -1270,7 +1486,12 @@ def regen_video_prompt(state: dict, chapter_idx: int, shot_idx: int) -> str:
              "每 3 秒一段，段首「0.0-3.0秒：」格式（秒数带一位小数），"
              "各段各占一行换行分隔，段数=时长÷3向上取整；"
              "每段：景别（中景/近景/特写）+机位视角开头，主体+连续具体动作"
-             "与表情；角色出场一律写「@角色名」（与给出的角色列表逐字一致，"
+             "与表情；"
+             "【景别语义】对话戏=中景过肩；情绪爆发=近景浅景深；关键细节=大特写；"
+             "压迫/霸气=低角度仰拍；孤独/绝望=俯拍上帝视角；紧张=手持跟拍"
+             "——按本镜 mood 选对景别；"
+             + _EXPRESSION_BANK + "；"
+             "角色出场一律写「@角色名」（与给出的角色列表逐字一致，"
              "用于挂接参考素材图），提到场景用「@场景名」；着装按"
              "「本镜角色造型」写进段内；每段结尾以本镜氛围光线收尾；"
              "台词从 description 原样提取写「——@角色名 用中文普通话说："
@@ -1336,6 +1557,41 @@ def _normalize_refs(refs: list, limit: int = 6, max_px: int = 768) -> list:
         except Exception:                  # noqa: BLE001  坏图退回原路径
             norm.append(r)
     return norm
+
+
+# ---- 镜头语言语义表（AI 短剧分镜规范）：按镜 mood 自动分配景别/运镜/表情词。
+# 依据：全景=交代环境 ｜ 中景过肩=对话 ｜ 近景浅景深=情绪 ｜ 大特写=细节张力
+# ｜ 仰拍=压迫/霸气 ｜ 俯拍上帝视角=孤独/绝望 ｜ 手持=紧张/失控
+_SHOT_MOOD_HINTS: tuple = (
+    ("紧张", "手持轻微晃动的跟拍，大特写与快速推近交替，浅景深"),
+    ("悬疑", "低照度手持镜头，剪影与半脸阴影，瞳孔大特写"),
+    ("压迫", "低角度仰拍，人物顶天立地占据画面，强逆光轮廓"),
+    ("霸气", "低角度仰拍缓推，人物气场充满画面，史诗感"),
+    ("孤独", "高空俯拍上帝视角，人物渺小于空旷场景，对称压抑构图"),
+    ("绝望", "缓慢拉远的俯拍，人物蜷缩于画面下缘，空旷留白"),
+    ("温馨", "柔光中近景，暖色窗光，浅景深聚焦面部"),
+    ("甜宠", "柔光近景，浅景深，眼神对视的过肩镜头"),
+    ("燃", "低角度仰拍配快速推近，动作干脆，动态模糊收尾"),
+    ("悲伤", "缓慢横移中景，逆光剪影，眼眶与手的近景交替"),
+)
+
+
+def _shot_hint(mood: str) -> str:
+    """按镜头情绪氛围返回景别/运镜/表情提示（未命中回退通用近景）。"""
+    m = (mood or "").strip()
+    if not m:
+        return ""
+    for key, hint in _SHOT_MOOD_HINTS:
+        if key in m:
+            return hint
+    return ""
+
+
+# 表情词库（治 AI「面瘫脸」）：给 video_prompt 生成器的具体微表情词汇
+_EXPRESSION_BANK = (
+    "表情词必须具体（微表情优先）：嘴角抽动、瞳孔骤缩、眼眶泛红强忍泪水、"
+    "抿唇、咬牙、眉头一皱、强撑笑意、指尖攥紧发白、深吸一口气——"
+    "禁止只写「情绪激动/很生气/很难过」这类抽象词")
 
 
 # ---------------- 3. 关键帧 + 镜头视频 ----------------
@@ -1420,13 +1676,19 @@ def keyframe(state: dict, cast: dict, shot: dict, ch: int, i: int,
     parts = re.split(r"【镜头\d+】", shot["description"])
     beat = next((p.strip(" ，。") for p in parts if p.strip(" ，。")),
                 shot["description"])
+    # 七段式（主体→动作→场景→镜头→光影→质感）：按 mood 注入镜头语言段
+    hint = _shot_hint((shot.get("mood") or "").strip()
+                      + " " + (shot.get("camera") or "").strip())
+    shot_seg = f"镜头语言：{hint}。" if hint else ""
     prompt = (inject_style(state, "单幅电影画面，只画一个瞬间；"
                            f"禁止分格、拼图、漫画多面板排版：{beat}。") +
+              f"{shot_seg}"
               f"场景：{scene_name}。出场角色：{'、'.join(who) or '（无）'}。"
               "参考图依次为场景空镜、角色形象、道具；多角色时严格按各自"
               "参考图区分长相、发型与服饰，禁止把不同角色的脸或衣服画混；"
               "严格保持参考图中场景布置、角色长相与道具外观一致。"
               "画面中不要出现任何字幕、文字、标题、水印或字母字符。"
+              "画面清晰锐利，主体明确，背景简洁不杂乱。"
               f"画幅比例 {_drama_sizes()[1]}。"
             + " " + _dbg.body_guard(state, who))
     on_event({"type": "drama_media", "kind": "frame",

@@ -1,0 +1,12 @@
+{
+  "globals": {
+    "drama_styles": [
+      {
+        "name": "自定义旧风格",
+        "text": "x",
+        "category": "自定义"
+      }
+    ],
+    "default_drama_style": "x"
+  }
+}

@@ -66,7 +66,7 @@ def show(app):
     win = tk.Toplevel(app.root)
     win.configure(bg=theme.BG)
     win.title(_t("sp.title"))
-    win.geometry("780x560")
+    win.geometry("1080x560")
     ui._make_modal(win, app.root)
 
     # ---- 顶栏：当前书风格显示 + 应用 ----
@@ -97,7 +97,8 @@ def show(app):
     body = tk.Frame(win, bg=theme.BG)
     body.pack(fill="both", expand=True, padx=14)
 
-    cats = ("全部", "内置", "2D", "3D", "真人", "自定义")
+    cats = ("全部", "内置", "2D", "3D", "真人", "短剧题材", "宣传推广",
+            "自定义")
     cat_var = tk.StringVar(value="全部")
     cat_lb = tk.Listbox(body, width=12, font=(FONT_UI, 10), bg=theme.PANEL,
                        fg=theme.TEXT, relief="flat", highlightthickness=1,
@@ -117,6 +118,26 @@ def show(app):
                    selectforeground="#ffffff")
     lb.pack(side="left", fill="both", expand=True)
 
+    # ---- 右侧提示词预览：点选风格即显示完整提示词（可选中复制）----
+    prev_box = tk.Frame(body, bg=theme.BG)
+    prev_box.pack(side="left", fill="both", padx=(8, 0))
+    tk.Label(prev_box, text=_t("sp.preview"), font=(FONT_UI, 9),
+             bg=theme.BG, fg=theme.MUTED).pack(anchor="w")
+    prev_txt = tk.Text(prev_box, width=52, wrap="word", font=(FONT_UI, 9),
+                       relief="flat", bg=theme.PANEL, fg=theme.TEXT,
+                       padx=8, pady=6, highlightthickness=1,
+                       highlightbackground=theme.BORDER)
+    prev_txt.pack(fill="both", expand=True)
+    prev_txt.insert("1.0", _t("sp.preview_hint"))
+    prev_txt.config(state="disabled")
+    ui._enable_text_copy(prev_txt)          # disabled 态可选中复制
+
+    def _show_preview(text_str: str):
+        prev_txt.config(state="normal")
+        prev_txt.delete("1.0", "end")
+        prev_txt.insert("1.0", text_str or _t("sp.preview_hint"))
+        prev_txt.config(state="disabled")
+
     def _refresh_list():
         lb.delete(0, "end")
         cat = cat_var.get()
@@ -126,16 +147,26 @@ def show(app):
                 star = "★ " if s.get("text") == d else ""
                 lb.insert("end",
                           f"{star}{s.get('name','')}（{s.get('category','自定义')}）")
+        _show_preview("")
 
-    cat_lb.bind("<<ListboxSelect>>", lambda e: _refresh_list())
+    def _on_cat(_e=None):
+        # Listbox 点选不会自动写 StringVar——不显式同步，cat_var 永远停在
+        # 「全部」，右侧列表就永远不过滤（分类选择看似无效的根源）
+        sel = cat_lb.curselection()
+        if sel:
+            cat_var.set(cat_lb.get(sel[0]))
+        _refresh_list()
+
+    cat_lb.bind("<<ListboxSelect>>", _on_cat)
 
     def _on_pick(_e=None):
         sel = lb.curselection()
         if not sel:
             return
-        # 把选中项的 text 填到顶部输入框（也可用于「编辑」入口）
+        # 把选中项的 text 填到顶部输入框（也可用于「编辑」入口）+ 右侧预览
         s = _visible_items()[sel[0]]
         cur_var.set(s.get("text", ""))
+        _show_preview(s.get("text", ""))
 
     lb.bind("<<ListboxSelect>>", lambda e: _on_pick())
 
@@ -151,7 +182,8 @@ def show(app):
                      relief="flat", bg="white", fg=theme.TEXT)
     name_e.insert(0, _t("sp.name_ph"))
     name_e.pack(side="left", padx=(0, 4))
-    cat_box = ttk.Combobox(foot, values=("2D", "3D", "真人", "自定义"),
+    cat_box = ttk.Combobox(foot, values=("2D", "3D", "真人", "短剧题材",
+                                         "宣传推广", "自定义"),
                           width=8, state="readonly", font=(FONT_UI, 10))
     cat_box.set("自定义")
     cat_box.pack(side="left", padx=4)
