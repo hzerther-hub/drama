@@ -1415,11 +1415,19 @@ def keyframe(state: dict, cast: dict, shot: dict, ch: int, i: int,
         refs.insert(0, scene_ref)
     refs.extend(props)
     refs = _normalize_refs(refs)           # 去重限量+压缩，防请求体过大
-    prompt = (inject_style(state, f"{shot['description']}。") +
+    # 关键帧只画「一个瞬间」：description 含【镜头N】子镜头序列，整段喂给
+    # 画图模型会被画成漫画分格拼图，多角色还互相串脸——只取第一个子镜头
+    parts = re.split(r"【镜头\d+】", shot["description"])
+    beat = next((p.strip(" ，。") for p in parts if p.strip(" ，。")),
+                shot["description"])
+    prompt = (inject_style(state, "单幅电影画面，只画一个瞬间；"
+                           f"禁止分格、拼图、漫画多面板排版：{beat}。") +
               f"场景：{scene_name}。出场角色：{'、'.join(who) or '（无）'}。"
-              "参考图依次为场景空镜、角色形象、道具，"
+              "参考图依次为场景空镜、角色形象、道具；多角色时严格按各自"
+              "参考图区分长相、发型与服饰，禁止把不同角色的脸或衣服画混；"
               "严格保持参考图中场景布置、角色长相与道具外观一致。"
-              "画面中不要出现任何字幕、文字、标题、水印或字母字符。竖屏构图。"
+              "画面中不要出现任何字幕、文字、标题、水印或字母字符。"
+              f"画幅比例 {_drama_sizes()[1]}。"
             + " " + _dbg.body_guard(state, who))
     on_event({"type": "drama_media", "kind": "frame",
               "label": f"第{ch}章 镜头{i}"})
@@ -1520,9 +1528,15 @@ def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
     # 解说信息由配音承担，画面保持纯净
     vp = (shot.get("video_prompt") or "").strip()
     # 硬约束前置：视频模型对长提示词中后段的指令注意力很差，
-    # 语言/字幕/解剖这类高优负向必须放在首因位置，尾部详情只作兜底
+    # 语言/字幕/解剖这类高优负向必须放在首因位置，尾部详情只作兜底。
+    # 双语并写：Agnes 等西源模型对中文指令服从率低，英文版才是给它的
     hard = ("硬约束：所有人物开口只说中文普通话，禁止英语等任何外语；"
-            "画面严禁出现字幕、文字、水印；人物五指五趾、两臂两腿、无重影。")
+            "画面严禁出现字幕、文字、水印；人物五指五趾、两臂两腿、无重影。"
+            " AUDIO RULE (overrides everything): every character speaks "
+            "Mandarin Chinese ONLY — English or any other spoken language "
+            "is strictly forbidden. No subtitles, no captions, no on-screen "
+            "text. Five fingers per hand, five toes per foot, two arms, "
+            "two legs, no duplicated limbs.")
     if vp:
         # 火宝式 3 秒分段时间轴：段内已含切镜衔接与台词分配，直接用
         prompt = (inject_style(state, "按时间分段执行以下画面：") +
@@ -1582,11 +1596,14 @@ def _render_clip(state: dict, shot: dict, frame_url: str, ch: int, i: int,
     # 顶栏 provider/resolution 覆盖（state["drama_video_provider"] 缺省回落到 env/全局）
     res = (state.get("drama_video_resolution") or "").strip()
     preferred = (state.get("drama_video_provider") or "").strip()
+    # 画幅跟随 /media 面板的「短剧比例」（9:16 竖屏 / 16:9 横屏等）——
+    # 与关键帧同源，横屏本横到底，不再永远锁竖屏
+    ratio = _drama_sizes()[1]
     # 超时按时长缩放：长视频（15s/441帧）云端常超 4 分钟，240s 固定值会误杀
     try:
         raw = videogen.generate(prompt, out if not want_dub else out + ".raw.mp4",
-                                image=frame_url, resolution=res, seconds=sec,
-                                timeout=max(240.0, sec * 30.0),
+                                image=frame_url, resolution=res, ratio=ratio,
+                                seconds=sec, timeout=max(240.0, sec * 30.0),
                                 preferred_provider_id=preferred)
     except videogen.VidError as e:
         # 内容审核切模型（参考火宝 v3.1）：错误分类后抛专用异常，
